@@ -7,6 +7,8 @@
 
 #import "iTermWindowHacks.h"
 
+#import <CoreGraphics/CoreGraphics.h>
+
 @implementation iTermWindowHacks
 
 void WindowListApplierFunction(const void *inputDictionary, void *context) {
@@ -35,8 +37,7 @@ void WindowListApplierFunction(const void *inputDictionary, void *context) {
 }
 
 + (void)pollForCharacterPanelToOpenOrCloseWithCompletion:(BOOL (^)(BOOL))block {
-    __block NSTimer *timer;
-    timer = [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer * _Nonnull timer) {
+    [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer * _Nonnull timer) {
         if (!block([self isCharacterPanelOpen])) {
             [timer invalidate];
         }

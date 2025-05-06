@@ -13,6 +13,49 @@ static NSMutableArray *gFavorites;
 
 NSString *const kCPFavoritesUserDefaultsKey = @"kCPFavoritesUserDefaultsKey";
 
+@interface CPKFavoriteTableCellView: NSTableCellView
+@end
+
+@implementation CPKFavoriteTableCellView {
+    NSTextField *_textField;
+}
+
+- (instancetype)initWithName:(NSString *)name
+                  identifier:(NSString *)identifier
+                        size:(NSSize)size
+                    delegate:(id<NSTextFieldDelegate>)delegate {
+    self = [super initWithFrame:NSMakeRect(0, 0, size.width, size.height)];
+    if (self) {
+        _textField = [[NSTextField alloc] initWithFrame:NSMakeRect(0,
+                                                                   0,
+                                                                   size.width,
+                                                                   size.height)];
+        _textField.stringValue = name ?: @"";
+        _textField.editable = YES;
+        _textField.selectable = YES;
+        _textField.bordered = NO;
+        _textField.drawsBackground = NO;
+        _textField.delegate = delegate;
+        _textField.identifier = identifier;
+        [self addSubview:_textField];
+        [self updateLayout];
+    }
+    return self;
+}
+
+- (void)updateLayout {
+    [_textField sizeToFit];
+    const CGFloat textHeight = NSHeight(_textField.frame);
+    const CGFloat myHeight = NSHeight(self.bounds);
+    _textField.frame = NSMakeRect(0, (myHeight - textHeight) / 2.0, NSWidth(self.bounds), textHeight);
+}
+
+- (void)resizeSubviewsWithOldSize:(NSSize)oldSize {
+    [self updateLayout];
+}
+
+@end
+
 @interface CPKFavoritesView() <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate>
 @property(nonatomic) NSTableView *tableView;
 @property(nonatomic) NSTableColumn *colorColumn;
@@ -21,9 +64,10 @@ NSString *const kCPFavoritesUserDefaultsKey = @"kCPFavoritesUserDefaultsKey";
 
 @implementation CPKFavoritesView
 
-- (instancetype)initWithFrame:(NSRect)frameRect {
+- (instancetype)initWithFrame:(NSRect)frameRect colorSpace:(NSColorSpace *)colorSpace {
     self = [super initWithFrame:frameRect];
     if (self) {
+        _colorSpace = colorSpace;
         self.horizontalLineScroll = 0;
         self.horizontalPageScroll = 0;
         self.borderType = NSNoBorder;
@@ -37,7 +81,7 @@ NSString *const kCPFavoritesUserDefaultsKey = @"kCPFavoritesUserDefaultsKey";
                 [gFavorites addObjectsFromArray:self.cannedFavorites];
             }
             for (NSData *data in userDefaults) {
-                NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingWithData:data];
+                NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:nil];
                 CPKFavorite *favorite = [[CPKFavorite alloc] initWithCoder:unarchiver];
                 if (favorite) {
                     [gFavorites addObject:favorite];
@@ -50,7 +94,7 @@ NSString *const kCPFavoritesUserDefaultsKey = @"kCPFavoritesUserDefaultsKey";
                                              horizontalScrollerClass:nil
                                                verticalScrollerClass:self.verticalScroller.class
                                                           borderType:self.borderType
-                                                         controlSize:NSRegularControlSize
+                                                         controlSize:NSControlSizeRegular
                                                        scrollerStyle:NSScrollerStyleLegacy];
         self.tableView = [[NSTableView alloc] initWithFrame:NSMakeRect(0,
                                                                        0,
@@ -86,23 +130,19 @@ NSString *const kCPFavoritesUserDefaultsKey = @"kCPFavoritesUserDefaultsKey";
     return self;
 }
 
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
 - (NSArray *)cannedFavorites {
     return
-    @[ [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.0 green:0.0 blue:0.0 alpha:1] name:@"Black"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.1 green:0.1 blue:0.1 alpha:1] name:@"10% Gray"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.2 green:0.2 blue:0.2 alpha:1] name:@"20% Gray"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.3 green:0.3 blue:0.3 alpha:1] name:@"30% Gray"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.4 green:0.4 blue:0.4 alpha:1] name:@"40% Gray"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.5 green:0.5 blue:0.5 alpha:1] name:@"50% Gray"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.6 green:0.6 blue:0.6 alpha:1] name:@"60% Gray"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.7 green:0.7 blue:0.7 alpha:1] name:@"70% Gray"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.8 green:0.8 blue:0.8 alpha:1] name:@"80% Gray"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.9 green:0.9 blue:0.9 alpha:1] name:@"90% Gray"],
-       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:1.0 green:1.0 blue:1.0 alpha:1] name:@"White"] ];
+    @[ [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.0 green:0.0 blue:0.0 alpha:1 colorSpace:self.colorSpace] name:@"Black"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.1 green:0.1 blue:0.1 alpha:1 colorSpace:self.colorSpace] name:@"10% Gray"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.2 green:0.2 blue:0.2 alpha:1 colorSpace:self.colorSpace] name:@"20% Gray"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.3 green:0.3 blue:0.3 alpha:1 colorSpace:self.colorSpace] name:@"30% Gray"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.4 green:0.4 blue:0.4 alpha:1 colorSpace:self.colorSpace] name:@"40% Gray"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.5 green:0.5 blue:0.5 alpha:1 colorSpace:self.colorSpace] name:@"50% Gray"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.6 green:0.6 blue:0.6 alpha:1 colorSpace:self.colorSpace] name:@"60% Gray"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.7 green:0.7 blue:0.7 alpha:1 colorSpace:self.colorSpace] name:@"70% Gray"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.8 green:0.8 blue:0.8 alpha:1 colorSpace:self.colorSpace] name:@"80% Gray"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:0.9 green:0.9 blue:0.9 alpha:1 colorSpace:self.colorSpace] name:@"90% Gray"],
+       [CPKFavorite favoriteWithColor:[NSColor cpk_colorWithRed:1.0 green:1.0 blue:1.0 alpha:1 colorSpace:self.colorSpace] name:@"White"] ];
 }
 
 - (CPKFavorite *)favoriteForRow:(NSInteger)row {
@@ -126,26 +166,19 @@ NSString *const kCPFavoritesUserDefaultsKey = @"kCPFavoritesUserDefaultsKey";
                                                         self.tableView.rowHeight - 1)];
     wrapper.autoresizesSubviews = NO;
     [wrapper addSubview:view];
-    view.color = color;
+    BOOL lossy = NO;
+    view.color = [color cpk_colorUsingColorSpace:self.colorSpace lossy:&lossy];
+    if (lossy) {
+        view.showWarningIcon = YES;
+    }
     return wrapper;
 }
 
 - (NSView *)nameViewWithValue:(NSString *)name identifier:(NSString *)identifier {
-    NSTextField *textField =
-        [[NSTextField alloc] initWithFrame:NSMakeRect(0,
-                                                      0,
-                                                      self.nameColumn.width,
-                                                      self.tableView.rowHeight)];
-    textField.stringValue = name ?: @"";
-    textField.editable = YES;
-    textField.selectable = YES;
-    textField.bordered = NO;
-    textField.drawsBackground = NO;
-    textField.delegate = self;
-    textField.identifier = identifier;
-
-    return textField;
-
+    return [[CPKFavoriteTableCellView alloc] initWithName:name ?: @""
+                                               identifier:identifier
+                                                     size:NSMakeSize(self.nameColumn.width, self.tableView.rowHeight)
+                                                 delegate:self];
 }
 
 - (NSInteger)rowForFavoriteWithIdentifier:(NSString *)identifier {
@@ -193,12 +226,11 @@ NSString *const kCPFavoritesUserDefaultsKey = @"kCPFavoritesUserDefaultsKey";
 - (NSArray *)encodedFavorites {
     NSMutableArray *result = [NSMutableArray array];
     for (CPKFavorite *favorite in gFavorites) {
-        NSMutableData *data = [NSMutableData data];
-        NSKeyedArchiver *coder = [[NSKeyedArchiver alloc] initForWritingWithMutableData:data];
+        NSKeyedArchiver *coder = [[NSKeyedArchiver alloc] initRequiringSecureCoding:YES];
         [favorite encodeWithCoder:coder];
         [coder finishEncoding];
 
-        [result addObject:data];
+        [result addObject:coder.encodedData];
     }
     return result;
 }

@@ -7,7 +7,10 @@
 
 #import "iTermStatusBarCPUUtilizationComponent.h"
 
+#import "DebugLogging.h"
 #import "iTermCPUUtilization.h"
+#import "iTermVariableReference.h"
+#import "iTermVariableScope+Session.h"
 #import "NSDictionary+iTerm.h"
 #import "NSImage+iTerm.h"
 #import "NSStringITerm.h"
@@ -18,24 +21,33 @@ static const CGFloat iTermCPUUtilizationWidth = 120;
 NS_ASSUME_NONNULL_BEGIN
 
 @implementation iTermStatusBarCPUUtilizationComponent {
-    NSMutableArray<NSNumber *> *_samples;
+    iTermVariableReference *_sshRef;
+    __weak iTermPublisher<NSNumber *> *_lastPublisher;
 }
 
 - (instancetype)initWithConfiguration:(NSDictionary<iTermStatusBarComponentConfigurationKey,id> *)configuration
                                 scope:(nullable iTermVariableScope *)scope {
     self = [super initWithConfiguration:configuration scope:scope];
     if (self) {
-        _samples = [NSMutableArray array];
         __weak __typeof(self) weakSelf = self;
-        [[iTermCPUUtilization sharedInstance] addSubscriber:self block:^(double value) {
-            [weakSelf update:value];
-        }];
+        // scope will be nil in status bar configuration UI but not during normal use.
+        if (scope.ID) {
+            static int sig;
+            int inst = sig++;
+            [[iTermCPUUtilization instanceForSessionID:scope.ID] addSubscriber:self block:^(double value) {
+                DLog(@"update %d of %p", inst, weakSelf);
+                [weakSelf update:value];
+            }];
+            _sshRef.onChangeBlock = ^{
+                [weakSelf sshLevelDidChange];
+            };
+        }
     }
     return self;
 }
 
-- (NSImage *)statusBarComponentIcon {
-    return [NSImage it_imageNamed:@"StatusBarIconCPU" forClass:[self class]];
+- (nullable NSImage *)statusBarComponentIcon {
+    return [NSImage it_cacheableImageNamed:@"StatusBarIconCPU" forClass:[self class]];
 }
 
 - (NSString *)statusBarComponentShortDescription {
@@ -55,10 +67,6 @@ NS_ASSUME_NONNULL_BEGIN
     return NO;
 }
 
-- (NSTimeInterval)statusBarComponentUpdateCadence {
-    return 1;
-}
-
 - (CGFloat)statusBarComponentMinimumWidth {
     return iTermCPUUtilizationWidth;
 }
@@ -67,15 +75,29 @@ NS_ASSUME_NONNULL_BEGIN
     return iTermCPUUtilizationWidth;
 }
 
-- (NSArray<NSNumber *> *)values {
-    return _samples;
+- (iTermStatusBarSparklinesModel *)sparklinesModel {
+    iTermCPUUtilization *util = [iTermCPUUtilization instanceForSessionID:self.scope.ID];
+    NSMutableArray<NSNumber *> *values = [[util samples] mutableCopy];
+    if (util.publisher != _lastPublisher) {
+        [self reset];
+    }
+    _lastPublisher = util.publisher;
+    while (values.count < self.maximumNumberOfValues) {
+        [values insertObject:@0 atIndex:0];
+    }
+    iTermStatusBarTimeSeries *timeSeries = [[iTermStatusBarTimeSeries alloc] initWithValues:values];
+    iTermStatusBarTimeSeriesRendition *rendition =
+    [[iTermStatusBarTimeSeriesRendition alloc] initWithTimeSeries:timeSeries
+                                                            color:[self statusBarTextColor]];
+    return [[iTermStatusBarSparklinesModel alloc] initWithDictionary:@{ @"main": rendition}];
 }
 
 - (int)currentEstimate {
     double alpha = 0.7;
-    NSArray<NSNumber *> *lastSamples = _samples;
+    NSArray<NSNumber *> *const samples = [[iTermCPUUtilization instanceForSessionID:self.scope.ID] samples];
+    NSArray<NSNumber *> *lastSamples = samples;
     const NSInteger maxSamplesToUse = 4;
-    double x = _samples.lastObject.doubleValue;
+    double x = samples.lastObject.doubleValue;
     if (lastSamples.count > maxSamplesToUse) {
         lastSamples = [lastSamples subarrayWithRange:NSMakeRange(lastSamples.count - maxSamplesToUse,
                                                                  maxSamplesToUse)];
@@ -85,31 +107,6 @@ NS_ASSUME_NONNULL_BEGIN
         x += number.doubleValue * alpha;
     }
     return x * 100;
-}
-
-- (void)drawTextWithRect:(NSRect)rect
-                    left:(NSString *)left
-                   right:(NSString *)right
-               rightSize:(CGSize)rightSize {
-    NSRect textRect = rect;
-    textRect.size.height = rightSize.height;
-    textRect.origin.y = [self textOffset];
-    [left drawInRect:textRect withAttributes:[self.leftAttributes it_attributesDictionaryWithAppearance:self.view.effectiveAppearance]];
-    [right drawInRect:textRect withAttributes:[self.rightAttributes it_attributesDictionaryWithAppearance:self.view.effectiveAppearance]];
-}
-
-- (NSRect)graphRectForRect:(NSRect)rect
-                  leftSize:(CGSize)leftSize
-                 rightSize:(CGSize)rightSize {
-    NSRect graphRect = rect;
-    const CGFloat margin = 4;
-    CGFloat rightWidth = rightSize.width + margin;
-    CGFloat leftWidth = leftSize.width + margin;
-    graphRect.origin.x += leftWidth;
-    graphRect.size.width -= (leftWidth + rightWidth);
-    graphRect = NSInsetRect(graphRect, 0, [self.view retinaRound:-self.font.descender] + self.statusBarComponentVerticalOffset);
-
-    return graphRect;
 }
 
 - (NSFont *)font {
@@ -137,16 +134,6 @@ NS_ASSUME_NONNULL_BEGIN
               NSForegroundColorAttributeName: self.textColor };
 }
 
-- (CGFloat)textOffset {
-    NSFont *font = self.advancedConfiguration.font ?: [iTermStatusBarAdvancedConfiguration defaultFont];
-    const CGFloat containerHeight = self.view.superview.bounds.size.height;
-    const CGFloat capHeight = font.capHeight;
-    const CGFloat descender = font.descender - font.leading;  // negative (distance from bottom of bounding box to baseline)
-    const CGFloat frameY = (containerHeight - self.view.frame.size.height) / 2;
-    const CGFloat origin = containerHeight / 2.0 - frameY + descender - capHeight / 2.0;
-    return origin;
-}
-
 - (NSSize)leftSize {
     NSString *longestPercentage = @"100%";
     return [longestPercentage sizeWithAttributes:self.leftAttributes];
@@ -156,34 +143,29 @@ NS_ASSUME_NONNULL_BEGIN
     return [self.rightText sizeWithAttributes:self.rightAttributes];
 }
 
-- (NSString *)leftText {
+- (NSString * _Nullable)leftText {
     return [NSString stringWithFormat:@"%d%%", self.currentEstimate];
 }
 
-- (NSString *)rightText {
+- (NSString * _Nullable)rightText {
     return @"";
-}
-
-- (void)drawRect:(NSRect)rect {
-    CGSize rightSize = self.rightSize;
-    
-    [self drawTextWithRect:rect
-                      left:self.leftText
-                     right:self.rightText
-                 rightSize:rightSize];
-
-    NSRect graphRect = [self graphRectForRect:rect leftSize:self.leftSize rightSize:rightSize];
-
-    [super drawRect:graphRect];
 }
 
 #pragma mark - Private
 
 - (void)update:(double)value {
-    [_samples addObject:@(value)];
-    while (_samples.count > self.maximumNumberOfValues) {
-        [_samples removeObjectAtIndex:0];
+    [self invalidate];
+}
+
+- (void)sshLevelDidChange {
+    [self invalidate];
+}
+
+- (void)redrawAnimated:(BOOL)animated {
+    if (!self.view.window) {
+        return;
     }
+    [super redrawAnimated:animated];
 }
 
 @end

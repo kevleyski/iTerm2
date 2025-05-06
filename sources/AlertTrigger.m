@@ -9,9 +9,12 @@
 #import "PTYSession.h"
 #import "PTYTab.h"
 #import "PseudoTerminal.h"
+#import "iTermAdvancedSettingsModel.h"
+#import "iTermRateLimitedUpdate.h"
 
 @implementation AlertTrigger {
     BOOL disabled_;
+    iTermRateLimitedUpdate *_rateLimit;
 }
 
 + (NSString *)title
@@ -23,15 +26,18 @@
     return @"Enter text to show in alert";
 }
 
+- (NSString *)description {
+    return [NSString stringWithFormat:@"Show alert “%@”", self.param];
+}
+
 - (BOOL)takesParameter
 {
     return YES;
 }
 
-- (BOOL)performActionWithCapturedStrings:(NSString *const *)capturedStrings
+- (BOOL)performActionWithCapturedStrings:(NSArray<NSString *> *)stringArray
                           capturedRanges:(const NSRange *)capturedRanges
-                            captureCount:(NSInteger)captureCount
-                               inSession:(PTYSession *)aSession
+                               inSession:(id<iTermTriggerSession>)aSession
                                 onString:(iTermStringLine *)stringLine
                     atAbsoluteLineNumber:(long long)lineNumber
                         useInterpolation:(BOOL)useInterpolation
@@ -39,44 +45,33 @@
     if (disabled_) {
         return YES;
     }
-    [self paramWithBackreferencesReplacedWithValues:capturedStrings
-                                              count:captureCount
-                                              scope:aSession.variablesScope
-                                   useInterpolation:useInterpolation
-                                         completion:^(NSString *message) {
-                                             [self showAlertWithMessage:message inSession:aSession];
-                                         }];
+    // Need to stop the world to get scope, provided it is needed. Alerts are so slow & rare that this is ok.
+    id<iTermTriggerScopeProvider> scopeProvider = [aSession triggerSessionVariableScopeProvider:self];
+    id<iTermTriggerCallbackScheduler> scheduler = [scopeProvider triggerCallbackScheduler];
+    [[self paramWithBackreferencesReplacedWithValues:stringArray
+                                             absLine:lineNumber
+                                               scope:scopeProvider
+                                    useInterpolation:useInterpolation] then:^(NSString * _Nonnull message) {
+        [scheduler scheduleTriggerCallback:^{
+            [self showAlertWithMessage:message inSession:aSession];
+        }];
+    }];
     return YES;
 }
 
-- (void)showAlertWithMessage:(NSString *)message inSession:(PTYSession *)aSession {
-    if (!message) {
-        return;
+- (iTermRateLimitedUpdate *)rateLimit {
+    if (!_rateLimit) {
+        _rateLimit = [[iTermRateLimitedUpdate alloc] initWithName:@"AlertTrigger"
+                                                  minimumInterval:[iTermAdvancedSettingsModel alertTriggerRateLimit]];
+        _rateLimit.suppressionMode = YES;
     }
-    NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = message ?: @"";
-    [alert addButtonWithTitle:@"OK"];
-    [alert addButtonWithTitle:@"Show Session"];
-    [alert addButtonWithTitle:@"Disable This Alert"];
-    switch ([alert runModal]) {
-        case NSAlertFirstButtonReturn:
-            break;
+    return _rateLimit;
+}
 
-        case NSAlertSecondButtonReturn: {
-            NSWindowController<iTermWindowController> * term = [[aSession delegate] realParentWindow];
-            [[term window] makeKeyAndOrderFront:nil];
-            [aSession.delegate sessionSelectContainingTab];
-            [aSession.delegate setActiveSession:aSession];
-            break;
-        }
-
-        case NSAlertThirdButtonReturn:
-            disabled_ = YES;
-            break;
-
-        default:
-            break;
-    }
+- (void)showAlertWithMessage:(NSString *)message inSession:(id<iTermTriggerSession>)aSession {
+    [aSession triggerSession:self showAlertWithMessage:message rateLimit:[self rateLimit] disable:^{
+        self->disabled_ = YES;
+    }];
 }
 
 @end

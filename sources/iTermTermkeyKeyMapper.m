@@ -9,6 +9,7 @@
 
 #import "DebugLogging.h"
 #import "iTermKeyboardHandler.h"
+#import "NSEvent+iTerm.h"
 #import "VT100Output.h"
 
 @implementation iTermTermkeyKeyMapper {
@@ -18,7 +19,7 @@
 #pragma mark - Pre-Cocoa
 
 - (NSString *)preCocoaString {
-    const unsigned int modifiers = [_event modifierFlags];
+    const unsigned int modifiers = [_event it_modifierFlags];
 
     NSString *charactersIgnoringModifiers = _event.charactersIgnoringModifiers;
     const unichar characterIgnoringModifiers = [charactersIgnoringModifiers length] > 0 ? [charactersIgnoringModifiers characterAtIndex:0] : 0;
@@ -28,6 +29,16 @@
         NSString *string = [NSString stringWithFormat:@"%c[Z", 27];
         DLog(@"Backtab");
         return string;
+    }
+
+    const NSEventModifierFlags allEventModifierFlags = (NSEventModifierFlagControl |
+                                                        NSEventModifierFlagOption |
+                                                        NSEventModifierFlagShift |
+                                                        NSEventModifierFlagCommand);
+    if (_event.keyCode == kVK_Space &&
+        (_event.modifierFlags & allEventModifierFlags) == NSEventModifierFlagShift) {
+        // Shift+Space is special. No other unicode character + shift reports a CSI u.
+        return [self termkeySequenceForEvent];
     }
 
     const BOOL onlyControlPressed = (modifiers & (NSEventModifierFlagControl | NSEventModifierFlagCommand | NSEventModifierFlagOption)) == NSEventModifierFlagControl;
@@ -72,23 +83,15 @@
     }
 }
 
-// masks off shift
 // CSI code ~
-// CSI modifiers ; code ~
+// CSI code ; modifier ~
 - (NSString *)sequenceForNonUnicodeKeypress:(NSString *)code
                              eventModifiers:(NSEventModifierFlags)eventModifiers {
-    return [self optionallyShiftedSequenceForNonUnicodeKeypress:code
-                                                 eventModifiers:(eventModifiers & ~NSEventModifierFlagShift)];
-}
-
-// allows shift to remain if present
-- (NSString *)optionallyShiftedSequenceForNonUnicodeKeypress:(NSString *)code
-                                              eventModifiers:(NSEventModifierFlags)eventModifiers {
     const int csiModifiers = [self csiModifiersForEventModifiers:eventModifiers];
     if (csiModifiers == 1) {
         return [NSString stringWithFormat:@"%c[%@~", 27, code];
     } else {
-        return [NSString stringWithFormat:@"%c[%d;%@~", 27, csiModifiers, code];
+        return [NSString stringWithFormat:@"%c[%@;%d~", 27, code, csiModifiers];
     }
 }
 
@@ -239,7 +242,7 @@
         return applicationModeResult;
     }
 
-    if (!(_event.modifierFlags & NSEventModifierFlagFunction)) {
+    if (!(_event.it_modifierFlags & NSEventModifierFlagFunction)) {
         return nil;
     }
 
@@ -323,6 +326,7 @@
     if (!anyModifierPressed) {
         switch (keyCode) {
             case kVK_Return:
+            case kVK_ANSI_KeypadEnter:  // Keypad enter appears to be unspecified.
                 return [self stringWithCharacter:0x0d];
             case kVK_Escape:
                 return [self stringWithCharacter:0x1b];
@@ -339,6 +343,7 @@
     // Some modifier pressed. These support reporting the shift key.
     switch (keyCode) {
         case kVK_Return:
+        case kVK_ANSI_KeypadEnter:  // Keypad enter appears to be unspecified.
             return [self csiUForCode:@"13" eventModifiers:eventModifiers];
         case kVK_Escape:
             return [self csiUForCode:@"27" eventModifiers:eventModifiers];
@@ -364,7 +369,7 @@
 }
 
 - (iTermOptionKeyBehavior)optionKeyBehavior {
-    const NSEventModifierFlags modflag = _event.modifierFlags;
+    const NSEventModifierFlags modflag = _event.it_modifierFlags;
     const BOOL rightAltPressed = (modflag & NSRightAlternateKeyMask) == NSRightAlternateKeyMask;
     const BOOL leftAltPressed = (modflag & NSEventModifierFlagOption) == NSEventModifierFlagOption && !rightAltPressed;
     assert(leftAltPressed || rightAltPressed);
@@ -414,54 +419,14 @@
 
 // Only control pressed
 - (NSString *)modifiedUnicodeStringForControlCharacter:(unichar)codePoint
-                                          shiftPressed:(BOOL)shiftPressed {
+                                               keyCode:(int)keyCode {
     switch (codePoint) {
+        case ' ':
+            return [self stringWithCharacter:0];
         case 'i':
+        case 'j':
         case 'm':
             return nil;
-
-        case '[':
-            // Intentional deviation from the CSI u spec because of the stupid touch bar.
-            if (shiftPressed) {
-                return nil;
-            }
-            return [self stringWithCharacter:27];
-
-        case ' ':
-            if (shiftPressed) {
-                return nil;
-            }
-            return [self stringWithCharacter:0];
-
-        case '2':
-        case '@':  // Intentional deviation from the CSI u spec because control+number changes desktops.
-            return [self stringWithCharacter:0];
-
-        case '\\':
-            if (shiftPressed) {
-                return nil;
-            }
-            return [self stringWithCharacter:28];
-
-        case ']':
-            if (shiftPressed) {
-                return nil;
-            }
-            return [self stringWithCharacter:29];
-
-        case '^':  // Intentional deviation from the CSI u spec because control+number changes desktops.
-        case '6':
-            return [self stringWithCharacter:30];
-
-        case '-':
-        case '_':  // Intentional deviation from the CSI u spec for emacs users.
-            return [self stringWithCharacter:31];
-
-        case '/':  // Intentional deviation from the CSI u spec for the sake of tradition.
-            if (shiftPressed) {
-                return nil;
-            }
-            return [self stringWithCharacter:0x7f];
     }
 
     if (codePoint < 'a') {
@@ -470,9 +435,16 @@
     if (codePoint > 'z') {
         return nil;
     }
+    if ([self shouldDisambiguateEscape]) {
+        return [self csiuStringForCodePoint:codePoint keyCode:keyCode modifiers:NSEventModifierFlagControl];
+    }
     // Legacy code path: control-letter, only control pressed.
     unichar controlCode = codePoint - 'a' + 1;
     return [NSString stringWithCharacters:&controlCode length:1];
+}
+
+static BOOL CodePointInPrivateUseArea(unichar c) {
+    return c >= 0xE000 && c <= 0xF8FF;
 }
 
 - (NSString *)termkeySequenceForCodePoint:(unichar)codePoint
@@ -485,10 +457,11 @@
         return sequence;
     }
 
+    const NSEventModifierFlags maybeFunction = CodePointInPrivateUseArea(codePoint) ? NSEventModifierFlagFunction : 0;
     const NSEventModifierFlags allEventModifierFlags = (NSEventModifierFlagControl |
                                                         NSEventModifierFlagOption |
                                                         NSEventModifierFlagShift |
-                                                        NSEventModifierFlagFunction);
+                                                        maybeFunction);
 
     // Special and very special keys
     // Function keys, arrows, and keypad in application keypad mode.
@@ -506,23 +479,28 @@
     }
 
     // Modified unicode - control
-    const NSEventModifierFlags allEventModifierFlagsExShift = (NSEventModifierFlagControl |
-                                                               NSEventModifierFlagOption |
-                                                               NSEventModifierFlagFunction);
-    if ((eventModifiers & allEventModifierFlagsExShift) == NSEventModifierFlagControl) {
-        NSString *string = [self modifiedUnicodeStringForControlCharacter:codePoint shiftPressed:!!(eventModifiers & NSEventModifierFlagShift)];
+    if ((eventModifiers & allEventModifierFlags) == NSEventModifierFlagControl) {
+        NSString *string = [self modifiedUnicodeStringForControlCharacter:codePoint
+                                                                  keyCode:keyCode];
         if (string) {
             return string;
         }
     }
 
     // Modified Unicode - option
-    if ((eventModifiers & allEventModifierFlags) == NSEventModifierFlagOption) {
-        // Legacy code path: option-letter, for the "simplest form of these keys." Not sure what
-        // he meant exactly, but anything that's not a function key seems simple to me. ¯\_(ツ)_/¯
-        NSData *data = [self dataForOptionModifiedKeypress];
-        if (data) {
-            return [[NSString alloc] initWithData:data encoding:_configuration.encoding];
+    if (![self shouldDisambiguateEscape]) {
+        const NSEventModifierFlags allEventModifierFlagsExShift = (NSEventModifierFlagControl |
+                                                                   NSEventModifierFlagOption |
+                                                                   maybeFunction);
+        if ((eventModifiers & allEventModifierFlagsExShift) == NSEventModifierFlagOption) {
+            // Legacy code path: option-letter, for the "simplest form of these keys." Not sure what
+            // he meant exactly, but anything that's not a function key seems simple to me. ¯\_(ツ)_/¯
+            // Update: based on his example of m-a -> esc a and m-A -> esc A, I interpret this to mean
+            // the shift key should not be considered.
+            NSData *data = [self dataForOptionModifiedKeypress];
+            if (data) {
+                return [[NSString alloc] initWithData:data encoding:_configuration.encoding];
+            }
         }
     }
 
@@ -531,6 +509,19 @@
     }
 
     // The new thing
+    return [self csiuStringForCodePoint:codePoint keyCode:keyCode modifiers:eventModifiers];
+}
+
+// Based on Kitty's "disambiguate escape codes" mode
+// https://sw.kovidgoyal.net/kitty/keyboard-protocol.html#disambiguate
+// This is a modification of Paul's CSI u spec.
+- (BOOL)shouldDisambiguateEscape {
+    return (self.flags & VT100TerminalKeyReportingFlagsDisambiguateEscape) != 0;
+}
+
+- (NSString *)csiuStringForCodePoint:(unichar)codePoint
+                             keyCode:(int)keyCode
+                           modifiers:(NSEventModifierFlags)eventModifiers {
     NSEventModifierFlags modifiers = [self shiftAllowedForKeycode:keyCode] ? eventModifiers : (eventModifiers & ~NSEventModifierFlagShift);
     const int csiModifiers = [self csiModifiersForEventModifiers:modifiers];
     return [NSString stringWithFormat:@"%c[%d;%du", 27, (int)codePoint, csiModifiers];
@@ -559,6 +550,7 @@ static NSRange iTermMakeRange(NSInteger smallestValueInRange,
 - (BOOL)shiftAllowedForKeycode:(int)code {
     switch (code) {
         case kVK_Return:
+        case kVK_ANSI_KeypadEnter:  // Keypad enter appears to be unspecified.
         case kVK_Escape:
         case kVK_Delete:  // backspace
         case kVK_Space:
@@ -574,11 +566,19 @@ static NSRange iTermMakeRange(NSInteger smallestValueInRange,
     }
     const unichar codePoint = [_event.charactersIgnoringModifiers characterAtIndex:0];
     return [self termkeySequenceForCodePoint:codePoint
-                                   modifiers:_event.modifierFlags
+                                   modifiers:_event.it_modifierFlags
                                      keyCode:_event.keyCode];
 }
 
 #pragma mark - iTerm
+
+- (BOOL)keyMapperWantsKeyUp {
+    return NO;
+}
+
+- (void)keyMapperSetEvent:(NSEvent *)event {
+    [self updateConfigurationWithEvent:event];
+}
 
 - (NSString *)keyMapperStringForPreCocoaEvent:(NSEvent *)event {
     if (event.type != NSEventTypeKeyDown) {
@@ -597,10 +597,11 @@ static NSRange iTermMakeRange(NSInteger smallestValueInRange,
 }
 
 - (BOOL)keyMapperShouldBypassPreCocoaForEvent:(NSEvent *)event {
-    const NSEventModifierFlags modifiers = event.modifierFlags;
+    const NSEventModifierFlags modifiers = event.it_modifierFlags;
     const BOOL isSpecialKey = !!(modifiers & (NSEventModifierFlagNumericPad | NSEventModifierFlagFunction));
     if (isSpecialKey) {
         // Arrow key, function key, etc.
+        DLog(@"is special key -> bypass pre-cocoa");
         return YES;
     }
 
@@ -613,6 +614,8 @@ static NSRange iTermMakeRange(NSInteger smallestValueInRange,
     const BOOL willSendOptionModifiedKey = (isNonEmpty && optionModifiesKey);
     if (willSendOptionModifiedKey) {
         // Meta+key or Esc+ key
+        DLog(@"isNonEmpty=%@ rightAltPressed=%@ leftAltPressed=%@ leftOptionModifiesKey=%@ rightOptionModifiesKey=%@ optionModifiesKey=%@ willSendOptionModifiedKey=%@ -> bypass pre-cocoa",
+             @(isNonEmpty), @(rightAltPressed), @(leftAltPressed), @(leftOptionModifiesKey), @(rightOptionModifiesKey), @(optionModifiesKey), @(willSendOptionModifiedKey));
         return YES;
     }
 
@@ -620,13 +623,60 @@ static NSRange iTermMakeRange(NSInteger smallestValueInRange,
         const unichar codePoint = [event.charactersIgnoringModifiers characterAtIndex:0];
         if ([self sequenceForApplicationModeCodePoint:codePoint
                                               keyCode:event.keyCode
-                                       eventModifiers:event.modifierFlags]) {
+                                       eventModifiers:event.it_modifierFlags]) {
             // Application cursor keys in effect. Don't let cocoa call insertText:.
+            DLog(@"termkey app cursor key -> bypass pre-cocoa");
             return YES;
         }
     }
 
+    DLog(@"Don't bypass pre-cocoa");
     return NO;
 }
 
+- (BOOL)keyMapperWantsKeyEquivalent:(NSEvent *)event {
+    const BOOL cmdPressed = !!(event.modifierFlags & NSEventModifierFlagCommand);
+    DLog(@"!cmdPressed=%@", @(!cmdPressed));
+    return !cmdPressed;
+}
+
+- (BOOL)shouldHandleBuckyBits {
+    return NO;
+}
+
+- (NSString *)handleKeyDownWithBuckyBits:(NSEvent *)event {
+    return nil;
+}
+
+- (NSString *)handleKeyUpWithBuckyBits:(NSEvent *)event {
+    return nil;
+}
+
+- (NSString *)handleFlagsChangedWithBuckyBits:(NSEvent *)event {
+    return nil;
+}
+
+- (NSDictionary *)keyMapperDictionaryValue {
+    [self.delegate termkeyKeyMapperWillMapKey:self];
+    return iTermTermkeyKeyMapperConfigurationDictionary(&_configuration);
+}
+
+- (BOOL)wouldReportControlReturn {
+    return YES;
+}
+
+- (NSString *)transformedTextToInsert:(NSString *)text {
+    return text;
+}
+
 @end
+
+NSDictionary *iTermTermkeyKeyMapperConfigurationDictionary(iTermTermkeyKeyMapperConfiguration *config) {
+    return @{
+        @"encoding": @(config->encoding),
+        @"leftOptionKey": @(config->leftOptionKey),
+        @"rightOptionKey": @(config->rightOptionKey),
+        @"applicationCursorMode": @(config->applicationCursorMode),
+        @"applicationKeypadMode": @(config->applicationKeypadMode),
+    };
+}

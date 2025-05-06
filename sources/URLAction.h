@@ -9,11 +9,12 @@
 #import <Foundation/Foundation.h>
 #import "VT100GridTypes.h"
 
-@class iTermImageInfo;
+@protocol iTermImageInfoReading;
 @class iTermSemanticHistoryController;
 @class iTermTextExtractor;
 @class SCPPath;
-@class VT100RemoteHost;
+@protocol VT100RemoteHostReading;
+@protocol VT100ScreenMarkReading;
 
 typedef NS_ENUM(NSInteger, URLActionType) {
     kURLActionOpenURL,
@@ -21,6 +22,7 @@ typedef NS_ENUM(NSInteger, URLActionType) {
     kURLActionOpenExistingFile,
     kURLActionOpenImage,
     kURLActionSecureCopyFile,
+    kURLActionShowCommandInfo,
 };
 
 @interface URLAction : NSObject
@@ -36,8 +38,9 @@ typedef NS_ENUM(NSInteger, URLActionType) {
 // holds an SCPPath.
 @property(nonatomic, readonly) id identifier;
 
-// Always set. The range of |string| on screen.
-@property(nonatomic, assign) VT100GridWindowedRange range;
+// These two are always set. The range of |string|.
+@property(nonatomic, assign) VT100GridWindowedRange logicalRange;
+@property(nonatomic, assign) VT100GridWindowedRange visualRange;
 
 // For kURLActionOpenExistingFile, the full path the the file.
 @property(nonatomic, copy) NSString *fullPath;
@@ -60,12 +63,16 @@ typedef NS_ENUM(NSInteger, URLActionType) {
 @property(nonatomic, assign) SEL selector;
 
 @property(nonatomic) BOOL hover;
+@property(nonatomic, strong) id<VT100ScreenMarkReading> mark;
+@property(nonatomic) VT100GridCoord coord;
+@property(nonatomic) BOOL osc8;
 
 + (instancetype)urlActionToSecureCopyFile:(SCPPath *)scpPath;
 + (instancetype)urlActionToOpenURL:(NSString *)filename;
 + (instancetype)urlActionToPerformSmartSelectionRule:(NSDictionary *)rule
                                             onString:(NSString *)content;
 + (instancetype)urlActionToOpenExistingFile:(NSString *)filename;
-+ (instancetype)urlActionToOpenImage:(iTermImageInfo *)imageInfo;
++ (instancetype)urlActionToOpenImage:(id<iTermImageInfoReading>)imageInfo;
++ (instancetype)actionToShowCommandInfoForMark:(id<VT100ScreenMarkReading>)mark coord:(VT100GridCoord)coord;
 
 @end

@@ -16,7 +16,8 @@
 @protocol iTermTextViewAccessibilityHelperDelegate <NSObject>
 
 // Return an array of characters for a line number in accessibility-space.
-- (screen_char_t *)accessibilityHelperLineAtIndex:(int)accessibilityIndex;
+- (const screen_char_t *)accessibilityHelperLineAtIndex:(int)accessibilityIndex
+                                           continuation:(screen_char_t *)continuation;
 
 // Return the width of the screen in cells.
 - (int)accessibilityHelperWidth;
@@ -57,6 +58,7 @@
 - (NSInteger)lineForIndex:(NSUInteger)theIndex;
 - (NSRange)rangeForLine:(NSUInteger)lineNumber;
 - (NSString *)stringForRange:(NSRange)range;
+// WARNING! screenPosition is idiotic: y=0 is the top of the main screen and it increases going down.
 - (NSRange)rangeForPosition:(NSPoint)screenPosition;
 - (NSRange)rangeOfIndex:(NSUInteger)theIndex;
 - (NSRect)boundsForRange:(NSRange)range;

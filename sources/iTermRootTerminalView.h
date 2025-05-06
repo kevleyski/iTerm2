@@ -8,9 +8,12 @@
 
 #import <Cocoa/Cocoa.h>
 #import "SolidColorView.h"
+#import "VT100GridTypes.h"
 
+@class iTermImageView;
 @class iTermRootTerminalView;
 @class iTermStatusBarViewController;
+@protocol iTermSwipeHandler;
 @class iTermTabBarControlView;
 @protocol iTermTabBarControlViewDelegate;
 @class iTermToolbeltView;
@@ -18,18 +21,21 @@
 @protocol PSMTabBarControlDelegate;
 @class PTYTabView;
 
-@protocol iTermRootTerminalViewDelegate<iTermTabBarControlViewDelegate>
+@protocol iTermRootTerminalViewDelegate<iTermTabBarControlViewDelegate, iTermSwipeHandler>
 - (void)repositionWidgets;
 - (void)rootTerminalViewDidResizeContentArea;
 - (BOOL)haveTopBorder;
 - (BOOL)haveBottomBorder;
 - (BOOL)haveLeftBorder;
 - (BOOL)haveRightBorder;
+- (BOOL)haveRightBorderRegardlessOfScrollBar;
 - (BOOL)anyFullScreen;
 - (BOOL)tabBarAlwaysVisible;
 - (NSEdgeInsets)tabBarInsets;
 - (BOOL)exitingLionFullscreen;
 - (BOOL)enteringLionFullscreen;
+- (BOOL)lionFullScreen;
+- (BOOL)fullScreen;  // non-native full screen
 - (BOOL)divisionViewShouldBeVisible;
 - (NSWindow *)window;
 - (BOOL)enableStoplightHotbox;
@@ -38,12 +44,20 @@
 - (CGFloat)rootTerminalViewStoplightButtonsOffset:(iTermRootTerminalView *)sender;
 - (NSColor *)rootTerminalViewTabBarTextColorForTitle;
 - (NSColor *)rootTerminalViewTabBarTextColorForWindowNumber;
-- (NSColor *)rootTerminalViewTabBarBackgroundColor;
+- (NSColor *)rootTerminalViewTabBarBackgroundColorIgnoringTabColor:(BOOL)ignoreTabColor;
 - (BOOL)rootTerminalViewWindowNumberLabelShouldBeVisible;
 - (BOOL)rootTerminalViewShouldDrawWindowTitleInPlaceOfTabBar;
 - (NSImage *)rootTerminalViewCurrentTabIcon;
 - (BOOL)rootTerminalViewShouldDrawStoplightButtons;
+- (BOOL)rootTerminalViewShouldRevealStandardWindowButtons;
 - (iTermStatusBarViewController *)rootTerminalViewSharedStatusBarViewController;
+- (BOOL)rootTerminalViewWindowHasFullSizeContentView;
+- (BOOL)rootTerminalViewShouldLeaveEmptyAreaAtTop;
+- (BOOL)rootTerminalViewShouldHideTabBarBackingWhenTabBarIsHidden;
+- (VT100GridSize)rootTerminalViewCurrentSessionSize;
+- (NSString *)rootTerminalViewWindowSizeViewDetailString;
+- (void)rootTerminalViewWillLayoutSubviews;
+- (NSString *)rootTerminalViewCurrentTabSubtitle;
 @end
 
 extern const NSInteger iTermRootTerminalViewWindowNumberLabelMargin;
@@ -80,6 +94,7 @@ extern const NSInteger iTermRootTerminalViewWindowNumberLabelWidth;
 @property(nonatomic, readonly) BOOL scrollbarShouldBeVisible;
 
 @property(nonatomic, readonly) BOOL tabBarShouldBeVisible;
+@property(nonatomic, readonly) BOOL tabBarShouldBeVisibleEvenWhenOnLoan;
 
 @property(nonatomic, readonly) CGFloat tabviewWidth;
 
@@ -89,6 +104,9 @@ extern const NSInteger iTermRootTerminalViewWindowNumberLabelWidth;
 @property(nonatomic) BOOL useMetal;
 @property(nonatomic, readonly) BOOL tabBarControlOnLoan NS_AVAILABLE_MAC(10_14);
 @property(nonatomic, strong, readonly) iTermStatusBarViewController *statusBarViewController;
+@property(nonatomic, readonly) iTermImageView *backgroundImage NS_AVAILABLE_MAC(10_14);
+// Excludes the window number
+@property(nonatomic, readonly) NSString *windowTitle;
 
 - (instancetype)initWithFrame:(NSRect)frame
                         color:(NSColor *)color
@@ -124,5 +142,12 @@ extern const NSInteger iTermRootTerminalViewWindowNumberLabelWidth;
 - (CGFloat)maximumToolbeltWidthForViewWidth:(CGFloat)viewWidth;
 - (void)updateToolbeltProportionsIfNeeded;
 - (void)setToolbeltProportions:(NSDictionary *)proportions;
+- (void)invalidateAutomaticTabBarBackingHiding;
+- (void)setShowsWindowSize:(BOOL)showsWindowSize NS_AVAILABLE_MAC(10_14);
+- (void)windowDidResize;
+- (CGFloat)leftTabBarWidthForPreferredWidth:(CGFloat)preferredWidth contentWidth:(CGFloat)contentWidth;
+- (void)updateTitleAndBorderViews NS_AVAILABLE_MAC(10_14);
+- (void)setSubtitle:(NSString *)subtitle;
+- (void)setCurrentSessionAlpha:(CGFloat)alpha;
 
 @end

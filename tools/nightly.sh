@@ -2,14 +2,14 @@
 function die {
     echo "$@"
     echo "$@" | mail -s "Nightly build failure" $MY_EMAIL_ADDR
+    echo echo Nightly build failed at `date` >> ~/.login
+    echo "echo '$@'" >> ~/.login
     exit 1
 }
 # Usage: SparkleSign testing.xml template.xml signingkey
 function SparkleSign {
     LENGTH=$(ls -l iTerm2-${NAME}.zip | awk '{print $5}')
-    ruby "../../ThirdParty/SparkleSigningTools/sign_update.rb" iTerm2-${NAME}.zip $PRIVKEY > /tmp/sig.txt || die "Signing failed"
     ../../tools/sign_update iTerm2-${NAME}.zip "$3" > /tmp/newsig.txt || die SparkleSignNew
-    SIG=$(cat /tmp/sig.txt)
     NEWSIG=$(cat /tmp/newsig.txt)
     DATE=$(date +"%a, %d %b %Y %H:%M:%S %z")
     XML=$1
@@ -21,11 +21,27 @@ function SparkleSign {
     sed -e "s/%DATE%/${DATE}/" | \
     sed -e "s/%NAME%/${NAME}/" | \
     sed -e "s/%LENGTH%/$LENGTH/" | \
-    sed -e "s,%SIG%,${SIG}," | \
     sed -e "s,%NEWSIG%,${NEWSIG}," > $SVNDIR/source/appcasts/$1
     cp iTerm2-${NAME}.zip ~/iterm2-website/downloads/beta/
 }
 
+function retry {
+  local n=1
+  local max=5
+  local delay=60
+  while true; do
+    "$@" && break || {
+      if [[ $n -lt $max ]]; then
+        ((n++))
+        echo "Command failed. Attempt $n/$max:"
+        sleep $delay;
+        date
+      else
+        die "$@"
+      fi
+    }
+  done
+}
 
 set -x
 # todo: git pull origin master
@@ -34,7 +50,6 @@ make clean || die "Make clean failed"
 #security unlock-keychain -p "$ITERM_KEYCHAIN_PASSWORD" "$ITERM_KEYCHAIN"
 security unlock-keychain -p "$ITERM_KEYCHAIN_PASSWORD"
 make Nightly || die "Nightly build failed"
-tools/sign.sh
 COMPACTDATE=$(date +"%Y%m%d")-nightly
 VERSION=$(cat version.txt | sed -e "s/%(extra)s/$COMPACTDATE/")
 NAME=$(echo $VERSION | sed -e "s/\\./_/g")
@@ -52,21 +67,40 @@ cd build/Nightly
 # For the purposes of auto-update, the app's folder must be named iTerm.app since Sparkle won't accept a name change.
 rm -rf iTerm.app
 mv iTerm2.app iTerm.app
-zip -ry iTerm2-${NAME}.zip iTerm.app
+
+PRENOTARIZED_ZIP=iTerm2-${NAME}-prenotarized.zip
+zip -ry $PRENOTARIZED_ZIP iTerm.app
+retry xcrun notarytool submit --team-id H7V7XYVQ7D --apple-id "apple@georgester.com" --password "$NOTPASS" $PRENOTARIZED_ZIP > /tmp/upload.out 2>&1
+UUID=$(grep id: /tmp/upload.out | head -1 | sed -e 's/.*id: //')
+echo "uuid is $UUID"
+xcrun notarytool info --team-id H7V7XYVQ7D --apple-id "apple@georgester.com" --password "$NOTPASS" $UUID
+sleep 1
+while xcrun notarytool info --team-id H7V7XYVQ7D --apple-id "apple@georgester.com" --password "$NOTPASS" $UUID 2>&1 | egrep -i "in progress|Could not find the RequestUUID|Submission does not exist or does not belong to your team":
+do
+    echo "Trying again"
+    sleep 1
+done
+NOTARIZED_ZIP=iTerm2-${NAME}.zip
+xcrun stapler staple iTerm.app
+zip -ry $NOTARIZED_ZIP iTerm.app
 
 # Modern
 SparkleSign nightly_modern.xml nightly_modern_template.xml "$SIGNING_KEY"
-# Transitional
-SparkleSign nightly_new.xml nightly_new_template.xml "$SIGNING_KEY"
-# Legacy
-SparkleSign nightly.xml nightly_template.xml "$SIGNING_KEY"
 
 #https://github.com/Homebrew/homebrew-cask-versions/pull/6965
 #cask-repair --cask-url https://www.iterm2.com/nightly/latest -b --cask-version $CASK_VERSION iterm2-nightly < /dev/null
 
-scp  -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no iTerm2-${NAME}.zip gnachman@iterm2.com:iterm2.com/nightly/iTerm2-${NAME}.zip || die "scp zip"
-ssh  -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no gnachman@iterm2.com "./newnightly.sh iTerm2-${NAME}.zip" || die "ssh"
-scp  -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $SVNDIR/source/appcasts/nightly_changes.txt $SVNDIR/source/appcasts/nightly.xml $SVNDIR/source/appcasts/nightly_new.xml $SVNDIR/source/appcasts/nightly_modern.xml gnachman@iterm2.com:iterm2.com/appcasts/ || die "scp appcasts"
+cp iTerm2-${NAME}.zip ~/Dropbox/NightlyBuilds/
+set -x
+retry scp -vvv -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no iTerm2-${NAME}.zip gnachman@bryan:iterm2.com/nightly/iTerm2-${NAME}.zip || die "scp zip"
+retry ssh -vvv -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no gnachman@bryan "./newnightly.sh iTerm2-${NAME}.zip" || die "ssh"
+retry scp -vvv -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $SVNDIR/source/appcasts/nightly_changes.txt $SVNDIR/source/appcasts/nightly_modern.xml gnachman@bryan:iterm2.com/appcasts/ || die "scp appcasts"
+
+retry curl -v -X POST "https://api.cloudflare.com/client/v4/zones/$CFZONE/purge_cache" \
+     -H "X-Auth-Email: gnachman@gmail.com" \
+     -H "X-Auth-Key: $CFKEY" \
+     -H "Content-Type: application/json" \
+     --data '{"files":["https://iterm2.com/nightly/latest"]}'
 
 cd $SVNDIR
 git add source/appcasts/nightly_changes.txt

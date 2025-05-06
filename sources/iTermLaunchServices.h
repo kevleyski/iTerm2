@@ -12,6 +12,8 @@
 @interface iTermLaunchServices : NSObject
 
 + (instancetype)sharedInstance;
+- (void)registerForiTerm2Scheme;
+
 - (void)connectBookmarkWithGuid:(NSString*)guid toScheme:(NSString*)scheme;
 - (void)disconnectHandlerForScheme:(NSString*)scheme;
 
@@ -25,6 +27,7 @@
 // Tries to open a file. If no app is associated with the UTI, offer the user an open panel to
 // choose an application. Associate the selected app as a view and reopen, if he picks one.
 - (BOOL)openFile:(NSString *)fullPath;
+- (BOOL)openFile:(NSString *)fullPath fragment:(NSString *)fragment;
 
 - (BOOL)iTermIsDefaultForScheme:(NSString *)scheme;
 

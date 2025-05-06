@@ -23,7 +23,8 @@ extern NSString *const iTermScriptHistoryEntryFieldRPCValue;  // RPC changed
 @property (nonatomic, readonly) BOOL isRunning;
 @property (nonatomic, readonly) NSString *name;
 @property (nonatomic, readonly) NSString *identifier;
-@property (nonatomic) int pid;
+@property (nonatomic, copy) NSArray<NSNumber *> *pids;
+@property (nonatomic, readonly) pid_t onlyPid;  // Returns the pid if there's only one, otherwise 0
 @property (nonatomic, readonly) NSArray<NSString *> *logLines;
 @property (nonatomic, readonly) NSArray<NSString *> *callEntries;
 @property (nonatomic, weak) iTermWebSocketConnection *websocketConnection;
@@ -34,13 +35,16 @@ extern NSString *const iTermScriptHistoryEntryFieldRPCValue;  // RPC changed
 @property (nonatomic, readonly, nullable) NSString *fullPath;  // This can be passed to launchScriptWithAbsolutePath:
 
 + (instancetype)globalEntry;
++ (instancetype)apsEntry;
++ (instancetype)dynamicProfilesEntry;
++ (instancetype)smartSelectionAnctionsEntry;
 - (instancetype)initWithName:(NSString *)name
                     fullPath:(nullable NSString *)fullPath
                   identifier:(NSString *)identifier
                     relaunch:(void (^ _Nullable)(void))relaunch NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
-- (void)addOutput:(NSString *)output;
+- (void)addOutput:(NSString *)output completion:(void (^)(void))completion;
 - (void)addClientOriginatedRPC:(NSString *)rpc;
 - (void)addServerOriginatedRPC:(NSString *)rpc;
 - (void)stopRunning;
@@ -60,7 +64,8 @@ extern NSString *const iTermScriptHistoryNumberOfEntriesDidChangeNotification;
 - (iTermScriptHistoryEntry *)entryWithIdentifier:(NSString *)identifier;
 - (iTermScriptHistoryEntry *)runningEntryWithPath:(NSString *)path;
 - (iTermScriptHistoryEntry *)runningEntryWithFullPath:(NSString *)fullPath;
-
+- (void)addAPSLoggingEntryIfNeeded;
+- (void)addDynamicProfilesLoggingEntryIfNeeded;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) NSImage *image;
 @property (nonatomic) NSRect frame;
 @property (nonatomic) CGFloat alpha;
+@property (nonatomic) BOOL dark;
 @end
 
 NS_CLASS_AVAILABLE(10_11, NA)
@@ -29,6 +30,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
 
 - (void)reset;
 - (void)addIndicator:(iTermIndicatorDescriptor *)indicator
+          colorSpace:(NSColorSpace *)colorSpace
              context:(iTermMetalBufferPoolContext *)context;
 
 @end

@@ -1,6 +1,8 @@
 #import <Cocoa/Cocoa.h>
 #import "CPKSliderView.h"
 
+@class CPKColor;
+
 typedef NS_ENUM(NSInteger, CPKColorComponentSliderType) {
     kCPKColorComponentSliderTypeHue,
     kCPKColorComponentSliderTypeSaturation,
@@ -17,7 +19,7 @@ typedef NS_ENUM(NSInteger, CPKColorComponentSliderType) {
 @interface CPKColorComponentSliderView : CPKSliderView
 
 /** The selected color. Setting this sets the selectedValue and updates the gradient. */
-@property(nonatomic) NSColor *color;
+@property(nonatomic) CPKColor *color;
 
 /** The slider type. */
 @property(nonatomic) CPKColorComponentSliderType type;
@@ -33,11 +35,15 @@ typedef NS_ENUM(NSInteger, CPKColorComponentSliderType) {
  * @return An initialized instance.
  */
 - (instancetype)initWithFrame:(NSRect)frame
-                        color:(NSColor *)color
+                        color:(CPKColor *)color
+                   colorSpace:(NSColorSpace *)colorSpace
                          type:(CPKColorComponentSliderType)type
                         block:(void (^)(CGFloat))block;
 
+- (instancetype)initWithFrame:(NSRect)frameRect NS_UNAVAILABLE;
+- (instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
+
 /** Changes the colors in the slider's gradient but does not update the selection. */
-- (void)setGradientColor:(NSColor *)color;
+- (void)setGradientColor:(CPKColor *)color;
 
 @end

@@ -8,6 +8,9 @@
 #import "iTermTimestampsRenderer.h"
 
 #import "FutureMethods.h"
+#import "NSImage+iTerm.h"
+#import "iTermGraphicsUtilities.h"
+#import "iTermSharedImageStore.h"
 #import "iTermTexturePool.h"
 #import "iTermTimestampDrawHelper.h"
 
@@ -15,10 +18,14 @@
 @property (nonatomic) CGFloat width;
 @property (nonatomic) vector_float4 textColor;
 @property (nonatomic) vector_float4 backgroundColor;
-@property (nonatomic) NSTimeInterval date;
+@property (nonatomic) NSString *string;
 @end
 
 @implementation iTermTimestampKey
+
+- (NSUInteger)hash {
+    return [_string hash];
+}
 
 - (BOOL)isEqual:(id)other {
     if (![other isKindOfClass:[iTermTimestampKey class]]) {
@@ -32,7 +39,7 @@
             _backgroundColor.x == otherKey->_backgroundColor.x &&
             _backgroundColor.y == otherKey->_backgroundColor.y &&
             _backgroundColor.z == otherKey->_backgroundColor.z &&
-            _date == otherKey->_date);
+            (_string == otherKey->_string || [_string isEqual:otherKey->_string]));
 }
 
 @end
@@ -68,6 +75,7 @@
     [_pooledTextures addObject:pooledTexture];
 }
 
+// frame arg to block is in points, not pixels.
 - (void)enumerateRows:(void (^)(int row, iTermTimestampKey *key, NSRect frame))block {
     assert(_timestamps);
     const CGFloat rowHeight = self.cellConfiguration.cellSize.height / self.cellConfiguration.scale;
@@ -77,7 +85,9 @@
                                                                             now:[NSDate timeIntervalSinceReferenceDate]
                                                              useTestingTimezone:NO
                                                                       rowHeight:rowHeight
-                                                                         retina:self.configuration.scale > 1];
+                                                                         retina:self.configuration.scale > 1
+                                                                           font:self.font
+                                                                       obscured:self.obscured];
         [_timestamps enumerateObjectsUsingBlock:^(NSDate * _Nonnull date, NSUInteger idx, BOOL * _Nonnull stop) {
             [self->_drawHelper setDate:date forLine:idx];
         }];
@@ -91,16 +101,24 @@
                                                            _backgroundColor.greenComponent,
                                                            _backgroundColor.blueComponent,
                                                            _backgroundColor.alphaComponent);
+    const CGFloat scale = self.configuration.scale;
+    const CGFloat vmargin = self.margins.bottom / scale;
+
+    const CGFloat gridWidth = self.cellConfiguration.gridSize.width * self.cellConfiguration.cellSize.width;
+    const NSEdgeInsets margins = self.margins;
+    // The right gutter includes the scrollbar if legacy scrollbars are on.
+    const CGFloat rightGutterWidth = self.configuration.viewportSize.x - margins.left - margins.right - gridWidth - self.configuration.rightExtraPixels;
+
     [_timestamps enumerateObjectsUsingBlock:^(NSDate * _Nonnull date, NSUInteger idx, BOOL * _Nonnull stop) {
         iTermTimestampKey *key = [[iTermTimestampKey alloc] init];
         key.width = visibleWidth;
         key.textColor = textColor;
         key.backgroundColor = backgroundColor;
-        key.date = [self->_drawHelper rowIsRepeat:idx] ? 0 : round(date.timeIntervalSinceReferenceDate);
+        key.string = [self->_drawHelper rowIsRepeat:idx] ? @"(repeat)" : [self->_drawHelper stringForRow:idx];
         block(idx,
               key,
-              NSMakeRect(self.configuration.viewportSize.x / self.configuration.scale - visibleWidth,
-                         self.configuration.viewportSize.y / self.configuration.scale - ((idx + 1) * rowHeight),
+              NSMakeRect((self.configuration.viewportSize.x - rightGutterWidth) / scale - visibleWidth,
+                         self.configuration.viewportSize.y / scale - ((idx + 1) * rowHeight) - vmargin,
                          visibleWidth,
                          rowHeight));
 
@@ -111,12 +129,17 @@
     NSSize size = NSMakeSize(_drawHelper.suggestedWidth,
                              self.cellConfiguration.cellSize.height / self.cellConfiguration.scale);
     assert(size.width * size.height > 0);
-    NSImage *image = [[NSImage alloc] initWithSize:size];
-    [image lockFocus];
-    [_drawHelper drawRow:row
-               inContext:[NSGraphicsContext currentContext]
-                   frame:NSMakeRect(0, 0, size.width, size.height)];
-    [image unlockFocus];
+    NSImage *image = [[NSImage flippedImageOfSize:size drawBlock:^{
+        NSGraphicsContext *context = [NSGraphicsContext currentContext];
+        iTermSetSmoothing(context.CGContext,
+                          NULL,
+                          self.useThinStrokes,
+                          self.antialiased);
+        [_drawHelper drawRow:row
+                   inContext:[NSGraphicsContext currentContext]
+                       frame:NSMakeRect(0, 0, size.width, size.height)
+               virtualOffset:0];
+    }] it_verticallyFlippedImage];
 
     return image;
 }
@@ -125,6 +148,7 @@
 
 @implementation iTermTimestampsRenderer {
     iTermMetalCellRenderer *_cellRenderer;
+    NSColorSpace *_colorSpace;  // cache is only valid for this color space.
     NSCache<iTermTimestampKey *, iTermPooledTexture *> *_cache;
     iTermTexturePool *_texturePool;
 }
@@ -136,7 +160,7 @@
         iTermMetalBlending *blending = [[iTermMetalBlending alloc] init];
 #if ENABLE_TRANSPARENT_METAL_WINDOWS
         if (iTermTextIsMonochrome()) {
-            blending = [iTermMetalBlending premultipliedCompositing];
+            blending = [iTermMetalBlending atop];  // IS THIS RIGHT EVERYWEHRE?
         }
 #endif
         _cellRenderer = [[iTermMetalCellRenderer alloc] initWithDevice:device
@@ -178,22 +202,34 @@
     iTermTimestampsRendererTransientState *tState = transientState;
     _cache.countLimit = tState.cellConfiguration.gridSize.height * 4;
     const CGFloat scale = tState.configuration.scale;
+    if (![NSObject object:tState.configuration.colorSpace isEqualToObject:_colorSpace]) {
+        [_cache removeAllObjects];
+        _colorSpace = tState.configuration.colorSpace;
+    }
+
     [tState enumerateRows:^(int row, iTermTimestampKey *key, NSRect frame) {
         iTermPooledTexture *pooledTexture = [self->_cache objectForKey:key];
         if (!pooledTexture) {
             NSImage *image = [tState imageForRow:row];
             iTermMetalBufferPoolContext *context = tState.poolContext;
-            id<MTLTexture> texture = [self->_cellRenderer textureFromImage:image
+            id<MTLTexture> texture = [self->_cellRenderer textureFromImage:[iTermImageWrapper withImage:image]
                                                                    context:context
-                                                                      pool:self->_texturePool];
+                                                                      pool:self->_texturePool
+                                                                colorSpace:tState.configuration.colorSpace];
             assert(texture);
             pooledTexture = [[iTermPooledTexture alloc] initWithTexture:texture
                                                                    pool:self->_texturePool];
             [self->_cache setObject:pooledTexture forKey:key];
         }
         [tState addPooledTexture:pooledTexture];
-        assert(tState.configuration.viewportSize.x > pooledTexture.texture.width);
-        tState.vertexBuffer = [self->_cellRenderer newQuadWithFrame:CGRectMake(frame.origin.x * scale,
+        CGFloat overflow;
+        const CGFloat slop = iTermTimestampGradientWidth * scale;
+        if (pooledTexture.texture.width < tState.configuration.viewportSize.x + slop) {
+            overflow = 0;
+        } else {
+            overflow = pooledTexture.texture.width - tState.configuration.viewportSize.x - slop;
+        }
+        tState.vertexBuffer = [self->_cellRenderer newQuadWithFrame:CGRectMake(frame.origin.x * scale + overflow,
                                                                                frame.origin.y * scale,
                                                                                frame.size.width * scale,
                                                                                frame.size.height * scale)

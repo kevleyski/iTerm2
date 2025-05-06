@@ -7,9 +7,24 @@
 //
 
 #import <Cocoa/Cocoa.h>
+
+#include "NSImage+iTerm.h"
+#import "NSStringITerm.h"
 #import "NSMutableAttributedString+iTerm.h"
 
+NSAttributedStringKey iTermReplacementBaseCharacterAttributeName = @"iTermReplacementBaseCharacterAttributeName";
+
 @implementation NSMutableAttributedString (iTerm)
+
++ (CGFloat)kernForString:(NSString *)string
+             toHaveWidth:(CGFloat)desiredWidth
+                withFont:(NSFont *)font {
+    const CGFloat actualWidth = [string sizeWithAttributes:@{NSFontAttributeName: font}].width;
+    if (actualWidth <= 0 || desiredWidth <= 0) {
+        return 0;
+    }
+    return desiredWidth - actualWidth;
+}
 
 - (void)iterm_appendString:(NSString *)string {
     NSDictionary *attributes;
@@ -23,8 +38,12 @@
 }
 
 - (void)iterm_appendString:(NSString *)string withAttributes:(NSDictionary *)attributes {
-    [self appendAttributedString:[[[NSAttributedString alloc] initWithString:string
-                                                                  attributes:attributes] autorelease]];
+    NSNumber *base = attributes[iTermReplacementBaseCharacterAttributeName];
+    if (base) {
+        string = [string stringByReplacingBaseCharacterWith:base.unsignedIntegerValue];
+    }
+    [self appendAttributedString:[[NSAttributedString alloc] initWithString:string
+                                                                 attributes:attributes]];
 }
 
 - (void)trimTrailingWhitespace {
@@ -46,12 +65,30 @@
     }
 }
 
+- (void)appendCharacter:(unichar)c withAttributes:(NSDictionary *)attributes {
+    [self iterm_appendString:[NSString stringWithLongCharacter:c] withAttributes:attributes];
+}
+
 @end
 
 @implementation NSAttributedString (iTerm)
 
 + (instancetype)attributedStringWithString:(NSString *)string attributes:(NSDictionary *)attributes {
-    return [[[NSAttributedString alloc] initWithString:string attributes:attributes] autorelease];
+    return [[NSAttributedString alloc] initWithString:string attributes:attributes];
+}
+
++ (instancetype)attributedStringWithLinkToURL:(NSString *)urlString string:(NSString *)string {
+    NSDictionary *linkAttributes = @{ NSLinkAttributeName: [NSURL URLWithString:urlString] };
+    return [[NSAttributedString alloc] initWithString:string
+                                           attributes:linkAttributes];
+}
+
++ (instancetype)attributedStringWithAttributedStrings:(NSArray<NSAttributedString *> *)strings {
+    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] init];
+    for (NSAttributedString *attributedString in strings) {
+        [result appendAttributedString:attributedString];
+    }
+    return result;
 }
 
 - (CGFloat)heightForWidth:(CGFloat)maxWidth {
@@ -61,14 +98,14 @@
 
     NSSize size = NSMakeSize(maxWidth, FLT_MAX);
     NSTextContainer *textContainer =
-        [[[NSTextContainer alloc] initWithContainerSize:size] autorelease];
+        [[NSTextContainer alloc] initWithContainerSize:size];
     NSTextStorage *textStorage =
-        [[[NSTextStorage alloc] initWithAttributedString:self] autorelease];
-    NSLayoutManager *layoutManager = [[[NSLayoutManager alloc] init] autorelease];
+        [[NSTextStorage alloc] initWithAttributedString:self];
+    NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
 
     [layoutManager addTextContainer:textContainer];
     [textStorage addLayoutManager:layoutManager];
-    [layoutManager setHyphenationFactor:0.0];
+    layoutManager.usesDefaultHyphenation = NO;
 
     // Force layout.
     [layoutManager glyphRangeForTextContainer:textContainer];
@@ -107,6 +144,52 @@
     }];
     [result addObject:[self attributedSubstringFromRange:NSMakeRange(startAt, string.length - startAt)]];
 
+    return result;
+}
+
+- (NSAttributedString *)attributedStringByRemovingColor {
+    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] init];
+    [self enumerateAttributesInRange:NSMakeRange(0, self.length)
+                             options:0
+                          usingBlock:^(NSDictionary<NSAttributedStringKey, id> * _Nonnull attrs,
+                                       NSRange range,
+                                       BOOL * _Nonnull stop) {
+        if (attrs[NSAttachmentAttributeName]) {
+            NSTextAttachment *attachment = attrs[NSAttachmentAttributeName];
+            NSTextAttachment *replacement = [[NSTextAttachment alloc] init];
+            replacement.image = [attachment.image grayscaleImage];
+            [result appendAttributedString:[NSAttributedString attributedStringWithAttachment:replacement]];
+            return;
+        }
+        
+        NSString *string = [self.string substringWithRange:range];
+        NSMutableDictionary *attributes = [attrs mutableCopy];
+        [attributes removeObjectForKey:NSBackgroundColorAttributeName];
+        [attributes removeObjectForKey:NSForegroundColorAttributeName];
+        NSAttributedString *attributedString = [[NSAttributedString alloc] initWithString:string attributes:attributes];
+        [result appendAttributedString:attributedString];
+    }];
+    return result;
+}
+
+- (NSAttributedString *)attributedStringByAppendingAttributedString:(NSAttributedString *)other {
+    NSMutableAttributedString *result = [self mutableCopy];
+    [result appendAttributedString:other];
+    return result;
+}
+
+@end
+
+@implementation NSArray(iTermAttributedString)
+
+- (NSAttributedString *)it_componentsJoinedBySeparator:(NSAttributedString *)separator {
+    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] init];
+    [self enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        if (idx > 0) {
+            [result appendAttributedString:separator];
+        }
+        [result appendAttributedString:obj];
+    }];
     return result;
 }
 

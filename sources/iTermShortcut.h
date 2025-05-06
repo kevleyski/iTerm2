@@ -10,18 +10,20 @@
 #import "NSDictionary+iTerm.h"
 #import "ProfileModel.h"
 
+@class iTermKeystroke;
+
 extern const NSEventModifierFlags kHotKeyModifierMask;
 extern CGFloat kShortcutPreferredHeight;
 
 // Describes a keyboard shortcut for opening a hotkey window.
 @interface iTermShortcut : NSObject<NSCopying>
 @property(nonatomic, assign) NSUInteger keyCode;
+@property(nonatomic, assign) BOOL hasKeyCode;
 @property(nonatomic, assign) NSEventModifierFlags modifiers;
 @property(nonatomic, copy) NSString *characters;
 @property(nonatomic, copy) NSString *charactersIgnoringModifiers;
-
-// A string describing the shortcut. This is how shortcuts are stored in preferences.
-@property(nonatomic, readonly) NSString *identifier;
+@property(nonatomic, readonly) BOOL smellsAccidental;
+@property(nonatomic, readonly) iTermKeystroke *keystroke;
 
 // Suitable for display.
 @property(nonatomic, readonly) NSString *stringValue;
@@ -45,10 +47,13 @@ extern CGFloat kShortcutPreferredHeight;
 // Returns the shortcut for a keydown event.
 + (instancetype)shortcutWithEvent:(NSEvent *)event;
 
++ (instancetype)shortcutWithEvent:(NSEvent *)event leaderAllowed:(BOOL)leaderAllowed;
+
 + (NSString *)shortStringForDictionary:(NSDictionary *)dict;
 + (NSDictionary *)dictionaryForShortString:(NSString *)string;
 
 - (instancetype)initWithKeyCode:(NSUInteger)code
+                     hasKeyCode:(BOOL)hasKeyCode
                       modifiers:(NSEventModifierFlags)modifiers
                      characters:(NSString *)characters
     charactersIgnoringModifiers:(NSString *)charactersIgnoringModifiers NS_DESIGNATED_INITIALIZER;

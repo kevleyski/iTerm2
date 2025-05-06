@@ -13,6 +13,7 @@
 #import "iTermAPIScriptLauncher.h"
 #import "iTermApplication.h"
 #import "iTermApplicationDelegate.h"
+#import "iTermObject.h"
 #import "iTermScriptFunctionCall.h"
 #import "iTermScriptHistory.h"
 #import "iTermScriptsMenuController.h"
@@ -21,12 +22,22 @@
 #import "iTermVariableReference.h"
 #import "iTermWarning.h"
 #import "NSArray+iTerm.h"
+#import "NSAttributedString+PSM.h"
+#import "NSData+iTerm.h"
+#import "NSFileManager+iTerm.h"
 #import "NSJSONSerialization+iTerm.h"
 #import "NSObject+iTerm.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration request";
+static NSString *const iTermStatusBarRPCRegistrationRequestKey_Deprecated = @"registration request";  // legacy, NSData value which cannot be JSON encoded for profile export or Python API
+static NSString *const iTermStatusBarRPCRegistrationRequestV2Key = @"registration request v2";  // use this instead, has a base64-encoded string
+
+@class iTermStatusBarRPCProvidedTextComponentCommon;
+
+@protocol iTermStatusBarRPCProvidedTextComponent
+- (iTermStatusBarRPCProvidedTextComponentCommon *)commonImplementation;
+@end
 
 @interface ITMRPCRegistrationRequest(StatusBar)
 @property (nonatomic, readonly) NSDictionary *statusBarConfiguration;
@@ -36,7 +47,7 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
 @implementation ITMRPCRegistrationRequest(StatusBar)
 
 - (NSDictionary *)statusBarConfiguration {
-    return @{ iTermStatusBarRPCRegistrationRequestKey: self.data,
+    return @{ iTermStatusBarRPCRegistrationRequestV2Key: [self.data base64EncodedStringWithOptions:0],
               iTermStatusBarComponentConfigurationKeyKnobValues: @{} };
 }
 
@@ -49,6 +60,10 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
 @implementation iTermStatusBarRPCComponentFactory {
     ITMRPCRegistrationRequest *_savedRegistrationRequest;
     // NOTE: If mutable state is added, change copyWithZone:
+}
+
++ (BOOL)supportsSecureCoding {
+    return YES;
 }
 
 - (instancetype)initWithRegistrationRequest:(ITMRPCRegistrationRequest *)registrationRequest {
@@ -99,15 +114,35 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
 
 - (id<iTermStatusBarComponent>)newComponentWithKnobs:(NSDictionary *)knobs
                                      layoutAlgorithm:(iTermStatusBarLayoutAlgorithmSetting)layoutAlgorithm
-                                               scope:(iTermVariableScope *)scope {
-    return [[iTermStatusBarRPCProvidedTextComponent alloc] initWithRegistrationRequest:_savedRegistrationRequest.latestStatusBarRequest
-                                                                                 scope:scope
-                                                                                 knobs:knobs];
+                                               scope:(nullable iTermVariableScope *)scope {
+    ITMRPCRegistrationRequest *request = _savedRegistrationRequest.latestStatusBarRequest;
+    switch (request.statusBarComponentAttributes.format) {
+        case ITMRPCRegistrationRequest_StatusBarComponentAttributes_Format_PlainText:
+            return [[iTermStatusBarRPCProvidedTextComponent alloc] initWithRegistrationRequest:request
+                                                                                         scope:scope
+                                                                                         knobs:knobs];
+        case ITMRPCRegistrationRequest_StatusBarComponentAttributes_Format_Html:
+            return [[iTermStatusBarRPCProvidedAttributedTextComponent alloc] initWithRegistrationRequest:request
+                                                                                                   scope:scope
+                                                                                                   knobs:knobs];
+    }
+    return nil;
 }
 
 @end
 
-@implementation iTermStatusBarRPCProvidedTextComponent {
+@protocol iTermStatusBarRPCProvidedTextComponentCommonDelegate<NSObject>
+@property(nonatomic, readonly) NSTextField *textField;
+@property(nonatomic, readonly) iTermVariableScope *scope;
+- (void)updateTextFieldIfNeeded;
+@end
+
+@interface iTermStatusBarRPCProvidedTextComponentCommon: NSObject<iTermObject>
+@property(nonatomic, weak) id<iTermStatusBarRPCProvidedTextComponentCommonDelegate> delegate;
+@property(nonatomic, copy) NSDictionary<iTermStatusBarComponentConfigurationKey,id> *configuration;
+@end
+
+@implementation iTermStatusBarRPCProvidedTextComponentCommon {
     ITMRPCRegistrationRequest *_savedRegistrationRequest;
     NSArray<NSString *> *_variants;
     NSArray<iTermVariableReference *> *_dependencies;
@@ -115,51 +150,71 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
     NSString *_errorMessage;  // Nil if the last evaluation was successful.
     NSDate *_dateOfLaunchToFix;
     NSString *_fullPath;
+    BOOL _computedIcon;
+    NSImage *_icon;
 }
 
 - (instancetype)initWithRegistrationRequest:(ITMRPCRegistrationRequest *)registrationRequest
                                       scope:(iTermVariableScope *)scope
                                       knobs:(NSDictionary *)knobs {
-    return [self initWithConfiguration:@{ iTermStatusBarRPCRegistrationRequestKey: registrationRequest.data,
+    return [self initWithConfiguration:@{ iTermStatusBarRPCRegistrationRequestV2Key: [registrationRequest.data base64EncodedStringWithOptions:0],
                                           iTermStatusBarComponentConfigurationKeyKnobValues: knobs }
                                  scope:scope];
 }
 
 - (instancetype)initWithConfiguration:(NSDictionary<iTermStatusBarComponentConfigurationKey,id> *)configuration
                                 scope:(nullable iTermVariableScope *)realScope {
-    NSData *data = configuration[iTermStatusBarRPCRegistrationRequestKey];;
+    NSData *data = configuration[iTermStatusBarRPCRegistrationRequestKey_Deprecated];
+    if (!data) {
+        NSString *b64 = [NSString castFrom:configuration[iTermStatusBarRPCRegistrationRequestV2Key]];
+        data = [NSData dataWithBase64EncodedString:b64];
+    }
     ITMRPCRegistrationRequest *registrationRequest = [[ITMRPCRegistrationRequest alloc] initWithData:data
                                                                                                error:nil];
     if (!registrationRequest) {
         return nil;
     }
-    self = [super initWithConfiguration:configuration scope:realScope];
+    self = [super init];
     if (self) {
         _savedRegistrationRequest = registrationRequest;
-        iTermVariableRecordingScope *scope = [[iTermVariableRecordingScope alloc] initWithScope:self.scope];
-        scope.neverReturnNil = YES;
-        [iTermScriptFunctionCall callFunction:self.invocation
-                                      timeout:0
-                                        scope:scope
-                                   completion:^(id value, NSError *error, NSSet<NSString *> *missingFunctions) {}];
-        _dependencies = [scope recordedReferences];
-        __weak __typeof(self) weakSelf = self;
-        [_dependencies enumerateObjectsUsingBlock:^(iTermVariableReference * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
-            obj.onChangeBlock = ^{
-                [weakSelf updateWithKnobValues:weakSelf.configuration[iTermStatusBarComponentConfigurationKeyKnobValues]];
-            };
-        }];
-        [self updateWithKnobValues:self.configuration[iTermStatusBarComponentConfigurationKeyKnobValues]];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(registeredFunctionsDidChange:)
-                                                     name:iTermAPIRegisteredFunctionsDidChangeNotification
-                                                   object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(didRegisterStatusBarComponent:)
-                                                     name:iTermAPIDidRegisterStatusBarComponentNotification
-                                                   object:nil];
+        _configuration = [configuration copy];
     }
     return self;
+}
+
+- (BOOL)isEqual:(id)other {
+    if (![other isKindOfClass:[iTermStatusBarRPCProvidedTextComponentCommon class]]) {
+        return NO;
+    }
+    iTermStatusBarRPCProvidedTextComponentCommon *rhs = other;
+    return [NSObject object:_savedRegistrationRequest.statusBarComponentAttributes.uniqueIdentifier
+            isEqualToObject:rhs->_savedRegistrationRequest.statusBarComponentAttributes.uniqueIdentifier];
+}
+
+- (void)finishInitialization {
+    iTermVariableRecordingScope *scope = [[iTermVariableRecordingScope alloc] initWithScope:self.delegate.scope];
+    scope.neverReturnNil = YES;
+    [iTermScriptFunctionCall callFunction:self.invocation
+                                  timeout:0
+                                    scope:scope
+                               retainSelf:YES
+                               completion:^(id value, NSError *error, NSSet<NSString *> *missingFunctions) {}];
+    _dependencies = [scope recordedReferences];
+    __weak __typeof(self) weakSelf = self;
+    [_dependencies enumerateObjectsUsingBlock:^(iTermVariableReference * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        obj.onChangeBlock = ^{
+            [weakSelf updateWithKnobValues:weakSelf.configuration[iTermStatusBarComponentConfigurationKeyKnobValues]];
+        };
+    }];
+    [self updateWithKnobValues:self.configuration[iTermStatusBarComponentConfigurationKeyKnobValues]];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(registeredFunctionsDidChange:)
+                                                 name:iTermAPIRegisteredFunctionsDidChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(didRegisterStatusBarComponent:)
+                                                 name:iTermAPIDidRegisterStatusBarComponentNotification
+                                               object:nil];
 }
 
 - (void)dealloc {
@@ -171,8 +226,8 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
     ITMRPCRegistrationRequest_RPCArgument *knobs = [[ITMRPCRegistrationRequest_RPCArgument alloc] init];
     knobs.name = @"knobs";
     knobs.path = @"__knobs";
-    return [iTermAPIHelper invocationWithName:_savedRegistrationRequest.latestStatusBarRequest.name
-                                     defaults:[defaults arrayByAddingObject:knobs]];
+    return [iTermAPIHelper invocationWithFullyQualifiedName:_savedRegistrationRequest.latestStatusBarRequest.it_fullyQualifiedName
+                                                   defaults:[defaults arrayByAddingObject:knobs]];
 }
 
 - (NSString *)statusBarComponentIdentifier {
@@ -180,15 +235,13 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
     return _savedRegistrationRequest.statusBarComponentAttributes.uniqueIdentifier ?: [[NSUUID UUID] UUIDString];
 }
 
-- (NSTextField *)newTextField {
-    NSTextField *textField = [super newTextField];
+- (void)initializeTextField:(NSTextField *)textField {
     NSClickGestureRecognizer *recognizer = [[NSClickGestureRecognizer alloc] init];
     recognizer.buttonMask = 1;
     recognizer.numberOfClicksRequired = 1;
     recognizer.target = self;
     recognizer.action = @selector(onClick:);
     [textField addGestureRecognizer:recognizer];
-    return textField;
 }
 
 - (id<iTermStatusBarComponentFactory>)statusBarComponentFactory {
@@ -207,6 +260,41 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
     [self updateWithKnobValues:self.configuration[iTermStatusBarComponentConfigurationKeyKnobValues]];
 }
 
+- (nullable NSImage *)statusBarComponentIcon {
+    if (_savedRegistrationRequest.latestStatusBarRequest.statusBarComponentAttributes.iconsArray.count == 0) {
+        return nil;
+    }
+    if (_computedIcon) {
+        return _icon;
+    }
+    _computedIcon = YES;
+    __block NSSize sizeInPoints = NSZeroSize;
+    NSArray<NSBitmapImageRep *> *reps = [_savedRegistrationRequest.latestStatusBarRequest.statusBarComponentAttributes.iconsArray mapWithBlock:^id(ITMRPCRegistrationRequest_StatusBarComponentAttributes_Icon *proto) {
+        NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithData:proto.data_p];
+        if (!rep) {
+            return nil;
+        }
+        if (proto.scale <= 0) {
+            return nil;
+        }
+        if (NSEqualSizes(NSZeroSize, sizeInPoints)) {
+            sizeInPoints = rep.size;
+            sizeInPoints.width = round(sizeInPoints.width / proto.scale);
+            sizeInPoints.height = round(sizeInPoints.height / proto.scale);
+        }
+        return rep;
+    }];
+    if (sizeInPoints.width <= 0 || sizeInPoints.height <= 0) {
+        return nil;
+    }
+    NSImage *image = [[NSImage alloc] initWithSize:sizeInPoints];
+    for (NSBitmapImageRep *rep in reps) {
+        [image addRepresentation:rep];
+    }
+    _icon = image;
+    return _icon;
+}
+
 - (iTermStatusBarComponentKnobType)knobTypeFromDescriptorType:(ITMRPCRegistrationRequest_StatusBarComponentAttributes_Knob_Type)type {
     switch (type) {
         case ITMRPCRegistrationRequest_StatusBarComponentAttributes_Knob_Type_Color:
@@ -221,7 +309,7 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
     return iTermStatusBarComponentKnobTypeText;
 }
 
-- (NSArray<iTermStatusBarComponentKnob *> *)statusBarComponentKnobs {
+- (NSArray<iTermStatusBarComponentKnob *> *)amendedStatusBarComponentKnobs:(NSArray<iTermStatusBarComponentKnob *> *)superKnobs {
     NSArray<iTermStatusBarComponentKnob *> *knobs;
     knobs = [_savedRegistrationRequest.latestStatusBarRequest.statusBarComponentAttributes.knobsArray mapWithBlock:^id(ITMRPCRegistrationRequest_StatusBarComponentAttributes_Knob *descriptor) {
         return [[iTermStatusBarComponentKnob alloc] initWithLabelText:descriptor.name
@@ -230,7 +318,7 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
                                                          defaultValue:descriptor.hasJsonDefaultValue ? [NSJSONSerialization it_objectForJsonString:descriptor.jsonDefaultValue] : nil
                                                                   key:descriptor.key];
     }] ?: @[];
-    return [knobs arrayByAddingObjectsFromArray:[super statusBarComponentKnobs]];
+    return [knobs arrayByAddingObjectsFromArray:superKnobs];
 }
 
 - (id)statusBarComponentExemplarWithBackgroundColor:(NSColor *)backgroundColor
@@ -246,14 +334,25 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
     return _variants ?: @[ @"" ];
 }
 
+- (BOOL)statusBarComponentIsEmpty {
+    return _variants.count == 0 || [_variants allWithBlock:^BOOL(NSString *anObject) {
+        return anObject.length == 0;
+    }];
+}
+
 - (void)updateWithKnobValues:(NSDictionary<NSString *, id> *)knobValues {
     __weak __typeof(self) weakSelf = self;
-    iTermVariableScope *scope = [self.scope copy];
+    iTermVariableScope *scope = [self.delegate.scope copy];
     if (!scope) {
         // This happens in the setup UI because the component is not attached to a real session. To
         // avoid spurious errors, do not actually evaluate the invocation.
         return;
     }
+    DLog(@"Update status bar component %@ instance %p for session %@\n%@",
+         _savedRegistrationRequest.statusBarComponentAttributes.uniqueIdentifier,
+         self,
+         [scope valueForVariableName:iTermVariableKeySessionID],
+         [NSThread callStackSymbols]);
     // Create a temporary frame to shadow __knobs in the scope. This avoids mutating a scope we don't own.
     iTermVariables *variables = [[iTermVariables alloc] initWithContext:iTermVariablesSuggestionContextNone
                                                                   owner:self];
@@ -264,6 +363,7 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
     [iTermScriptFunctionCall callFunction:self.invocation
                                   timeout:_savedRegistrationRequest.latestStatusBarRequest.timeout ?: [[NSDate distantFuture] timeIntervalSinceNow]
                                     scope:scope
+                               retainSelf:YES
                                completion:
      ^(id value, NSError *error, NSSet<NSString *> *missingFunctions) {
          DLog(@"evaluation of %@ completed with value %@ error %@", self.invocation, value, error);
@@ -277,6 +377,9 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
 
 - (void)maybeOfferToMoveScriptToAutoLaunch {
     if (-[_dateOfLaunchToFix timeIntervalSinceNow] >= 1) {
+        return;
+    }
+    if (![[NSFileManager defaultManager] homeDirectoryDotDir]) {
         return;
     }
     iTermScriptsMenuController *menuController = [[[iTermApplication sharedApplication] delegate] scriptsMenuController];
@@ -293,7 +396,7 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
                                 identifier:[NSString stringWithFormat:@"NoSyncAutoLaunchScript_%@", _fullPath]
                                silenceable:kiTermWarningTypePermanentlySilenceable
                                    heading:@"Always launch this script when iTerm2 starts?"
-                                    window:self.textField.window] == kiTermWarningSelection0) {
+                                    window:self.delegate.textField.window] == kiTermWarningSelection0) {
         [menuController moveScriptToAutoLaunch:_fullPath];
     }
 }
@@ -318,7 +421,7 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
                                                                               string:_errorMessage];
         _variants = @[ @"🐞" ];
     }
-    [self updateTextFieldIfNeeded];
+    [self.delegate updateTextFieldIfNeeded];
 }
 
 - (void)handleEvaluationError:(NSError *)error
@@ -333,12 +436,12 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
                                                                           string:_errorMessage];
     _variants = @[ @"🐞" ];
     _missingFunctions = [missingFunctions mutableCopy];
-    [self updateTextFieldIfNeeded];
+    [self.delegate updateTextFieldIfNeeded];
 }
 
+// Call super after this.
 - (void)statusBarComponentSetKnobValues:(NSDictionary *)knobValues {
     [self updateWithKnobValues:knobValues];
-    [super statusBarComponentSetKnobValues:knobValues];
 }
 
 - (void)didRegisterStatusBarComponent:(NSNotification *)notification {
@@ -396,14 +499,16 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
 
 - (void)launchScript {
     if (!_savedRegistrationRequest.statusBarComponentAttributes.uniqueIdentifier) {
+        DLog(@"No uniqueIdentifier");
         return;
     }
     NSString *fullPath = [self fullPathOfScript];
     if (!fullPath) {
         return;
     }
+    DLog(@"%@", fullPath);
     iTermScriptsMenuController *menuController = [[[iTermApplication sharedApplication] delegate] scriptsMenuController];
-    [menuController launchScriptWithAbsolutePath:fullPath explicitUserAction:YES];
+    [menuController launchScriptWithAbsolutePath:fullPath arguments:@[] explicitUserAction:YES];
     _dateOfLaunchToFix = [NSDate date];
     _fullPath = [fullPath copy];
 }
@@ -436,20 +541,22 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
         warning.warningActions = actions;
         warning.warningType = kiTermWarningTypePersistent;
         warning.heading = @"Status Bar Script Error";
-        warning.window = self.textField.window;
+        warning.window = self.delegate.textField.window;
         [warning runModal];
         return;
     }
-    NSString *sessionId = [self.scope valueForVariableName:iTermVariableKeySessionID];
+    NSString *sessionId = [self.delegate.scope valueForVariableName:iTermVariableKeySessionID];
     NSString *identifier = [[self.statusBarComponentIdentifier stringByReplacingOccurrencesOfString:@"." withString:@"_"] stringByReplacingOccurrencesOfString:@"-" withString:@"_"];
     NSString *func = [NSString stringWithFormat:@"__%@__on_click(session_id: \"%@\")", identifier, sessionId];
     [iTermScriptFunctionCall callFunction:func
                                   timeout:30
-                                    scope:self.scope
+                                    scope:self.delegate.scope
+                               retainSelf:YES
                                completion:^(id result, NSError *error, NSSet<NSString *> *mutations) {
                                    if (error) {
                                        NSString *message = [NSString stringWithFormat:@"Error in onclick handler: %@\n%@", error.localizedDescription, error.localizedFailureReason];
-                                       [[iTermScriptHistoryEntry globalEntry] addOutput:message];
+                                       [[iTermScriptHistoryEntry globalEntry] addOutput:message
+                                                                             completion:^{}];
                                    }
                                }];
 }
@@ -476,6 +583,273 @@ static NSString *const iTermStatusBarRPCRegistrationRequestKey = @"registration 
     }
     [[iTermAPIHelper sharedInstance] logToConnectionHostingFunctionWithSignature:signature
                                                                           string:[NSString stringWithFormat:@"Execute javascript: %@", javascript]];
+}
+
+#pragma mark - iTermObject
+
+- (nullable iTermBuiltInFunctions *)objectMethodRegistry {
+    return nil;
+}
+
+- (nullable iTermVariableScope *)objectScope {
+    return nil;
+}
+
+@end
+
+@interface iTermStatusBarRPCProvidedTextComponent()<iTermObject, iTermStatusBarRPCProvidedTextComponentCommonDelegate, iTermStatusBarRPCProvidedTextComponent>
+@end
+
+@implementation iTermStatusBarRPCProvidedTextComponent {
+    iTermStatusBarRPCProvidedTextComponentCommon *_common;
+}
+
+- (instancetype)initWithRegistrationRequest:(ITMRPCRegistrationRequest *)registrationRequest
+                                      scope:(iTermVariableScope *)scope
+                                      knobs:(NSDictionary *)knobs {
+    return [self initWithConfiguration:@{ iTermStatusBarRPCRegistrationRequestV2Key: [registrationRequest.data base64EncodedStringWithOptions:0],
+                                          iTermStatusBarComponentConfigurationKeyKnobValues: knobs }
+                                 scope:scope];
+}
+
+- (instancetype)initWithConfiguration:(NSDictionary<iTermStatusBarComponentConfigurationKey,id> *)configuration
+                                scope:(nullable iTermVariableScope *)realScope {
+    iTermStatusBarRPCProvidedTextComponentCommon *common = [[iTermStatusBarRPCProvidedTextComponentCommon alloc] initWithConfiguration:configuration scope:realScope];
+    if (!common) {
+        return nil;
+    }
+    self = [super initWithConfiguration:configuration scope:realScope];
+    common.delegate = self;
+    if (self) {
+        [common finishInitialization];
+        _common = common;
+    }
+    return self;
+}
+
+- (NSString *)statusBarComponentIdentifier {
+    return [_common statusBarComponentIdentifier];
+}
+
+- (NSTextField *)newTextField {
+    NSTextField *textField = [super newTextField];
+    [_common initializeTextField:textField];
+    return textField;
+}
+
+- (id<iTermStatusBarComponentFactory>)statusBarComponentFactory {
+    return [_common statusBarComponentFactory];
+}
+
+- (NSString *)statusBarComponentShortDescription {
+    return [_common statusBarComponentShortDescription];
+}
+
+- (NSString *)statusBarComponentDetailedDescription {
+    return [_common statusBarComponentDetailedDescription];
+}
+
+- (void)statusBarComponentUpdate {
+    [_common statusBarComponentUpdate];
+}
+
+- (nullable NSImage *)statusBarComponentIcon {
+    return [_common statusBarComponentIcon];
+}
+
+- (iTermStatusBarComponentKnobType)knobTypeFromDescriptorType:(ITMRPCRegistrationRequest_StatusBarComponentAttributes_Knob_Type)type {
+    return [_common knobTypeFromDescriptorType:type];
+}
+
+- (NSArray<iTermStatusBarComponentKnob *> *)statusBarComponentKnobs {
+    return [_common amendedStatusBarComponentKnobs:[super statusBarComponentKnobs]];
+}
+
+- (id)statusBarComponentExemplarWithBackgroundColor:(NSColor *)backgroundColor
+                                          textColor:(NSColor *)textColor {
+    return [_common statusBarComponentExemplarWithBackgroundColor:backgroundColor textColor:textColor];
+}
+
+- (BOOL)statusBarComponentCanStretch {
+    return [_common statusBarComponentCanStretch];
+}
+
+- (nullable NSArray<NSString *> *)stringVariants {
+    return [_common stringVariants];
+}
+
+- (void)statusBarComponentSetKnobValues:(NSDictionary *)knobValues {
+    [_common statusBarComponentSetKnobValues:knobValues];
+    [super statusBarComponentSetKnobValues:knobValues];
+}
+
+- (NSTimeInterval)statusBarComponentUpdateCadence {
+    return [_common statusBarComponentUpdateCadence];
+}
+
+- (void)itermWebViewJavascriptError:(NSString *)errorText {
+    [_common itermWebViewJavascriptError:errorText];
+}
+
+- (void)itermWebViewWillExecuteJavascript:(NSString *)javascript {
+    [_common itermWebViewWillExecuteJavascript:javascript];
+}
+
+- (BOOL)isEqualToComponentIgnoringConfiguration:(id<iTermStatusBarComponent>)component {
+    if (![component conformsToProtocol:@protocol(iTermStatusBarRPCProvidedTextComponent)]) {
+        return NO;
+    }
+    id<iTermStatusBarRPCProvidedTextComponent> other = (id)component;
+    return [_common isEqualTo:other.commonImplementation];
+}
+
+#pragma mark - iTermObject
+
+- (nullable iTermBuiltInFunctions *)objectMethodRegistry {
+    return [_common objectMethodRegistry];
+}
+
+- (nullable iTermVariableScope *)objectScope {
+    return [_common objectScope];
+}
+
+#pragma mark - iTermStatusBarRPCProvidedTextComponent
+
+- (iTermStatusBarRPCProvidedTextComponentCommon *)commonImplementation {
+    return _common;
+}
+
+@end
+
+@interface iTermStatusBarRPCProvidedAttributedTextComponent()<iTermObject, iTermStatusBarRPCProvidedTextComponentCommonDelegate, iTermStatusBarRPCProvidedTextComponent>
+@end
+
+@implementation iTermStatusBarRPCProvidedAttributedTextComponent {
+    iTermStatusBarRPCProvidedTextComponentCommon *_common;
+}
+
+- (instancetype)initWithRegistrationRequest:(ITMRPCRegistrationRequest *)registrationRequest
+                                      scope:(iTermVariableScope *)scope
+                                      knobs:(NSDictionary *)knobs {
+    return [self initWithConfiguration:@{ iTermStatusBarRPCRegistrationRequestV2Key: [registrationRequest.data base64EncodedStringWithOptions:0],
+                                          iTermStatusBarComponentConfigurationKeyKnobValues: knobs }
+                                 scope:scope];
+}
+
+- (instancetype)initWithConfiguration:(NSDictionary<iTermStatusBarComponentConfigurationKey,id> *)configuration
+                                scope:(nullable iTermVariableScope *)realScope {
+    iTermStatusBarRPCProvidedTextComponentCommon *common = [[iTermStatusBarRPCProvidedTextComponentCommon alloc] initWithConfiguration:configuration scope:realScope];
+    if (!common) {
+        return nil;
+    }
+    self = [super initWithConfiguration:configuration scope:realScope];
+    common.delegate = self;
+    if (self) {
+        [common finishInitialization];
+        _common = common;
+    }
+    return self;
+}
+
+- (NSString *)statusBarComponentIdentifier {
+    return [_common statusBarComponentIdentifier];
+}
+
+- (NSTextField *)newTextField {
+    NSTextField *textField = [super newTextField];
+    [_common initializeTextField:textField];
+    return textField;
+}
+
+- (id<iTermStatusBarComponentFactory>)statusBarComponentFactory {
+    return [_common statusBarComponentFactory];
+}
+
+- (NSString *)statusBarComponentShortDescription {
+    return [_common statusBarComponentShortDescription];
+}
+
+- (NSString *)statusBarComponentDetailedDescription {
+    return [_common statusBarComponentDetailedDescription];
+}
+
+- (void)statusBarComponentUpdate {
+    [_common statusBarComponentUpdate];
+}
+
+- (nullable NSImage *)statusBarComponentIcon {
+    return [_common statusBarComponentIcon];
+}
+
+- (iTermStatusBarComponentKnobType)knobTypeFromDescriptorType:(ITMRPCRegistrationRequest_StatusBarComponentAttributes_Knob_Type)type {
+    return [_common knobTypeFromDescriptorType:type];
+}
+
+- (NSArray<iTermStatusBarComponentKnob *> *)statusBarComponentKnobs {
+    return [_common amendedStatusBarComponentKnobs:[super statusBarComponentKnobs]];
+}
+
+- (id)statusBarComponentExemplarWithBackgroundColor:(NSColor *)backgroundColor
+                                          textColor:(NSColor *)textColor {
+    return [_common statusBarComponentExemplarWithBackgroundColor:backgroundColor textColor:textColor];
+}
+
+- (BOOL)statusBarComponentCanStretch {
+    return [_common statusBarComponentCanStretch];
+}
+
+- (NSArray<NSAttributedString *> *)attributedStringVariants {
+    NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
+    paragraphStyle.alignment = NSTextAlignmentNatural;
+    paragraphStyle.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSDictionary *attributes = @{ NSFontAttributeName: self.font,
+                                  NSForegroundColorAttributeName: [NSColor textColor],
+                                  NSParagraphStyleAttributeName: paragraphStyle };
+
+    return [[_common stringVariants] mapWithBlock:^id(NSString *string) {
+        return [NSAttributedString newAttributedStringWithHTML:string attributes:attributes];
+    }];
+}
+
+- (void)statusBarComponentSetKnobValues:(NSDictionary *)knobValues {
+    [_common statusBarComponentSetKnobValues:knobValues];
+    [super statusBarComponentSetKnobValues:knobValues];
+}
+
+- (NSTimeInterval)statusBarComponentUpdateCadence {
+    return [_common statusBarComponentUpdateCadence];
+}
+
+- (void)itermWebViewJavascriptError:(NSString *)errorText {
+    [_common itermWebViewJavascriptError:errorText];
+}
+
+- (void)itermWebViewWillExecuteJavascript:(NSString *)javascript {
+    [_common itermWebViewWillExecuteJavascript:javascript];
+}
+
+- (BOOL)isEqualToComponentIgnoringConfiguration:(id<iTermStatusBarComponent>)component {
+    if (![component conformsToProtocol:@protocol(iTermStatusBarRPCProvidedTextComponent)]) {
+        return NO;
+    }
+    id<iTermStatusBarRPCProvidedTextComponent> other = (id)component;
+    return [_common isEqualTo:other.commonImplementation];
+}
+
+#pragma mark - iTermObject
+
+- (nullable iTermBuiltInFunctions *)objectMethodRegistry {
+    return [_common objectMethodRegistry];
+}
+
+- (nullable iTermVariableScope *)objectScope {
+    return [_common objectScope];
+}
+
+#pragma mark - iTermStatusBarRPCProvidedTextComponent
+
+- (iTermStatusBarRPCProvidedTextComponentCommon *)commonImplementation {
+    return _common;
 }
 
 @end

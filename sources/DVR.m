@@ -31,6 +31,7 @@
 #import "DVRIndexEntry.h"
 #import "NSData+iTerm.h"
 #import "ScreenChar.h"
+#import "iTermMetadata.h"
 #include <sys/time.h>
 
 @implementation DVR {
@@ -63,11 +64,24 @@
     [super dealloc];
 }
 
-- (void)appendFrame:(NSArray*)frameLines length:(int)length info:(DVRFrameInfo*)info
-{
+- (int)lengthForMetadata:(NSArray<id<DVREncodable>> *)metadata {
+    __block int sum = 0;
+    [metadata enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        // Payload length, payload
+        sum += sizeof(int) + [obj dvrEncodableData].length;
+    }];
+    return sum;
+}
+
+- (void)appendFrame:(NSArray<NSData *> *)frameLines
+             length:(int)screenCharLength
+           metadata:(NSArray<id<DVREncodable>> *)metadata
+         cleanLines:(NSIndexSet *)cleanLines
+               info:(DVRFrameInfo*)info {
     if (readOnly_) {
         return;
     }
+    const int length = screenCharLength + [self lengthForMetadata:metadata];
     if (length > [buffer_ capacity] / 2) {
         // Protect the buffer from overflowing if you have a really big window.
         return;
@@ -83,7 +97,25 @@
             }
         }
     }
-    [encoder_ appendFrame:frameLines length:length info:info];
+    [encoder_ appendFrame:frameLines
+                   length:screenCharLength
+                 metadata:metadata
+               cleanLines:cleanLines
+                     info:info];
+}
+
+- (BOOL)canClear {
+    return !readOnly_ && decoders_.count == 0;
+}
+
+- (void)clear {
+    if (![self canClear]) {
+        return;
+    }
+    [buffer_ autorelease];
+    buffer_ = [[DVRBuffer alloc] initWithBufferCapacity:capacity_];
+    [encoder_ autorelease];
+    encoder_ = [[DVREncoder alloc] initWithBuffer:buffer_];
 }
 
 - (DVRDecoder*)getDecoder
@@ -136,7 +168,7 @@
     } else {
         dvr = [[self copyWithFramesFrom:from to:to] autorelease];
     }
-    return @{ @"version": @1,
+    return @{ @"version": @4,
               @"capacity": @(dvr->capacity_),
               @"buffer": dvr->buffer_.dictionaryValue };
 }
@@ -145,7 +177,10 @@
     if (!dict) {
         return NO;
     }
-    if ([dict[@"version"] integerValue] != 1) {
+    // This is the inner version. It is set in -[DVR dictionaryValueFrom:to:].
+    NSArray<NSNumber *> *knownVersions = @[ @1, @2, @3, @4 ];
+    NSNumber *version = [NSNumber castFrom:dict[@"version"]];
+    if (!version || ![knownVersions containsObject:version]) {
         return NO;
     }
     int capacity = [dict[@"capacity"] intValue];
@@ -169,7 +204,8 @@
     encoder_ = [DVREncoder alloc];
     [encoder_ initWithBuffer:buffer_];
 
-    if (![buffer_ loadFromDictionary:bufferDict]) {
+    if (![buffer_ loadFromDictionary:bufferDict
+                             version:version.intValue]) {
         return NO;
     }
     readOnly_ = YES;
@@ -183,6 +219,7 @@
         while (decoder.timestamp <= to || to == -1) {
             screen_char_t *frame = (screen_char_t *)[decoder decodedFrame];
             NSMutableArray *lines = [NSMutableArray array];
+            NSMutableArray *metadata = [NSMutableArray array];
             DVRFrameInfo info = [decoder info];
             int offset = 0;
             const int lineLength = info.width + 1;
@@ -190,8 +227,14 @@
                 NSMutableData *data = [NSMutableData dataWithBytes:frame + offset length:lineLength * sizeof(screen_char_t)];
                 [lines addObject:data];
                 offset += lineLength;
+
+                [metadata addObject:iTermMetadataArrayFromData([decoder metadataForLine:i])];
             }
-            [theCopy appendFrame:lines length:[decoder length] info:&info];
+            [theCopy appendFrame:lines
+                          length:[decoder screenCharArrayLength]
+                        metadata:metadata
+                      cleanLines:nil
+                            info:&info];
             if (![decoder next]) {
                 break;
             }

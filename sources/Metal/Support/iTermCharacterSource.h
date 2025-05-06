@@ -8,11 +8,11 @@
 #import <Foundation/Foundation.h>
 
 @class iTermCharacterBitmap;
+@class iTermFontTable;
 @class PTYFontInfo;
 
 @interface iTermCharacterSourceDescriptor : NSObject
-@property (nonatomic, readonly, strong) PTYFontInfo *asciiFontInfo;
-@property (nonatomic, readonly, strong) PTYFontInfo *nonAsciiFontInfo;
+@property (nonatomic, readonly, strong) iTermFontTable *fontTable;
 @property (nonatomic, readonly) CGSize asciiOffset;
 @property (nonatomic, readonly) CGSize glyphSize;
 @property (nonatomic, readonly) CGSize cellSize;
@@ -25,8 +25,7 @@
 @property (nonatomic, readonly) BOOL asciiAntiAliased;
 @property (nonatomic, readonly) BOOL nonAsciiAntiAliased;
 
-+ (instancetype)characterSourceDescriptorWithAsciiFont:(PTYFontInfo *)asciiFontInfo
-                                          nonAsciiFont:(PTYFontInfo *)nonAsciiFontInfo
++ (instancetype)characterSourceDescriptorWithFontTable:(iTermFontTable *)fontTable
                                            asciiOffset:(CGSize)asciiOffset
                                              glyphSize:(CGSize)glyphSize
                                               cellSize:(CGSize)cellSize
@@ -54,13 +53,13 @@
 @property (nonatomic, readonly) BOOL isEmoji;
 @property (nonatomic, readonly) CGRect frame;
 @property (nonatomic, readonly) NSArray<NSNumber *> *parts;
+@property (nonatomic) BOOL debug;
 
 // Using conservative settings (bold, italic, thick strokes, antialiased)
 // returns the frame that contains all characters in the range. This is useful
 // for finding the bounding box of all ASCII glyphs.
 + (NSRect)boundingRectForCharactersInRange:(NSRange)range
-                             asciiFontInfo:(PTYFontInfo *)asciiFontInfo
-                          nonAsciiFontInfo:(PTYFontInfo *)nonAsciiFontInfo
+                                 fontTable:(iTermFontTable *)fontTable
                                      scale:(CGFloat)scale
                                useBoldFont:(BOOL)useBoldFont
                              useItalicFont:(BOOL)useItalicFont
@@ -75,6 +74,17 @@
          useNativePowerlineGlyphs:(BOOL)useNativePowerlineGlyphs
                           context:(CGContextRef)context;
 
+- (instancetype)initWithFontID:(unsigned int)fontID
+                      fakeBold:(BOOL)fakeBold
+                    fakeItalic:(BOOL)fakeItalic
+                   glyphNumber:(unsigned short)glyphNumber
+                      position:(NSPoint)position
+                    descriptor:(iTermCharacterSourceDescriptor *)descriptor
+                    attributes:(iTermCharacterSourceAttributes *)attributes
+                        radius:(int)radius
+                       context:(CGContextRef)context;
+
 - (iTermCharacterBitmap *)bitmapForPart:(int)part;
 
 @end
+

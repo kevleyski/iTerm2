@@ -4,6 +4,7 @@
 #import "iTermController.h"
 #import "iTermPreferences.h"
 #import "iTermPreviousState.h"
+#import "iTermShortcutInputView.h"
 #import "NSTextField+iTerm.h"
 #import "PreferencePanel.h"
 
@@ -22,6 +23,7 @@
                  modifierActivation:modifierActivation];
     if (self) {
         _previousState = [[iTermPreviousState alloc] init];
+        DLog(@"Initialize previousState to %@", _previousState);
         [[[NSWorkspace sharedWorkspace] notificationCenter] addObserver:self
                                                                selector:@selector(workspaceDidDeactivateApplication:)
                                                                    name:NSWorkspaceDidDeactivateApplicationNotification
@@ -52,16 +54,22 @@
         if (prefsWindow != keyWindow ||
             prefsWindowController.window.firstResponder != prefsWindowController.hotkeyField) {
             if (_previousState && (keyWindow.styleMask & NSWindowStyleMaskFullScreen)) {
+                DLog(@"Retore previously active app %@", _previousState);
                 [_previousState restorePreviouslyActiveApp];
             } else {
+                DLog(@"Hide app");
                 [NSApp hide:nil];
             }
+        } else {
+            DLog(@"Ignoring hotkey because prefs is active");
         }
     } else {
         iTermController *controller = [iTermController sharedInstance];
         int numberOfTerminals = [controller numberOfTerminals];
-        [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+        DLog(@"Activate app");
+        [[NSRunningApplication currentApplication] activateWithOptions:NSApplicationActivateIgnoringOtherApps];
         if (numberOfTerminals == 0) {
+            DLog(@"Make new window");
             [controller newWindow:nil];
         }
     }
@@ -71,14 +79,17 @@
 - (void)workspaceDidDeactivateApplication:(NSNotification *)notification {
     [_previousApp autorelease];
     _previousApp = [notification.userInfo[NSWorkspaceApplicationKey] retain];
+    DLog(@"workspace did deactivate. Set previous app to %@", notification.userInfo);
 
 }
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
+    DLog(@"erase previous state");
     [_previousState autorelease];
     _previousState = nil;
     if (_previousApp) {
         _previousState = [[iTermPreviousState alloc] initWithRunningApp:_previousApp];
+        DLog(@"Set previous state to %@ from %@", _previousState, _previousApp);
     }
 }
 

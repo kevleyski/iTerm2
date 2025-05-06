@@ -11,6 +11,11 @@
 @interface iTermFunctionCallTextFieldDelegate : NSObject<iTermFocusReportingTextFieldDelegate>
 
 @property (nonatomic, strong) IBOutlet NSTextField *textField;
+@property (nonatomic, weak) id passthrough;
+
+@property (nonatomic) BOOL canWarnAboutContextMistake;
+@property (nonatomic, copy) NSString *contextMistakeText;
+@property (nonatomic, readonly) BOOL functionsOnly;
 
 // If passthrough is nonnil then controlTextDidBeginEditing and controlTextDidEndEditing get called
 // on it.
@@ -22,5 +27,7 @@
                        passthrough:(id)passthrough
                      functionsOnly:(BOOL)functionsOnly NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
+
+- (BOOL)smellsLikeSessionContext:(NSString *)string;
 
 @end

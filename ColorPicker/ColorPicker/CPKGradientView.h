@@ -9,6 +9,8 @@ typedef NS_ENUM(NSInteger, CPKGradientViewType) {
     kCPKGradientViewTypeBlueRed,
 };
 
+@class CPKColor;
+
 /**
  * A view showing a 2-d gradient with saturation across the X axis and brightness across the Y
  * axis.
@@ -16,7 +18,7 @@ typedef NS_ENUM(NSInteger, CPKGradientViewType) {
 @interface CPKGradientView : NSView
 
 /** Set this to move the selected color indicator. When the user drags it, this updates. */
-@property(nonatomic) NSColor *selectedColor;
+@property(nonatomic) CPKColor *selectedColor;
 
 /** To change the hue without affecting other components, assign to this. */
 @property(nonatomic) CGFloat hue;
@@ -39,6 +41,7 @@ typedef NS_ENUM(NSInteger, CPKGradientViewType) {
 /** Determines the type of gradient. */
 @property(nonatomic) CPKGradientViewType type;
 
+@property(nonatomic, readonly) NSColorSpace *colorSpace;
 /**
  * Initializes a new gradient view with a callback.
  *
@@ -49,6 +52,7 @@ typedef NS_ENUM(NSInteger, CPKGradientViewType) {
  */
 - (instancetype)initWithFrame:(NSRect)frameRect
                          type:(CPKGradientViewType)type
-                        block:(void (^)(NSColor *))block;
+                   colorSpace:(NSColorSpace *)colorSpace
+                        block:(void (^)(CPKColor *))block;
 
 @end

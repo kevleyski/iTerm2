@@ -12,6 +12,7 @@
 #import "iTermVariableReference.h"
 #import "NSArray+iTerm.h"
 #import "NSDictionary+iTerm.h"
+#import "NSHost+iTerm.h"
 #import "NSImage+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSStringITerm.h"
@@ -40,7 +41,7 @@ NS_ASSUME_NONNULL_BEGIN
     if (self) {
         _path = path;
         if (path) {
-            _ref = [[iTermVariableReference alloc] initWithPath:path scope:scope];
+            _ref = [[iTermVariableReference alloc] initWithPath:path vendor:scope];
             __weak __typeof(self) weakSelf = self;
             _ref.onChangeBlock = ^{
                 [weakSelf updateTextFieldIfNeeded];
@@ -99,6 +100,16 @@ NS_ASSUME_NONNULL_BEGIN
     }
 
     NSMutableArray<NSString *> *result = [NSMutableArray array];
+    NSArray<NSString *> *parts = [string componentsSeparatedByString:@"."];
+    if (parts.count > 1) {
+        NSString *localname = parts.firstObject;
+        if ([localname length] > 1) {
+            for (NSInteger numberToOmit = 2; numberToOmit < parts.firstObject.numberOfComposedCharacters - 2; numberToOmit++) {
+                [result addObject:[parts.firstObject byTruncatingComposedCharactersInCenter:numberToOmit]];
+            }
+            [result addObject:parts.firstObject];
+        }
+    }
     NSString *prev = nil;
     while (string != nil && (!prev || string.length < prev.length)) {
         [result addObject:string];
@@ -114,6 +125,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+static NSString *const iTermStatusBarHostnameComponentAbbreviateLocalhost = @"abbreviate-localhost";
+
 @implementation iTermStatusBarHostnameComponent
 
 - (instancetype)initWithConfiguration:(NSDictionary<iTermStatusBarComponentConfigurationKey, id> *)configuration
@@ -121,8 +134,18 @@ NS_ASSUME_NONNULL_BEGIN
     return [super initWithPath:@"hostname" configuration:configuration scope:scope];
 }
 
-- (NSImage *)statusBarComponentIcon {
-    return [NSImage it_imageNamed:@"StatusBarIconHost" forClass:[self class]];
+- (NSArray<iTermStatusBarComponentKnob *> *)statusBarComponentKnobs {
+    iTermStatusBarComponentKnob *abbreviateLocalhostKnob =
+    [[iTermStatusBarComponentKnob alloc] initWithLabelText:@"localhost replacement"
+                                                      type:iTermStatusBarComponentKnobTypeText
+                                               placeholder:@"Enter replacement text for localhost"
+                                              defaultValue:@""
+                                                       key:iTermStatusBarHostnameComponentAbbreviateLocalhost];
+    return [@[ abbreviateLocalhostKnob ] arrayByAddingObjectsFromArray:[super statusBarComponentKnobs]];
+}
+
+- (nullable NSImage *)statusBarComponentIcon {
+    return [NSImage it_cacheableImageNamed:@"StatusBarIconHost" forClass:[self class]];
 }
 
 - (NSString *)statusBarComponentShortDescription {
@@ -138,6 +161,16 @@ NS_ASSUME_NONNULL_BEGIN
     return @"example.com";
 }
 
+- (nullable NSArray<NSString *> *)stringVariants {
+    NSDictionary *knobValues = self.configuration[iTermStatusBarComponentConfigurationKeyKnobValues];
+    NSString *abbreviation = [NSString castFrom:knobValues[iTermStatusBarHostnameComponentAbbreviateLocalhost]];
+    if (abbreviation.length &&
+        [[NSHost fullyQualifiedDomainName] isEqualToString:self.cached]) {
+        return @[ abbreviation ];
+    }
+    return [super stringVariants];
+}
+
 - (nullable NSString *)stringByCompressingString:(NSString *)source {
     NSMutableArray<NSString *> *parts = [[source componentsSeparatedByString:@"."] mutableCopy];
     __block NSString *replacement = nil;
@@ -150,7 +183,7 @@ NS_ASSUME_NONNULL_BEGIN
     if (index == NSNotFound) {
         return nil;
     }
-    parts[index] = replacement;
+    parts[index] = replacement ?: @"";
     return [parts componentsJoinedByString:@"."];
 }
 
@@ -163,8 +196,8 @@ NS_ASSUME_NONNULL_BEGIN
     return [super initWithPath:@"username" configuration:configuration scope:scope];
 }
 
-- (NSImage *)statusBarComponentIcon {
-    return [NSImage it_imageNamed:@"StatusBarIconUser" forClass:[self class]];
+- (nullable NSImage *)statusBarComponentIcon {
+    return [NSImage it_cacheableImageNamed:@"StatusBarIconUser" forClass:[self class]];
 }
 
 - (NSString *)statusBarComponentShortDescription {
@@ -216,12 +249,8 @@ NS_ASSUME_NONNULL_BEGIN
     }
 }
 
-- (NSArray<iTermStatusBarComponentKnob *> *)statusBarComponentKnobs {
-    return [self.minMaxWidthKnobs arrayByAddingObjectsFromArray:[super statusBarComponentKnobs]];
-}
-
-- (NSImage *)statusBarComponentIcon {
-    return [NSImage it_imageNamed:@"StatusBarIconFolder" forClass:[self class]];
+- (nullable NSImage *)statusBarComponentIcon {
+    return [NSImage it_cacheableImageNamed:@"StatusBarIconFolder" forClass:[self class]];
 }
 
 - (CGFloat)statusBarComponentPreferredWidth {
@@ -264,8 +293,16 @@ NS_ASSUME_NONNULL_BEGIN
     return YES;
 }
 
+- (BOOL)statusBarComponentIsEmpty {
+    return [[self.fullString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] length] == 0;
+}
+
 - (void)statusBarComponentDidClickWithView:(NSView *)view {
     [self openMenuWithView:view];
+}
+
+- (BOOL)statusBarComponentHandlesMouseDown:(NSView *)view {
+    return YES;
 }
 
 - (void)statusBarComponentMouseDownWithView:(NSView *)view {
@@ -276,7 +313,7 @@ NS_ASSUME_NONNULL_BEGIN
     NSMenu *menu = [[NSMenu alloc] init];
     NSView *containingView = view.superview;
 
-    VT100RemoteHost *remoteHost = [self remoteHost];
+    id<VT100RemoteHostReading> remoteHost = [self remoteHost];
     for (iTermRecentDirectoryMO *directory in [[[iTermShellHistoryController sharedInstance] directoriesSortedByScoreOnHost:remoteHost] it_arrayByKeepingFirstN:10]) {
         NSString *title;
         if (directory.starred.boolValue) {
@@ -300,10 +337,9 @@ NS_ASSUME_NONNULL_BEGIN
                           writeString:[NSString stringWithFormat:@"cd %@", [path stringWithEscapedShellCharactersIncludingNewlines:YES]]];
 }
 
-- (VT100RemoteHost *)remoteHost {
-    VT100RemoteHost *result = [[VT100RemoteHost alloc] init];
-    result.hostname = [self.scope valueForVariableName:iTermVariableKeySessionHostname];
-    result.username = [self.scope valueForVariableName:iTermVariableKeySessionUsername];
+- (id<VT100RemoteHostReading>)remoteHost {
+    VT100RemoteHost *result = [[VT100RemoteHost alloc] initWithUsername:[self.scope valueForVariableName:iTermVariableKeySessionUsername]
+                                                               hostname:[self.scope valueForVariableName:iTermVariableKeySessionHostname]];
     return result;
 }
 

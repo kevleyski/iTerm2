@@ -14,6 +14,8 @@
 		53F5895321C9B527004A372B /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 53F5895221C9B527004A372B /* main.m */; };
 		53F5895721C9B564004A372B /* libSignedArchive.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A6BC8B2321C8D80D00796BF3 /* libSignedArchive.a */; };
 		53F5895B21C9C1F2004A372B /* SIGVerificationAlgorithm.m in Sources */ = {isa = PBXBuildFile; fileRef = 53F5895A21C9C1F2004A372B /* SIGVerificationAlgorithm.m */; };
+		A665C1C9243A4D8E00F623F0 /* SIGArchiveCommon.h in Headers */ = {isa = PBXBuildFile; fileRef = A665C1C8243A4D8E00F623F0 /* SIGArchiveCommon.h */; };
+		A665C1CD243A4DF000F623F0 /* SIGArchiveCommon.m in Sources */ = {isa = PBXBuildFile; fileRef = A665C1CC243A4DF000F623F0 /* SIGArchiveCommon.m */; };
 		A6BC8B1921C8D5B500796BF3 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8B1821C8D5B500796BF3 /* main.m */; };
 		A6BC8B2C21C8D81F00796BF3 /* SIGArchiveBuilder.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8AEB21C78A3000796BF3 /* SIGArchiveBuilder.m */; };
 		A6BC8B2D21C8D81F00796BF3 /* SIGArchiveChunk.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8B0321C8B65900796BF3 /* SIGArchiveChunk.m */; };
@@ -23,7 +25,6 @@
 		A6BC8B3121C8D81F00796BF3 /* SIGIdentity.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8AEF21C78C1700796BF3 /* SIGIdentity.m */; };
 		A6BC8B3221C8D81F00796BF3 /* SIGPartialInputStream.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8B0F21C8CE7600796BF3 /* SIGPartialInputStream.m */; };
 		A6BC8B3321C8D81F00796BF3 /* SIGKey.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8AF721C791A700796BF3 /* SIGKey.m */; };
-		A6BC8B3421C8D81F00796BF3 /* SIGKeychain.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8AF321C78C5E00796BF3 /* SIGKeychain.m */; };
 		A6BC8B3521C8D81F00796BF3 /* SIGTrust.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8B0B21C8C67300796BF3 /* SIGTrust.m */; };
 		A6BC8B3E21C8E30600796BF3 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8B3D21C8E30600796BF3 /* main.m */; };
 		A6BC8B4221C8E3AB00796BF3 /* libSignedArchive.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A6BC8B2321C8D80D00796BF3 /* libSignedArchive.a */; };
@@ -36,6 +37,8 @@
 		A6BC8B5621C96E0E00796BF3 /* SIGVerificationAlgorithm.h in Headers */ = {isa = PBXBuildFile; fileRef = A6BC8B5421C96E0E00796BF3 /* SIGVerificationAlgorithm.h */; };
 		A6BC8B5A21C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.h in Headers */ = {isa = PBXBuildFile; fileRef = A6BC8B5821C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.h */; };
 		A6BC8B5B21C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.m in Sources */ = {isa = PBXBuildFile; fileRef = A6BC8B5921C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.m */; };
+		A6F5F3B822EE282D0093FC81 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = A6F5F3B222EE281F0093FC81 /* main.m */; };
+		A6F5F3BB22EE282D0093FC81 /* libSignedArchive.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A6BC8B2321C8D80D00796BF3 /* libSignedArchive.a */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -54,6 +57,13 @@
 			remoteInfo = LibSignedArchive;
 		};
 		A6BC8B4521C8F2F500796BF3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A6BC8AD221C789DA00796BF3 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A6BC8B2221C8D80D00796BF3;
+			remoteInfo = SignedArchive;
+		};
+		A6F5F3B622EE282D0093FC81 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A6BC8AD221C789DA00796BF3 /* Project object */;
 			proxyType = 1;
@@ -90,6 +100,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 1;
 		};
+		A6F5F3BC22EE282D0093FC81 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = /usr/share/man/man1/;
+			dstSubfolderSpec = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 1;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -99,13 +118,13 @@
 		53F5895021C9B527004A372B /* extract */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = extract; sourceTree = BUILT_PRODUCTS_DIR; };
 		53F5895221C9B527004A372B /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		53F5895A21C9C1F2004A372B /* SIGVerificationAlgorithm.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SIGVerificationAlgorithm.m; sourceTree = "<group>"; };
+		A665C1C8243A4D8E00F623F0 /* SIGArchiveCommon.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = SIGArchiveCommon.h; sourceTree = "<group>"; };
+		A665C1CC243A4DF000F623F0 /* SIGArchiveCommon.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = SIGArchiveCommon.m; sourceTree = "<group>"; };
 		A6BC8ADF21C789DA00796BF3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A6BC8AEA21C78A3000796BF3 /* SIGArchiveBuilder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SIGArchiveBuilder.h; sourceTree = "<group>"; };
 		A6BC8AEB21C78A3000796BF3 /* SIGArchiveBuilder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SIGArchiveBuilder.m; sourceTree = "<group>"; };
 		A6BC8AEE21C78C1700796BF3 /* SIGIdentity.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SIGIdentity.h; sourceTree = "<group>"; };
 		A6BC8AEF21C78C1700796BF3 /* SIGIdentity.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SIGIdentity.m; sourceTree = "<group>"; };
-		A6BC8AF221C78C5E00796BF3 /* SIGKeychain.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SIGKeychain.h; sourceTree = "<group>"; };
-		A6BC8AF321C78C5E00796BF3 /* SIGKeychain.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SIGKeychain.m; sourceTree = "<group>"; };
 		A6BC8AF621C791A700796BF3 /* SIGKey.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SIGKey.h; sourceTree = "<group>"; };
 		A6BC8AF721C791A700796BF3 /* SIGKey.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SIGKey.m; sourceTree = "<group>"; };
 		A6BC8AFA21C7982800796BF3 /* SIGArchiveVerifier.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SIGArchiveVerifier.h; sourceTree = "<group>"; };
@@ -133,6 +152,8 @@
 		A6BC8B5421C96E0E00796BF3 /* SIGVerificationAlgorithm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SIGVerificationAlgorithm.h; sourceTree = "<group>"; };
 		A6BC8B5821C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SIGSHA2VerificationAlgorithm.h; sourceTree = "<group>"; };
 		A6BC8B5921C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SIGSHA2VerificationAlgorithm.m; sourceTree = "<group>"; };
+		A6F5F3B222EE281F0093FC81 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
+		A6F5F3C022EE282D0093FC81 /* resign */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = resign; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -169,6 +190,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A6F5F3BA22EE282D0093FC81 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A6F5F3BB22EE282D0093FC81 /* libSignedArchive.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -184,6 +213,7 @@
 			isa = PBXGroup;
 			children = (
 				A6BC8ADD21C789DA00796BF3 /* SignedArchive */,
+				A6F5F3B122EE28010093FC81 /* resign */,
 				A6BC8B1721C8D5B500796BF3 /* sign */,
 				A6BC8B3C21C8E30600796BF3 /* verify */,
 				53F5895121C9B527004A372B /* extract */,
@@ -199,6 +229,7 @@
 				A6BC8B2321C8D80D00796BF3 /* libSignedArchive.a */,
 				A6BC8B3B21C8E30500796BF3 /* verify */,
 				53F5895021C9B527004A372B /* extract */,
+				A6F5F3C022EE282D0093FC81 /* resign */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -206,37 +237,37 @@
 		A6BC8ADD21C789DA00796BF3 /* SignedArchive */ = {
 			isa = PBXGroup;
 			children = (
+				A6BC8ADF21C789DA00796BF3 /* Info.plist */,
 				A6BC8AEA21C78A3000796BF3 /* SIGArchiveBuilder.h */,
+				A6BC8AEB21C78A3000796BF3 /* SIGArchiveBuilder.m */,
 				A6BC8B0221C8B65900796BF3 /* SIGArchiveChunk.h */,
+				A6BC8B0321C8B65900796BF3 /* SIGArchiveChunk.m */,
+				A665C1C8243A4D8E00F623F0 /* SIGArchiveCommon.h */,
+				A665C1CC243A4DF000F623F0 /* SIGArchiveCommon.m */,
 				A6BC8AFE21C79A8000796BF3 /* SIGArchiveReader.h */,
+				A6BC8AFF21C79A8000796BF3 /* SIGArchiveReader.m */,
 				A6BC8AFA21C7982800796BF3 /* SIGArchiveVerifier.h */,
+				A6BC8AFB21C7982800796BF3 /* SIGArchiveVerifier.m */,
 				A6BC8B0621C8BB3700796BF3 /* SIGCertificate.h */,
+				A6BC8B0721C8BB3700796BF3 /* SIGCertificate.m */,
 				A6BC8B4821C95F8900796BF3 /* SIGError.h */,
+				A6BC8B4921C95F8900796BF3 /* SIGError.m */,
 				A6BC8AEE21C78C1700796BF3 /* SIGIdentity.h */,
+				A6BC8AEF21C78C1700796BF3 /* SIGIdentity.m */,
 				A6BC8AF621C791A700796BF3 /* SIGKey.h */,
-				A6BC8AF221C78C5E00796BF3 /* SIGKeychain.h */,
+				A6BC8AF721C791A700796BF3 /* SIGKey.m */,
 				A6BC8B0E21C8CE7600796BF3 /* SIGPartialInputStream.h */,
+				A6BC8B0F21C8CE7600796BF3 /* SIGPartialInputStream.m */,
 				53F5893C21C9AF38004A372B /* SIGPolicy.h */,
+				53F5893D21C9AF38004A372B /* SIGPolicy.m */,
 				A6BC8B5021C965C100796BF3 /* SIGSHA2SigningAlgorithm.h */,
+				A6BC8B5121C965C100796BF3 /* SIGSHA2SigningAlgorithm.m */,
 				A6BC8B5821C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.h */,
+				A6BC8B5921C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.m */,
 				A6BC8B4C21C9656100796BF3 /* SIGSigningAlgorithm.h */,
 				A6BC8B0A21C8C67300796BF3 /* SIGTrust.h */,
-				A6BC8B5421C96E0E00796BF3 /* SIGVerificationAlgorithm.h */,
-				A6BC8AEB21C78A3000796BF3 /* SIGArchiveBuilder.m */,
-				A6BC8B0321C8B65900796BF3 /* SIGArchiveChunk.m */,
-				A6BC8AFF21C79A8000796BF3 /* SIGArchiveReader.m */,
-				A6BC8AFB21C7982800796BF3 /* SIGArchiveVerifier.m */,
-				A6BC8B0721C8BB3700796BF3 /* SIGCertificate.m */,
-				A6BC8B4921C95F8900796BF3 /* SIGError.m */,
-				A6BC8AEF21C78C1700796BF3 /* SIGIdentity.m */,
-				A6BC8AF721C791A700796BF3 /* SIGKey.m */,
-				A6BC8AF321C78C5E00796BF3 /* SIGKeychain.m */,
-				A6BC8B0F21C8CE7600796BF3 /* SIGPartialInputStream.m */,
-				53F5893D21C9AF38004A372B /* SIGPolicy.m */,
-				A6BC8B5121C965C100796BF3 /* SIGSHA2SigningAlgorithm.m */,
-				A6BC8B5921C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.m */,
 				A6BC8B0B21C8C67300796BF3 /* SIGTrust.m */,
-				A6BC8ADF21C789DA00796BF3 /* Info.plist */,
+				A6BC8B5421C96E0E00796BF3 /* SIGVerificationAlgorithm.h */,
 				53F5895A21C9C1F2004A372B /* SIGVerificationAlgorithm.m */,
 			);
 			path = SignedArchive;
@@ -266,6 +297,14 @@
 			path = verify;
 			sourceTree = "<group>";
 		};
+		A6F5F3B122EE28010093FC81 /* resign */ = {
+			isa = PBXGroup;
+			children = (
+				A6F5F3B222EE281F0093FC81 /* main.m */,
+			);
+			path = resign;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
@@ -276,6 +315,7 @@
 				A6BC8B4A21C95F8900796BF3 /* SIGError.h in Headers */,
 				A6BC8B5621C96E0E00796BF3 /* SIGVerificationAlgorithm.h in Headers */,
 				53F5893E21C9AF38004A372B /* SIGPolicy.h in Headers */,
+				A665C1C9243A4D8E00F623F0 /* SIGArchiveCommon.h in Headers */,
 				A6BC8B5A21C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.h in Headers */,
 				A6BC8B5221C965C100796BF3 /* SIGSHA2SigningAlgorithm.h in Headers */,
 				A6BC8B4E21C9656100796BF3 /* SIGSigningAlgorithm.h in Headers */,
@@ -356,6 +396,24 @@
 			productReference = A6BC8B3B21C8E30500796BF3 /* verify */;
 			productType = "com.apple.product-type.tool";
 		};
+		A6F5F3B422EE282D0093FC81 /* resign */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A6F5F3BD22EE282D0093FC81 /* Build configuration list for PBXNativeTarget "resign" */;
+			buildPhases = (
+				A6F5F3B722EE282D0093FC81 /* Sources */,
+				A6F5F3BA22EE282D0093FC81 /* Frameworks */,
+				A6F5F3BC22EE282D0093FC81 /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A6F5F3B522EE282D0093FC81 /* PBXTargetDependency */,
+			);
+			name = resign;
+			productName = sign;
+			productReference = A6F5F3C022EE282D0093FC81 /* resign */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -395,6 +453,7 @@
 				A6BC8B2221C8D80D00796BF3 /* SignedArchive */,
 				A6BC8B3A21C8E30500796BF3 /* verify */,
 				53F5894F21C9B527004A372B /* extract */,
+				A6F5F3B422EE282D0093FC81 /* resign */,
 			);
 		};
 /* End PBXProject section */
@@ -431,9 +490,9 @@
 				A6BC8B4B21C95F8900796BF3 /* SIGError.m in Sources */,
 				A6BC8B3221C8D81F00796BF3 /* SIGPartialInputStream.m in Sources */,
 				A6BC8B3321C8D81F00796BF3 /* SIGKey.m in Sources */,
+				A665C1CD243A4DF000F623F0 /* SIGArchiveCommon.m in Sources */,
 				A6BC8B5321C965C100796BF3 /* SIGSHA2SigningAlgorithm.m in Sources */,
 				A6BC8B5B21C96E4200796BF3 /* SIGSHA2VerificationAlgorithm.m in Sources */,
-				A6BC8B3421C8D81F00796BF3 /* SIGKeychain.m in Sources */,
 				A6BC8B3521C8D81F00796BF3 /* SIGTrust.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -443,6 +502,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				A6BC8B3E21C8E30600796BF3 /* main.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A6F5F3B722EE282D0093FC81 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A6F5F3B822EE282D0093FC81 /* main.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -464,6 +531,11 @@
 			target = A6BC8B2221C8D80D00796BF3 /* SignedArchive */;
 			targetProxy = A6BC8B4521C8F2F500796BF3 /* PBXContainerItemProxy */;
 		};
+		A6F5F3B522EE282D0093FC81 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A6BC8B2221C8D80D00796BF3 /* SignedArchive */;
+			targetProxy = A6F5F3B622EE282D0093FC81 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -471,7 +543,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				MACOSX_DEPLOYMENT_TARGET = 10.13;
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Debug;
@@ -480,7 +552,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				MACOSX_DEPLOYMENT_TARGET = 10.13;
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Release;
@@ -608,7 +680,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = H7V7XYVQ7D;
-				MACOSX_DEPLOYMENT_TARGET = 10.12;
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Debug;
@@ -619,7 +691,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = H7V7XYVQ7D;
-				MACOSX_DEPLOYMENT_TARGET = 10.12;
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Release;
@@ -631,7 +703,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = H7V7XYVQ7D;
 				EXECUTABLE_PREFIX = lib;
-				MACOSX_DEPLOYMENT_TARGET = 10.12;
+				MACOSX_DEPLOYMENT_TARGET = 10.12.4;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 			};
@@ -644,7 +716,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = H7V7XYVQ7D;
 				EXECUTABLE_PREFIX = lib;
-				MACOSX_DEPLOYMENT_TARGET = 10.12;
+				MACOSX_DEPLOYMENT_TARGET = 10.12.4;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 			};
@@ -656,7 +728,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = H7V7XYVQ7D;
-				MACOSX_DEPLOYMENT_TARGET = 10.12;
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Debug;
@@ -667,7 +739,29 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = H7V7XYVQ7D;
-				MACOSX_DEPLOYMENT_TARGET = 10.12;
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		A6F5F3BE22EE282D0093FC81 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = H7V7XYVQ7D;
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		A6F5F3BF22EE282D0093FC81 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = H7V7XYVQ7D;
+				MACOSX_DEPLOYMENT_TARGET = 10.14;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Release;
@@ -716,6 +810,15 @@
 			buildConfigurations = (
 				A6BC8B4021C8E30600796BF3 /* Debug */,
 				A6BC8B4121C8E30600796BF3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A6F5F3BD22EE282D0093FC81 /* Build configuration list for PBXNativeTarget "resign" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A6F5F3BE22EE282D0093FC81 /* Debug */,
+				A6F5F3BF22EE282D0093FC81 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

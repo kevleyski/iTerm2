@@ -202,7 +202,6 @@
                            target:(id)target
                          selector:(SEL)selector
                          userData:(NSDictionary *)userData {
-    assert(!_suspended);
     DLog(@"Register %@ from\n%@", shortcut, [NSThread callStackSymbols]);
 
     EventHotKeyRef eventHotKey = NULL;
@@ -214,13 +213,15 @@
     EventHotKeyID hotKeyID;
     if (!existingHotKey) {
         hotKeyID = [self nextHotKeyID];
-        if (RegisterEventHotKey((UInt32)shortcut.keyCode,
-                                carbonModifiers,
-                                hotKeyID,
-                                GetEventDispatcherTarget(),
-                                0,
-                                &eventHotKey)) {
-            return nil;
+        if (!_suspended) {
+            if (RegisterEventHotKey((UInt32)shortcut.keyCode,
+                                    carbonModifiers,
+                                    hotKeyID,
+                                    GetEventDispatcherTarget(),
+                                    0,
+                                    &eventHotKey)) {
+                return nil;
+            }
         }
     } else {
         hotKeyID = existingHotKey.hotKeyID;
@@ -234,14 +235,23 @@
                                                              target:target
                                                            selector:selector] autorelease];
     DLog(@"Register %@", hotkey);
-    [_hotKeys addObject:hotkey];
+    if (_suspended) {
+        DLog(@"NOTE: Add to suspended list");
+        [_suspendedHotKeys addObject:hotkey];
+    } else {
+        [_hotKeys addObject:hotkey];
+    }
     DLog(@"Hotkeys are now:\n%@", _hotKeys);
     return hotkey;
 }
 
 - (void)unregisterHotKey:(iTermHotKey *)hotKey {
-    assert(!_suspended);
     DLog(@"Unregister %@", hotKey);
+    if (_suspended) {
+        DLog(@"Remove from suspended list %@", _suspendedHotKeys);
+        [_suspendedHotKeys removeObject:hotKey];
+        return;
+    }
     // Get the count before removing hotKey because that could free it.
     NSUInteger count = [[self hotKeysWithID:hotKey.hotKeyID] count];
     EventHotKeyRef eventHotKey = hotKey.eventHotKey;
@@ -268,7 +278,7 @@
 - (NSArray<iTermHotKey *> *)hotKeysWithKeyCode:(NSUInteger)keyCode
                                      modifiers:(NSEventModifierFlags)modifiers {
     NSMutableArray<iTermHotKey *> *result = [NSMutableArray array];
-    for (iTermHotKey *hotkey in _hotKeys) {
+    for (iTermHotKey *hotkey in _suspended ? _suspendedHotKeys : _hotKeys) {
         if (hotkey.shortcut.keyCode == keyCode && hotkey.shortcut.modifiers == modifiers) {
             [result addObject:hotkey];
         }
@@ -292,6 +302,7 @@
 static OSStatus EventHandler(EventHandlerCallRef inHandler,
                              EventRef inEvent,
                              void *inUserData) {
+    DLog(@"EventHandler called");
     if ([[iTermCarbonHotKeyController sharedInstance] handleEvent:inEvent]) {
         DLog(@"Handled hotkey event");
         return noErr;
@@ -310,6 +321,7 @@ static OSStatus EventHandler(EventHandlerCallRef inHandler,
                           sizeof(EventHotKeyID),
                           NULL,
                           &hotKeyID)) {
+        DLog(@"failed to get event params");
         return NO;
     }
 
@@ -321,7 +333,7 @@ static OSStatus EventHandler(EventHandlerCallRef inHandler,
     if ([NSApp isActive] &&
         [keyWindow.firstResponder isKindOfClass:[iTermShortcutInputView class]]) {
         // The first responder is a shortcut input view. Let it handle it.
-
+        DLog(@"Send to shortcut input view");
         iTermHotKey *hotKey = hotkeys.firstObject;
         if (!hotKey) {
             return NO;
@@ -346,6 +358,7 @@ static OSStatus EventHandler(EventHandlerCallRef inHandler,
         if ([handled containsObject:hotkey]) {
             continue;
         }
+        DLog(@"Send to %@", hotkey.target);
         // The target returns an array of siblings that were handled at the same time.
         NSArray *handledSiblings = [hotkey.target performSelector:hotkey.selector
                                                        withObject:hotkey.userData

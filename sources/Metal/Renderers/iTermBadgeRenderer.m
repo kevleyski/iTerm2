@@ -3,6 +3,8 @@
 #import "iTermAdvancedSettingsModel.h"
 #import "iTermMetalBufferPool.h"
 #import "iTermMetalRenderer.h"
+#import "iTermPreferences.h"
+#import "iTermSharedImageStore.h"
 #import "iTermTextDrawingHelper.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -20,6 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
     id<MTLTexture> _texture;
     CGSize _size;
     NSImage *_previousImage;
+    NSColorSpace *_colorSpace;
 }
 
 - (nullable instancetype)initWithDevice:(id<MTLDevice>)device {
@@ -28,7 +31,7 @@ NS_ASSUME_NONNULL_BEGIN
         _metalRenderer = [[iTermMetalRenderer alloc] initWithDevice:device
                                                  vertexFunctionName:@"iTermBadgeVertexShader"
                                                fragmentFunctionName:@"iTermBadgeFragmentShader"
-                                                           blending:[iTermMetalBlending compositeSourceOver]
+                                                           blending:[iTermMetalBlending atop]
                                                 transientStateClass:[iTermBadgeRendererTransientState class]];
     }
     return self;
@@ -46,13 +49,18 @@ NS_ASSUME_NONNULL_BEGIN
     return _texture != nil;
 }
 
-- (void)setBadgeImage:(NSImage *)image context:(nonnull iTermMetalBufferPoolContext *)context {
-    if (image == _previousImage) {
+- (void)setBadgeImage:(NSImage *)image
+           colorSpace:(NSColorSpace *)colorSpace
+              context:(nonnull iTermMetalBufferPoolContext *)context {
+    if (image == _previousImage && colorSpace == _colorSpace) {
         return;
     }
     _previousImage = image;
+    _colorSpace = colorSpace;
     _size = image.size;
-    _texture = [_metalRenderer textureFromImage:image context:context];
+    _texture = [_metalRenderer textureFromImage:[iTermImageWrapper withImage:image]
+                                        context:context
+                                     colorSpace:colorSpace];
     _texture.label = @"Badge";
 }
 
@@ -61,11 +69,15 @@ NS_ASSUME_NONNULL_BEGIN
     iTermBadgeRendererTransientState *tState = transientState;
     const CGSize size = tState.destinationRect.size;
     const CGFloat scale = tState.configuration.scale;
-    const CGFloat MARGIN_HEIGHT = [iTermAdvancedSettingsModel terminalVMargin] * scale;
-    CGRect quad = CGRectMake(scale * tState.destinationRect.origin.x,
-                             tState.configuration.viewportSize.y - scale * CGRectGetMaxY(tState.destinationRect) - MARGIN_HEIGHT,
-                             scale * size.width,
-                             scale * size.height);
+
+    const CGFloat viewportHeight = tState.configuration.viewportSize.y;
+    const CGFloat topExtra = transientState.configuration.extraMargins.top;  // e.g. per-pane title bar, status bar
+    // This is the distance from the bottom of the viewport to the bottom of the badge image.
+    const CGFloat minY = viewportHeight - topExtra - scale * CGRectGetMaxY(tState.destinationRect);
+    const CGRect quad = CGRectMake(scale * tState.destinationRect.origin.x,
+                                   minY,
+                                   scale * size.width,
+                                   scale * size.height);
     // The destinationRect is clipped to the visible area.
     const CGFloat textureHeight = tState.textureSizeInPoints.height * tState.configuration.scale;
     const CGFloat fractionVisible = quad.size.height / textureHeight;

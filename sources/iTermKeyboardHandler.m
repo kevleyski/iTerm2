@@ -10,6 +10,8 @@
 #import "DebugLogging.h"
 #import "iTermAdvancedSettingsModel.h"
 #import "iTermNSKeyBindingEmulator.h"
+#import "NSEvent+iTerm.h"
+#import "NSStringITerm.h"
 
 // In issue 2743, it is revealed that in OS 10.9 this sometimes calls -insertText on the
 // wrong instance of PTYTextView. We work around the issue by using a global variable to
@@ -33,7 +35,7 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
     // delegate then this will be set to YES to prevent it from being handled twice.
     BOOL _keyPressHandled;
 
-    // This is used by the experimental feature guarded by [iTermAdvancedSettingsModel experimentalKeyHandling].
+    // This is used by the experimental feature guarded by [iTermAdvancedSettingsModel experimentalKeyHandling] or [iTermAdvancedSettingsModel enableCharacterAccentMenu].
     // Indicates if marked text existed before invoking -handleEvent: for a keypress. If the
     // input method handles the keypress and causes the IME to finish then the keypress must not
     // be passed to the delegate. -insertText:replacementRange: and -doCommandBySelector: need to
@@ -45,9 +47,18 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _keyBindingEmulator = [[iTermNSKeyBindingEmulator alloc] init];
+        _keyBindingEmulator = [iTermNSKeyBindingEmulator sharedInstance];
     }
     return self;
+}
+
+- (NSDictionary *)dictionaryValue {
+    return @{ @"mapper": NSStringFromClass(self.keyMapper.class) ?: @"",
+              @"mapperConfig": self.keyMapper.keyMapperDictionaryValue ?: @{} };
+}
+
+- (nullable NSString *)stringForEventWithoutSideEffects:(NSEvent *)event encoding:(NSStringEncoding)encoding {
+    return [[NSString alloc] initWithData:[_keyMapper keyMapperDataForPostCocoaEvent:event] encoding:encoding];
 }
 
 // I haven't figured out how to test this code automatically, but a few things to try:
@@ -61,7 +72,7 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
     if (![self.delegate keyboardHandler:self shouldHandleKeyDown:event]) {
         return;
     }
-    unsigned int modflag = [event modifierFlags];
+    unsigned int modflag = [event it_modifierFlags];
     unsigned short keyCode = [event keyCode];
     _hadMarkedTextBeforeHandlingKeypressEvent = [self hasMarkedText];
     BOOL rightAltPressed = (modflag & NSRightAlternateKeyMask) == NSRightAlternateKeyMask;
@@ -93,7 +104,7 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
 
     NSMutableArray *eventsToHandle = [NSMutableArray array];
     BOOL pointlessly;
-    if ([_keyBindingEmulator handlesEvent:event pointlessly:&pointlessly extraEvents:eventsToHandle]) {
+    if ([_keyBindingEmulator handlesEvent:event pointlessly:&pointlessly extraEvents:eventsToHandle action:nil]) {
         if (!pointlessly) {
             DLog(@"iTermNSKeyBindingEmulator reports that event is handled, sending to interpretKeyEvents.");
             [self.delegate keyboardHandler:self interpretKeyEvents:@[ event ]];
@@ -107,6 +118,16 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
     for (NSEvent *event in eventsToHandle) {
         [self handleKeyDownEvent:event eschewCocoaTextHandling:NO context:context inputContext:inputContext];
     }
+}
+
+- (BOOL)performKeyEquivalent:(NSEvent *)event inputContext:(NSTextInputContext *)inputContext {
+    DLog(@"event=%@", event);
+    if ([_keyMapper keyMapperWantsKeyEquivalent:event]) {
+        [self keyDown:event inputContext:inputContext];
+        return YES;
+    }
+    DLog(@"return no");
+    return NO;
 }
 
 - (void)flagsChanged:(NSEvent *)event {
@@ -124,7 +145,7 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
         return;
     }
 
-    if ([iTermAdvancedSettingsModel experimentalKeyHandling]) {
+    if ([iTermAdvancedSettingsModel experimentalKeyHandling] || [iTermAdvancedSettingsModel enableCharacterAccentMenu]) {
         // Pass the event to the delegate since doCommandBySelector was called instead of
         // insertText:replacementRange:, unless an IME is in use. An example of when this gets called
         // but we should not pass the event to the delegate is when there is marked text and you press
@@ -155,6 +176,28 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
     aString = [aString stringByReplacingOccurrencesOfString:@"¥" withString:@"\\"];
 
     DLog(@"PTYTextView insertText:%@", aString);
+    if (replacementRange.length > 0 && replacementRange.location != NSNotFound) {
+        DLog(@"Replacement range has length %@", @(replacementRange.length));
+        NSEvent *saved = _eventBeingHandled;
+        if ([self.delegate keyboardHandler:self shouldBackspaceAt:NSMaxRange(replacementRange)]) {
+            DLog(@"Delegate allows us to backspace");
+            _eventBeingHandled = [NSEvent keyEventWithType:NSEventTypeKeyDown
+                                                  location:NSZeroPoint
+                                             modifierFlags:0
+                                                 timestamp:0
+                                              windowNumber:[self.delegate keyboardHandlerWindowNumber:self]
+                                                   context:nil
+                                                characters:[NSString stringWithLongCharacter:127]
+                               charactersIgnoringModifiers:[NSString stringWithLongCharacter:127]
+                                                 isARepeat:NO
+                                                   keyCode:kVK_Delete];
+            for (NSInteger i = 0; i < replacementRange.length; i++) {
+                [self doCommandBySelector:@selector(deleteBackward:)];
+            }
+            _eventBeingHandled = saved;
+        }
+    }
+    aString = [_keyMapper transformedTextToInsert:aString];
     [self.delegate keyboardHandler:self insertText:aString];
     if ([aString length] > 0) {
         _keyPressHandled = YES;
@@ -170,28 +213,51 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
 - (BOOL)shouldSendEventToController:(NSEvent *)event
                             context:(iTermKeyboardHandlerContext)context {
     if (_hadMarkedTextBeforeHandlingKeypressEvent) {
+        DLog(@"_hadMarkedTextBeforeHandlingKeypressEvent=YES");
         return NO;
     }
 
     if (context.hasActionableKeyMapping) {
         // Delegate will do something useful
+        DLog(@"context.hasActionableKeyMapping");
         return YES;
     }
 
     return [_keyMapper keyMapperShouldBypassPreCocoaForEvent:event];
 }
 
+- (NSString *)currentKeyboardSourceID {
+    TISInputSourceRef source = NULL;
+    source = TISCopyCurrentKeyboardInputSource();
+    NSString *keyboardID = [(__bridge NSString *)TISGetInputSourceProperty(source, kTISPropertyInputSourceID) copy];
+    CFRelease(source);
+    return keyboardID;
+}
+
+- (BOOL)performCheckingIfKeyboardChanges:(void (^)(void))block {
+    NSString *keyboardBefore = [self currentKeyboardSourceID];
+    block();
+    // If our keyboard changed from this we just assume an input method
+    // grabbed it and do nothing.
+    if (keyboardBefore && ![keyboardBefore isEqualToString:self.currentKeyboardSourceID]) {
+        return YES;
+    }
+    return NO;
+}
+
 - (void)sendEventToCocoa:(NSEvent *)event inputContext:(NSTextInputContext *)inputContext {
     _eventBeingHandled = event;
     // TODO: Consider going straight to interpretKeyEvents: for repeats. See issue 6052.
-    if ([iTermAdvancedSettingsModel experimentalKeyHandling]) {
+    if ([iTermAdvancedSettingsModel experimentalKeyHandling] || [iTermAdvancedSettingsModel enableCharacterAccentMenu]) {
         // This may cause -insertText:replacementRange: or -doCommandBySelector: to be called.
         // These methods have a side-effect of setting _keyPressHandled if they dispatched the event
         // to the delegate. They might not get called: for example, if you hold down certain keys
         // then repeats might be ignored, or the IME might handle it internally (such as when you press
         // "L" in AquaSKK's Hiragana mode to enter ASCII mode. See pull request 279 for more on this.
-        [inputContext handleEvent:event];
+        DLog(@"Calling handleEvent:%@", event);
+        _keyPressHandled = [inputContext handleEvent:event];
     } else {
+        DLog(@"Calling interpretKeyEvents:%@", event);
         [self.delegate keyboardHandler:self interpretKeyEvents:@[ event ]];
     }
     if (_eventBeingHandled == event) {
@@ -199,7 +265,7 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
     }
 }
 
-- (BOOL)shouldPassPostCocoaEventToDelegate:(NSEvent *)event {
+- (BOOL)shouldPassPostCocoaEventToDelegate:(NSEvent *)event inputContext:(NSTextInputContext *)inputContext {
     if (_hadMarkedTextBeforeHandlingKeypressEvent) {
         return NO;
     }
@@ -209,10 +275,20 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
     if ([self hasMarkedText]) {
         return NO;
     }
-    if ([iTermAdvancedSettingsModel experimentalKeyHandling]) {
+    if ([iTermAdvancedSettingsModel experimentalKeyHandling] || [iTermAdvancedSettingsModel enableCharacterAccentMenu]) {
         if (!event.isARepeat) {
             return NO;
         }
+    }
+    const NSEventModifierFlags mask = (NSEventModifierFlagOption |
+                                       NSEventModifierFlagCommand |
+                                       NSEventModifierFlagControl);
+    if ([inputContext.selectedKeyboardInputSource isEqual:@"com.apple.keylayout.UnicodeHexInput"] &&
+        (event.modifierFlags & mask) == NSEventModifierFlagOption &&
+        event.charactersIgnoringModifiers.length == 1 &&
+        [@"1234567890abcdefABCDEF" containsString:event.charactersIgnoringModifiers]) {
+        DLog(@"Hex input");
+        return NO;
     }
     return YES;
 }
@@ -235,7 +311,8 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
    eschewCocoaTextHandling:(BOOL)eschewCocoaTextHandling
                    context:(iTermKeyboardHandlerContext)context
               inputContext:(NSTextInputContext *)inputContext {
-    const unsigned int modflag = [event modifierFlags];
+    const unsigned int modflag = [event it_modifierFlags];
+    [_keyMapper keyMapperSetEvent:event];
 
     // Should we process the event immediately in the delegate?
     if ([self shouldSendEventToController:event context:context]) {
@@ -284,13 +361,25 @@ static iTermKeyboardHandler *sCurrentKeyboardHandler;
 - (void)handleEventWithCocoa:(NSEvent *)event
                     inputContext:(NSTextInputContext *)inputContext {
     sCurrentKeyboardHandler = self;
-    [self sendEventToCocoa:event inputContext:inputContext];
+    const BOOL keyboardChanged = [self performCheckingIfKeyboardChanges:^{
+        [self sendEventToCocoa:event inputContext:inputContext];
+    }];
     sCurrentKeyboardHandler = nil;
 
-    if ([self shouldPassPostCocoaEventToDelegate:event]) {
+    if (keyboardChanged && [iTermAdvancedSettingsModel aquaSKKBugfixEnabled]) {
+        // See https://github.com/ghostty-org/ghostty/commit/7a27af8bfce9007e31be10aeafe7a968a66aa0b5#diff-a2fa888dc78c338c8f0e1d250487f2fae439debb3fcf7ff2d1a3ad70616a9fb1
+        DLog(@"This event (%@) caused the keyboard to change, so don't process it any more", event);
+        return;
+    }
+    if (event.isARepeat && [iTermAdvancedSettingsModel enableCharacterAccentMenu]) {
+        DLog(@"Squelch repeated keypress event %@", event);
+        return;
+    }
+    if ([self shouldPassPostCocoaEventToDelegate:event inputContext:inputContext]) {
         DLog(@"PTYTextView keyDown unhandled (likely repeated) keypress with no IME, send to delegate");
         [self.delegate keyboardHandler:self sendEventToController:event];
     }
 }
 
 @end
+

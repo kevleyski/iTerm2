@@ -9,6 +9,7 @@
 
 #import "DebugLogging.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "iTermAttributedStringBuilder.h"
 #import "iTermBoxDrawingBezierCurveFactory.h"
 #import "iTermCharacterSource.h"
 #import "iTermColorMap.h"
@@ -29,6 +30,7 @@
 #import "NSStringITerm.h"
 #import "PTYFontInfo.h"
 #import "PTYTextView.h"
+#import "PTYTextView+ARC.h"
 #import "VT100Screen.h"
 #import "VT100ScreenMark.h"
 
@@ -40,6 +42,7 @@ NS_ASSUME_NONNULL_BEGIN
 @implementation iTermMetalGlue {
     NSMutableSet<NSString *> *_missingImages;
     NSMutableSet<NSString *> *_loadedImages;
+    iTermAttributedStringBuilderStats _stats;
 }
 
 @synthesize oldCursorScreenCoord = _oldCursorScreenCoord;
@@ -54,6 +57,13 @@ NS_ASSUME_NONNULL_BEGIN
                                                    object:nil];
         _missingImages = [NSMutableSet set];
         _loadedImages = [NSMutableSet set];
+        iTermPreciseTimerSetEnabled(YES);
+        iTermPreciseTimerStatsInit(&_stats.attrsForChar, "Compute Attrs");
+        iTermPreciseTimerStatsInit(&_stats.shouldSegment, "Segment");
+        iTermPreciseTimerStatsInit(&_stats.buildMutableAttributedString, "Build attr strings");
+        iTermPreciseTimerStatsInit(&_stats.combineAttributes, "Combine Attrs");
+        iTermPreciseTimerStatsInit(&_stats.updateBuilder, "Update Builder");
+        iTermPreciseTimerStatsInit(&_stats.advances, "Advances");
     }
     return self;
 }
@@ -65,16 +75,16 @@ NS_ASSUME_NONNULL_BEGIN
 #pragma mark - Notifications
 
 - (void)imageDidLoad:(NSNotification *)notification {
-    iTermImageInfo *image = notification.object;
+    id<iTermImageInfoReading> image = notification.object;
     [_loadedImages addObject:image.uniqueIdentifier];
     if ([self missingImageIsVisible:image]) {
-        [_textView setNeedsDisplay:YES];
+        [_textView requestDelegateRedraw];
     }
 }
 
 #pragma mark - Private
 
-- (BOOL)missingImageIsVisible:(iTermImageInfo *)image {
+- (BOOL)missingImageIsVisible:(id<iTermImageInfoReading>)image {
     if (![_missingImages containsObject:image.uniqueIdentifier]) {
         return NO;
     }
@@ -88,15 +98,25 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (nullable id<iTermMetalDriverDataSourcePerFrameState>)metalDriverWillBeginDrawingFrame {
-    if (self.textView.drawingHelper.delegate == nil) {
+    if (!self.textView.drawingHelperIsValid) {
         return nil;
     }
     ITBetaAssert(self.delegate != nil, @"Nil delegate");
     ITBetaAssert(self.delegate.metalGlueContext != nil, @"Nil metal glue context");
+    iTermAttributedStringBuilderStatsPointers statsPointers = {
+        .attrsForChar = &_stats.attrsForChar,
+        .shouldSegment = &_stats.shouldSegment,
+        .buildMutableAttributedString = &_stats.buildMutableAttributedString,
+        .combineAttributes = &_stats.combineAttributes,
+        .updateBuilder = &_stats.updateBuilder,
+        .advances = &_stats.advances,
+    };
+    iTermAttributedStringBuilder *attributedStringBuilder = [[iTermAttributedStringBuilder alloc] initWithStats:statsPointers];
     return [[iTermMetalPerFrameState alloc] initWithTextView:self.textView
                                                       screen:self.screen
                                                         glue:self
-                                                     context:self.delegate.metalGlueContext];
+                                                     context:self.delegate.metalGlueContext
+                                     attributedStringBuilder:attributedStringBuilder];
 }
 
 - (void)metalDidFindImages:(NSSet<NSString *> *)foundImages
@@ -120,7 +140,7 @@ NS_ASSUME_NONNULL_BEGIN
         NSMutableSet<NSString *> *newlyLoaded = [self->_missingImages mutableCopy];
         [newlyLoaded intersectSet:self->_loadedImages];
         if (newlyLoaded.count) {
-            [self->_textView setNeedsDisplay:YES];
+            [self->_textView requestDelegateRedraw];
             [self->_missingImages minusSet:self->_loadedImages];
         }
     });
@@ -147,6 +167,18 @@ NS_ASSUME_NONNULL_BEGIN
     NSString *filename = @"/tmp/iTerm2-frame-capture.zip";
     [archive writeToFile:filename atomically:NO];
     [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:filename] ]];
+}
+
+- (iTermImageWrapper *)backgroundImage {
+    return [self.delegate metalGlueBackgroundImage];
+}
+
+- (iTermBackgroundImageMode)backroundImageMode {
+    return [self.delegate metalGlueBackgroundImageMode];
+}
+
+- (CGFloat)backgroundImageBlend {
+    return [self.delegate metalGlueBackgroundImageBlend];
 }
 
 @end

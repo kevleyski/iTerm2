@@ -7,6 +7,18 @@
 
 #import <Cocoa/Cocoa.h>
 
+typedef struct {
+    NSInteger currentIndex;
+    NSInteger numberOfResults;
+} iTermSearchFieldCounts;
+
+@class iTermSearchFieldCell;
+
+@protocol iTermSearchFieldControl<NSObject>
+- (BOOL)searchFieldControlHasCounts:(iTermSearchFieldCell *)cell;
+- (iTermSearchFieldCounts)searchFieldControlGetCounts:(iTermSearchFieldCell *)cell;
+@end
+
 @interface iTermSearchFieldCell : NSSearchFieldCell
 @property(nonatomic, assign) CGFloat fraction;
 @property(nonatomic, readonly) BOOL needsAnimation;
@@ -19,6 +31,8 @@
 @interface iTermMinimalSearchFieldCell : iTermSearchFieldCell
 @end
 
-@interface iTermMiniSearchFieldCell : iTermSearchFieldCell
+@interface iTermMinimalFilterFieldCell : iTermSearchFieldCell
 @end
 
+@interface iTermMiniSearchFieldCell : iTermSearchFieldCell
+@end

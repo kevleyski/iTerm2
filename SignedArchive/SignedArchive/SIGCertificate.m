@@ -9,7 +9,6 @@
 #import "SIGCertificate.h"
 
 #import "SIGKey.h"
-#import "SIGKeychain.h"
 #import "SIGTrust.h"
 
 @implementation SIGCertificate {
@@ -46,14 +45,19 @@
     }
 
     SecKeyRef key;
+#if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_14
     if (@available(macOS 10.14, *)) {
         key = SecCertificateCopyKey(_secCertificate);
-    } else {
+    }
+    else {
         const OSStatus status = SecCertificateCopyPublicKey(_secCertificate, &key);
         if (status != noErr) {
             return nil;
         }
     }
+#else
+    key = SecCertificateCopyKey(_secCertificate);
+#endif
     if (!key) {
         return nil;
     }
@@ -90,9 +94,27 @@
     return value;
 }
 
+- (NSDate *)expirationDate {
+    CFArrayRef keys = CFArrayCreate(NULL, (const void **)&kSecOIDInvalidityDate, 1, &kCFTypeArrayCallBacks);
+    CFDictionaryRef result = SecCertificateCopyValues(_secCertificate, keys, NULL);
+    NSDate *date = nil;
+    if (result != NULL) {
+        CFDictionaryRef invalidityDateDictionary = CFDictionaryGetValue(result, kSecOIDInvalidityDate);
+        if (invalidityDateDictionary) {
+            CFTypeRef value = CFDictionaryGetValue(invalidityDateDictionary, kSecPropertyKeyValue);
+            date = (__bridge NSDate *)value;
+        }
+        CFRelease(result);
+    }
+    CFRelease(keys);
+
+    return date;
+}
+
 - (NSData *)serialNumber {
     CFErrorRef error = NULL;
     NSData *value;
+#if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_13
     if (@available(macOS 10.13, *)) {
         value = (__bridge_transfer NSData *)SecCertificateCopySerialNumberData(_secCertificate,
                                                                                &error);
@@ -100,6 +122,10 @@
         value = (__bridge_transfer NSData *)SecCertificateCopySerialNumber(_secCertificate,
                                                                            &error);
     }
+#else
+    value = (__bridge_transfer NSData *)SecCertificateCopySerialNumberData(_secCertificate,
+                                                                           &error);
+#endif
     if (value == NULL || error != NULL) {
         return nil;
     }
@@ -116,7 +142,17 @@
 + (BOOL)certificateInArray:(CFArrayRef)array atIndex:(NSInteger)i hasName:(CFDataRef)name {
     SecCertificateRef secCertificate = (SecCertificateRef)CFArrayGetValueAtIndex(array, i);
 
-    CFDataRef subjectContent = SecCertificateCopyNormalizedSubjectContent(secCertificate, NULL);
+    CFDataRef subjectContent;
+#if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_12_4
+    if (@available(macOS 10.12.4, *)) {
+        subjectContent = SecCertificateCopyNormalizedSubjectSequence(secCertificate);
+    } else {
+        subjectContent = SecCertificateCopyNormalizedSubjectContent(secCertificate, NULL);
+    }
+#else
+    subjectContent = SecCertificateCopyNormalizedSubjectSequence(secCertificate);
+#endif
+
     const BOOL result = CFEqual(subjectContent, name);
     if (subjectContent) {
         CFRelease(subjectContent);
@@ -169,10 +205,6 @@
     if (!_secCertificate) {
         return nil;
     }
-    SIGKeychain *keychain = [SIGKeychain sharedInstance];
-    if (keychain == nil) {
-        return nil;
-    }
     CFDataRef issuerName = SecCertificateCopyNormalizedIssuerSequence(_secCertificate);
     if (!issuerName) {
         return nil;
@@ -183,6 +215,14 @@
         return nil;
     }
     return [[SIGCertificate alloc] initWithSecCertificate:secCertificate];
+}
+
+- (BOOL)isEqual:(id)object {
+    if (![object isKindOfClass:[SIGCertificate class]]) {
+        return NO;
+    }
+    SIGCertificate *other = object;
+    return [self.data isEqual:other.data];
 }
 
 @end

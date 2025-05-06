@@ -8,14 +8,19 @@
 #import <Cocoa/Cocoa.h>
 #import "ProfileModel.h"
 #import "iTermInitialDirectory.h"
+#import "iTermTmuxSessionObject.h"
 #import "TmuxGateway.h"
 #import "WindowControllerInterface.h"
 
+@class iTermFontTable;
+@class iTermVariableScope;
 @class PTYSession;
 @class PTYTab;
 @class PseudoTerminal;
 @class EquivalenceClassSet;
 
+// Posted just before sessions change (names, addition, deletion)
+extern NSString *const kTmuxControllerSessionsWillChange;
 // Posted when sessions change (names, addition, deletion)
 extern NSString *const kTmuxControllerSessionsDidChange;
 // Posted after detaching
@@ -32,13 +37,24 @@ extern NSString *const kTmuxControllerWindowDidClose;
 extern NSString *const kTmuxControllerAttachedSessionDidChange;
 // Posted when a session changes name
 extern NSString *const kTmuxControllerSessionWasRenamed;
+// Posted when set-titles option changes. Object is tmux controller.
+extern NSString *const kTmuxControllerDidFetchSetTitlesStringOption;
+// Posted before sending kill-window
+extern NSString *const iTermTmuxControllerWillKillWindow;
+// Posted when one or more windows changes hidden status
+extern NSString *const kTmuxControllerDidChangeHiddenWindows;
+
+@protocol iTermTmuxControllerSession<NSObject>
+- (void)tmuxControllerSessionSetTTL:(NSTimeInterval)ttl redzone:(BOOL)redzone;
+- (void)revealIfTabSelected;
+@end
 
 @interface TmuxController : NSObject
 
 @property(nonatomic, readonly) TmuxGateway *gateway;
 @property(nonatomic, retain) NSMutableDictionary *windowPositions;
 @property(nonatomic, copy) NSString *sessionName;
-@property(nonatomic, retain) NSArray *sessions;
+@property(nonatomic, copy) NSArray<iTermTmuxSessionObject *> *sessionObjects;
 @property(nonatomic, assign) BOOL ambiguousIsDoubleWidth;
 @property(nonatomic, assign) NSInteger unicodeVersion;
 @property(nonatomic, readonly) NSString *clientName;
@@ -46,9 +62,17 @@ extern NSString *const kTmuxControllerSessionWasRenamed;
 @property(nonatomic, readonly) BOOL hasOutstandingWindowResize;
 @property(nonatomic, readonly, getter=isAttached) BOOL attached;
 @property(nonatomic, readonly) BOOL detaching;
-@property(nonatomic, copy) Profile *profile;
-@property(nonatomic, readonly) NSDictionary *fontOverrides;
+@property(nonatomic, copy) Profile *sharedProfile;
+@property(nonatomic, readonly) NSDictionary *sharedFontOverrides;
+@property(nonatomic, readonly) NSDictionary *sharedKeyMappingOverrides;
 @property(nonatomic, readonly) NSString *sessionGuid;
+@property(nonatomic, readonly) BOOL variableWindowSize;
+@property(nonatomic, readonly) BOOL shouldSetTitles;
+@property(nonatomic, readonly) BOOL serverIsLocal;
+@property(nonatomic, readonly) NSString *defaultTerminal;
+@property(nonatomic) NSRect initialWindowHint;
+@property(nonatomic, readonly) BOOL detached;
+@property(nonatomic, readonly) NSArray<NSNumber *> *windowPaneIDs;
 
 - (instancetype)initWithGateway:(TmuxGateway *)gateway
                      clientName:(NSString *)clientName
@@ -56,64 +80,101 @@ extern NSString *const kTmuxControllerSessionWasRenamed;
                    profileModel:(ProfileModel *)profileModel NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
+- (Profile *)profileForWindow:(int)window;
+- (NSString *)perWindowSettingsForWindowWithGUID:(NSString *)terminalGUID;
+- (NSString *)perTabSettingsForTabWithWindowID:(int)wid;
+- (NSDictionary *)fontOverridesForWindow:(int)window;
+
 - (void)openWindowsInitial;
+
 - (void)openWindowWithId:(int)windowId
-			 intentional:(BOOL)intentional;
+			 intentional:(BOOL)intentional
+                 profile:(Profile *)profile;
+
 - (void)openWindowWithId:(int)windowId
 			  affinities:(NSArray *)affinities
-			 intentional:(BOOL)intentional;
+			 intentional:(BOOL)intentional
+                 profile:(Profile *)profile;
+
 - (void)hideWindow:(int)windowId;
 
-- (void)setLayoutInTab:(PTYTab *)tab
+// Modifies a native tab to match the given server layout.
+// Returns YES if you should call adjustWindowSizeIfNeededForTabs: after all tabs have been updated.
+- (BOOL)setLayoutInTab:(PTYTab *)tab
               toLayout:(NSString *)layout
+         visibleLayout:(NSString *)visibleLayout
                 zoomed:(NSNumber *)zoomed;
+- (void)adjustWindowSizeIfNeededForTabs:(NSArray<PTYTab *> *)tabs;
+
 - (void)sessionChangedTo:(NSString *)newSessionName sessionId:(int)sessionid;
 - (void)sessionsChanged;
 - (void)session:(int)sessionId renamedTo:(NSString *)newName;
 - (void)windowsChanged;
 - (void)windowWasRenamedWithId:(int)id to:(NSString *)newName;
 
-- (PTYSession *)sessionForWindowPane:(int)windowPane;
+// Call `block` when a window pane with `wp` is registered. If one is already registered, it will be called asynchronously.
+- (void)whenPaneRegistered:(int)wp call:(void (^)(PTYSession<iTermTmuxControllerSession> *))block;
+
+- (PTYSession<iTermTmuxControllerSession> *)sessionForWindowPane:(int)windowPane;
 - (PTYTab *)window:(int)window;
-- (NSArray<PTYSession *> *)sessionsInWindow:(int)window;
-- (void)registerSession:(PTYSession *)aSession
+- (NSArray<PTYSession<iTermTmuxControllerSession> *> *)sessionsInWindow:(int)window;
+- (void)registerSession:(PTYSession<iTermTmuxControllerSession> *)aSession
                withPane:(int)windowPane
                inWindow:(int)window;
 - (void)deregisterWindow:(int)window windowPane:(int)windowPane session:(id)session;
 - (void)changeWindow:(int)window tabTo:(PTYTab *)tab;
-- (NSValue *)positionForWindowWithPanes:(NSArray *)panes;
+- (NSValue *)positionForWindowWithPanes:(NSArray *)panes windowID:(int)windowID;
 
 // This should be called after the host sends an %exit command.
 - (void)detach;
-- (BOOL)windowDidResize:(NSWindowController<iTermWindowController> *)term;
+- (void)windowDidResize:(NSWindowController<iTermWindowController> *)term;
 - (void)fitLayoutToWindows;
 - (void)validateOptions;
+- (void)ping;
+- (void)sendPhonyCommand;
+- (void)sendReport:(NSData *)report pane:(int)pane;
+- (void)enablePauseModeIfPossible;
+- (void)unpausePanes:(NSArray<NSNumber *> *)wps;
+- (void)pausePanes:(NSArray<NSNumber *> *)wps;
+- (void)didPausePane:(int)wp;
 
 // Issue tmux commands to infer bounds on the version.
 - (void)guessVersion;
+- (void)loadTitleFormat;
 
 - (void)setClientSize:(NSSize)size;
 - (void)windowPane:(int)wp
          resizedBy:(int)amount
       horizontally:(BOOL)wasHorizontal;
+
+// If completion is nonnull it will be called with the new window pane or -1 on error.
 - (void)splitWindowPane:(int)wp
              vertically:(BOOL)splitVertically
-       initialDirectory:(iTermInitialDirectory *)initialDirectory;
-- (void)newWindowInSession:(NSString *)targetSession
-          initialDirectory:(iTermInitialDirectory *)initialDirectory;
+                  scope:(iTermVariableScope *)scope
+       initialDirectory:(iTermInitialDirectory *)initialDirectory
+             completion:(void (^)(int wp))completion;
+
+- (void)newWindowInSessionNumber:(NSNumber *)sessionNumber
+                           scope:(iTermVariableScope *)scope
+                initialDirectory:(iTermInitialDirectory *)initialDirectory;
 
 - (void)selectPane:(int)windowPane;
 
 - (PseudoTerminal *)windowWithAffinityForWindowId:(int)wid;
+- (NSSet<NSObject<NSCopying> *> *)savedAffinitiesForWindow:(NSString *)value;
+- (NSSize)sizeOfSmallestWindowAmong:(NSSet<NSString *> *)siblings;
 
 // nil: Open in a new window
 // A string of a non-negative integer (e.g., @"2") means to open alongside a tmux window with that ID
 // A string of a negative integer (e.g., @"-2") means to open in an iTerm2 window with abs(windowId)==window number.
 // If affinity is given then the newly created tab will be considered "manually opened" which is
 // used to determine the tab's eventual location in the tabbar.
-- (void)newWindowWithAffinity:(NSString *)windowId
+- (void)newWindowWithAffinity:(NSString *)windowIdString
+                         size:(NSSize)size
              initialDirectory:(iTermInitialDirectory *)initialDirectory
-                   completion:(void (^)(int newWindowId))completion;
+                        index:(NSNumber *)index
+                        scope:(iTermVariableScope *)scope
+                   completion:(void (^)(int))completion;
 
 - (void)movePane:(int)srcPane
         intoPane:(int)destPane
@@ -124,9 +185,17 @@ extern NSString *const kTmuxControllerSessionWasRenamed;
 
 - (void)killWindowPane:(int)windowPane;
 - (void)killWindow:(int)window;
-- (void)unlinkWindowWithId:(int)windowId inSession:(NSString *)sessionName;
+- (void)unlinkWindowWithId:(int)windowId;
 - (void)requestDetach;
-- (void)renameWindowWithId:(int)windowId inSession:(NSString *)sessionName toName:(NSString *)newName;
+- (void)renameWindowWithId:(int)windowId
+           inSessionNumber:(NSNumber *)sessionNumber
+                    toName:(NSString *)newName;
+
+// Rename the window and save in tmux server setting.
+- (void)setWindowTitleOverride:(NSString *)title
+                        window:(int)windowId;
+- (BOOL)canRenamePane;
+- (void)renamePane:(int)windowPane toTitle:(NSString *)newTitle;
 - (void)setHotkeyForWindowPane:(int)windowPane to:(NSDictionary *)hotkey;
 - (NSDictionary *)hotkeyForWindowPane:(int)windowPane;
 
@@ -134,37 +203,62 @@ extern NSString *const kTmuxControllerSessionWasRenamed;
 - (NSString *)tabColorStringForWindowPane:(int)windowPane;
 
 - (void)linkWindowId:(int)windowId
-           inSession:(NSString *)sessionName
-           toSession:(NSString *)targetSession;
+     inSessionNumber:(int)sessionNumber
+     toSessionNumber:(int)targetSession;
 
-- (void)renameSession:(NSString *)oldName to:(NSString *)newName;
-- (void)killSession:(NSString *)sessionName;
-- (void)attachToSession:(NSString *)sessionName;
+- (void)moveWindowId:(int)windowId
+     inSessionNumber:(int)sessionNumber
+     toSessionNumber:(int)targetSessionNumber;
+
+- (void)renameSessionNumber:(int)sessionNumber
+                         to:(NSString *)newName;
+
+- (void)killSessionNumber:(int)sessionNumber;
+- (void)attachToSessionWithNumber:(int)sessionNumber;
 - (void)addSessionWithName:(NSString *)sessionName;
-// NOTE: If the session name is bogus (or any other error occurs) the selector will not be called.
-- (void)listWindowsInSession:(NSString *)sessionName
-                      target:(id)target
-                    selector:(SEL)selector
-                      object:(id)object;
+// NOTE: If anything goes wrong the selector will not be called.
+- (void)listWindowsInSessionNumber:(int)sessionNumber
+                            target:(id)target
+                          selector:(SEL)selector
+                            object:(id)object;
+
 - (void)listSessions;
 - (void)saveAffinities;
 - (void)saveWindowOrigins;
 - (void)saveHiddenWindows;
+- (void)savePerWindowSettings;
+- (void)savePerTabSettings;
 
 - (void)swapPane:(int)pane1 withPane:(int)pane2;
 - (void)toggleZoomForPane:(int)pane;
 - (void)setPartialWindowIdOrder:(NSArray *)partialOrder;
 - (void)setCurrentWindow:(int)windowId;
 - (void)checkForUTF8;
+- (void)loadDefaultTerminal;
+- (void)loadKeyBindings;
+- (void)exitCopyMode;
 
 - (void)clearHistoryForWindowPane:(int)windowPane;
 
-- (void)setTmuxFont:(NSFont *)font
-       nonAsciiFont:(NSFont *)nonAsciiFont
-           hSpacing:(double)hs
-           vSpacing:(double)vs;
+- (void)setTmuxFontTable:(iTermFontTable *)fontTable
+                hSpacing:(CGFloat)hs
+                vSpacing:(CGFloat)vs
+                  window:(int)window;
 - (BOOL)windowIsHidden:(int)windowId;
-- (void)setLayoutInWindowPane:(int)windowPane toLayoutNamed:(NSString *)name;
-- (NSArray<PTYSession *> *)clientSessions;
+- (void)setLayoutInWindow:(int)window toLayout:(NSString *)layout;
+- (NSArray<PTYSession<iTermTmuxControllerSession> *> *)clientSessions;
+
+- (void)setSize:(NSSize)size window:(int)window;
+
+- (void)setEncodedUserVars:(NSString *)encodedUserVars forPane:(int)paneID;
+- (void)setUserVariableWithKey:(NSString *)key
+                         value:(NSString *)value
+                          pane:(int)paneID;
+- (NSDictionary<NSString *, NSString *> *)userVarsForPane:(int)paneID;
+- (void)activeWindowPaneDidChangeInWindow:(int)windowID toWindowPane:(int)paneID;
+- (void)activeWindowDidChangeTo:(int)windowID;
+- (void)setCurrentLatency:(NSTimeInterval)latency forPane:(int)wp;
+- (void)copyBufferToLocalPasteboard:(NSString *)bufferName;
+- (void)restoreWindowFrame:(PseudoTerminal *)term;
 
 @end

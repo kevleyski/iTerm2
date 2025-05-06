@@ -26,13 +26,18 @@
     if (lineNumber == 0) {
         range.location = 0;
     } else {
-        range.location = [[_lineBreakIndexOffsets objectAtIndex:lineNumber-1] unsignedLongValue];
+        if (lineNumber - 1 < _lineBreakIndexOffsets.count) {
+            range.location = [[_lineBreakIndexOffsets objectAtIndex:lineNumber-1] unsignedLongValue];
+        } else {
+            range.location = _allText.length;
+        }
     }
     if (lineNumber >= [_lineBreakIndexOffsets count]) {
         range.length = [_allText length] - range.location;
     } else {
         range.length = [[_lineBreakIndexOffsets objectAtIndex:lineNumber] unsignedLongValue] - range.location;
     }
+    assert(NSMaxRange(range) <= self.numberOfCharacters);
     return range;
 }
 
@@ -79,7 +84,7 @@
 // Onscreen X-position of a location (respecting compositing chars) in _allText.
 - (NSUInteger)columnOfChar:(NSUInteger)location inLine:(NSUInteger)accessibilityLineNumber {
     NSUInteger lineStart = [self offsetOfLine:accessibilityLineNumber];
-    screen_char_t* theLine = [_delegate accessibilityHelperLineAtIndex:accessibilityLineNumber];
+    const screen_char_t* theLine = [_delegate accessibilityHelperLineAtIndex:accessibilityLineNumber continuation:NULL];
     assert(location >= lineStart);
     int remaining = location - lineStart;
     int i = 0;
@@ -103,7 +108,7 @@
 // Range in _allText of an index (ignoring compositing chars).
 - (NSRange)rangeOfIndex:(NSUInteger)theIndex {
     NSUInteger accessibilityLineNumber = [self lineNumberOfIndex:theIndex];
-    screen_char_t* theLine = [_delegate accessibilityHelperLineAtIndex:accessibilityLineNumber];
+    const screen_char_t* theLine = [_delegate accessibilityHelperLineAtIndex:accessibilityLineNumber continuation:NULL];
     NSUInteger startingIndexOfLine = [self startingIndexOfLineNumber:accessibilityLineNumber];
     if (theIndex < startingIndexOfLine) {
         return NSMakeRange(NSNotFound, 0);
@@ -122,7 +127,7 @@
 // Range, respecting compositing chars, of a character at an x,y position where 0,0 is the
 // first char of the first line in the scrollback buffer.
 - (NSRange)rangeOfCharAtX:(int)x y:(int)accessibilityY {
-    screen_char_t *theLine = [_delegate accessibilityHelperLineAtIndex:accessibilityY];
+    const screen_char_t *theLine = [_delegate accessibilityHelperLineAtIndex:accessibilityY continuation:NULL];
     NSRange lineRange = [self rangeOfLine:accessibilityY];
     NSRange result = lineRange;
     for (int i = 0; i < x; i++) {
@@ -157,9 +162,9 @@
     NSUInteger location2 = [self rangeOfCharAtX:coordRange.end.x y:coordRange.end.y].location;
 
     NSUInteger start = MIN(location1, location2);
-    NSUInteger end = MAX(location1, location2);
+    NSUInteger end = MIN(_allText.length, MAX(location1, location2));
 
-    return NSMakeRange(start, end - start);
+    return NSMakeRange(start, end < start ? 0 : end - start);
 }
 
 - (NSInteger)lineForIndex:(NSUInteger)theIndex {
@@ -167,7 +172,8 @@
 }
 
 - (NSRange)rangeForLine:(NSUInteger)lineNumber {
-    if (lineNumber >= [_lineBreakIndexOffsets count]) {
+    if (lineNumber > [_lineBreakIndexOffsets count]) {
+        DLog(@"rangeForLine:%@ returning NSNotFound. allText=“%@” lineBreakIndexOffsets=%@", @(lineNumber), _allText.it_sanitized, _lineBreakIndexOffsets);
         return NSMakeRange(NSNotFound, 0);
     } else {
         return [self rangeOfLine:lineNumber];
@@ -176,8 +182,14 @@
 
 - (NSString *)stringForRange:(NSRange)range {
     const NSInteger length = _allText.length;
+    if (range.location == NSNotFound) {
+        return nil;
+    }
+    if (length == 0) {
+        return @"";
+    }
     NSInteger min = MAX(0, MIN(range.location, length - 1));
-    NSInteger max = MAX(NSMaxRange(range), length);
+    NSInteger max = MIN(NSMaxRange(range), length);
     return [_allText substringWithRange:NSMakeRange(min, max - min)];
 }
 
@@ -191,10 +203,11 @@
 }
 
 - (NSRect)boundsForRange:(NSRange)range {
+    const int lastLine = (range.location + range.length > 0) ? range.location + range.length - 1 : 0;
     int yStart = [self lineNumberOfChar:range.location];
-    int y2 = [self lineNumberOfChar:range.location + range.length - 1];
+    int y2 = [self lineNumberOfChar:lastLine];
     int xStart = [self columnOfChar:range.location inLine:yStart];
-    int x2 = [self columnOfChar:range.location + range.length - 1 inLine:y2];
+    int x2 = [self columnOfChar:lastLine inLine:y2];
     ++x2;
     if (x2 == [_delegate accessibilityHelperWidth]) {
         x2 = 0;
@@ -213,6 +226,10 @@
     if (range.location == NSNotFound || range.length == 0) {
         return nil;
     } else {
+        const NSInteger length = _allText.length;
+        NSInteger min = MAX(0, MIN(length - 1, range.location));
+        NSInteger max = MAX(min, MIN(length, NSMaxRange(range)));
+        NSRange range = NSMakeRange(min, max - min);
         NSString *theString = [_allText substringWithRange:range];
         NSAttributedString *attributedString = [[NSAttributedString alloc] initWithString:theString];
         return attributedString;
@@ -233,8 +250,21 @@
     int width = [_delegate accessibilityHelperWidth];
     unichar chars[width * kMaxParts];
     int offset = 0;
+    const int cursorY = _delegate.accessibilityHelperCursorCoord.y;
+    NSInteger offsetsCountBeforeCursor = 0;
     for (int i = 0; i < [_delegate accessibilityHelperNumberOfLines]; i++) {
-        screen_char_t* line = [_delegate accessibilityHelperLineAtIndex:i];
+        if (i == cursorY) {
+            offsetsCountBeforeCursor = _lineBreakIndexOffsets.count;
+        }
+        screen_char_t continuation;
+        const screen_char_t* line = [_delegate accessibilityHelperLineAtIndex:i continuation:&continuation];
+        if (!line) {
+            [_allText appendString:@"\n"];
+            offset += 1;
+            [_lineBreakIndexOffsets addObject:@(offset)];
+            continue;
+        }
+
         int k;
         // Get line width, store it in k
         for (k = width - 1; k >= 0; k--) {
@@ -251,7 +281,7 @@
                     chars[o++] = [cs characterAtIndex:l];
                 }
             } else {
-                if (line[j].code >= 0xf000) {
+                if (line[j].code >= ITERM2_PRIVATE_BEGIN && line[j].code <= ITERM2_PRIVATE_END) {
                     // Don't output private range chars to accessibility.
                     chars[o++] = 0;
                 } else {
@@ -264,7 +294,7 @@
         if (k >= 0) {
             [_allText appendString:[NSString stringWithCharacters:chars length:o]];
         }
-        if (line[width].code == EOL_HARD) {
+        if (continuation.code == EOL_HARD) {
             // Add a newline and update offsets arrays that track line break locations.
             [_allText appendString:@"\n"];
             ++offset;
@@ -272,15 +302,19 @@
         [_lineBreakIndexOffsets addObject:[NSNumber numberWithUnsignedLong:offset]];
     }
 
-    int newlines = 0;
+    int emptyLineCount = 0;
     int i = _allText.length;
     i -= 1;
     while (i >= 0 && [_allText characterAtIndex:i] == '\n') {
-        newlines++;
+        if (_lineBreakIndexOffsets.count - emptyLineCount == offsetsCountBeforeCursor) {
+            break;
+        }
+        emptyLineCount++;
         i--;
     }
-    [_allText replaceCharactersInRange:NSMakeRange(i + 1, newlines) withString:@""];
-
+    [_allText replaceCharactersInRange:NSMakeRange(i + 1, emptyLineCount) withString:@""];
+    assert(_lineBreakIndexOffsets.count >= emptyLineCount);
+    [_lineBreakIndexOffsets removeObjectsInRange:NSMakeRange(_lineBreakIndexOffsets.count - emptyLineCount, emptyLineCount)];
     return _allText;
 }
 

@@ -37,6 +37,10 @@
     return NO;
 }
 
+- (BOOL)supportsWindowLocation {
+    return NO;
+}
+
 - (BOOL)supportsCreateNewTab {
     return NO;
 }
@@ -54,6 +58,22 @@
 }
 
 - (BOOL)supportsColorPreset {
+    return NO;
+}
+
+- (BOOL)supportsAction {
+    return NO;
+}
+
+- (BOOL)supportsSnippet {
+    return NO;
+}
+
+- (BOOL)supportsNamedMarks {
+    return NO;
+}
+
+- (BOOL)supportsMenuItems {
     return NO;
 }
 
@@ -86,6 +106,22 @@
 }
 
 - (BOOL)supportsSessionLocation {
+    return YES;
+}
+
+@end
+
+@implementation iTermOpenQuicklySearchWindowsCommand
+
++ (NSString *)restrictionDescription {
+    return @"existing windows";
+}
+
++ (NSString *)command {
+    return @"w";
+}
+
+- (BOOL)supportsWindowLocation {
     return YES;
 }
 
@@ -181,5 +217,55 @@
     return YES;
 }
 
+- (BOOL)supportsAction {
+    return YES;
+}
+
+- (BOOL)supportsSnippet {
+    return YES;
+}
+
+- (BOOL)supportsWindowLocation {
+    return YES;
+}
+
+- (BOOL)supportsNamedMarks {
+    return YES;
+}
+
+- (BOOL)supportsMenuItems {
+    return YES;
+}
 @end
 
+@implementation iTermOpenQuicklyActionCommand
+
++ (NSString *)restrictionDescription {
+    return @"perform action";
+}
+
++ (NSString *)command {
+    return @":";
+}
+
+- (BOOL)supportsAction {
+    return YES;
+}
+
+@end
+
+@implementation iTermOpenQuicklySnippetCommand
+
++ (NSString *)restrictionDescription {
+    return @"send snippet";
+}
+
++ (NSString *)command {
+    return @".";
+}
+
+- (BOOL)supportsSnippet {
+    return YES;
+}
+
+@end

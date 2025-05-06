@@ -1,7 +1,6 @@
 #!/bin/bash
 
-echo WARNING - THIS IS THE FIRST TRANSITIONAL STABLE BUILD - TEST THE DICKENS OUT OF SPARKLE
-exit 1
+set -x
 
 function die {
   echo $1
@@ -13,12 +12,20 @@ if [ $# -ne 1 ]; then
    exit 1
 fi
 
-test -f "$PRIVKEY" || die "Set PRIVKEY environment variable to point at a valid private key (not set or nonexistent)"
+echo Enter the EdDSA private key
+read -s EDPRIVKEY
+
+echo Enter the notarization password
+read -s NOTPASS
+
 # Usage: SparkleSign final.xml final_template.xml
 function SparkleSign {
     LENGTH=$(ls -l iTerm2-${NAME}.zip | awk '{print $5}')
-    ruby "../../ThirdParty/SparkleSigningTools/sign_update.rb" iTerm2-${NAME}.zip $PRIVKEY > /tmp/sig.txt || die SparkleSign
-    SIG=$(cat /tmp/sig.txt)
+
+    ../../tools/sign_update iTerm2-${NAME}.zip "$EDPRIVKEY" > /tmp/newsig.txt || die SparkleSignNew
+    echo "New signature is"
+    cat /tmp/newsig.txt
+
     NEWSIG=$(cat /tmp/newsig.txt)
     DATE=$(date +"%a, %d %b %Y %H:%M:%S %z")
     XML=$1
@@ -30,8 +37,10 @@ function SparkleSign {
     sed -e "s/%DATE%/${DATE}/" | \
     sed -e "s/%NAME%/${NAME}/" | \
     sed -e "s/%LENGTH%/$LENGTH/" | \
-    sed -e "s,%SIG%,${SIG}," | \
     sed -e "s,%NEWSIG%,${NEWSIG}," > $SVNDIR/source/appcasts/$1
+
+    echo "Updated appcasts file $SVNDIR/source/appcasts/$1"
+    cat $SVNDIR/source/appcasts/$1
     cp iTerm2-${NAME}.zip ~/iterm2-website/downloads/stable/
 }
 
@@ -58,22 +67,22 @@ function Build {
   rm -rf iTerm.app
   mv iTerm2.app iTerm.app
 
-  zip -ry iTerm2-${NAME}.zip iTerm.app
- 
-  # This is so far from working it's ridiculous. Wait to hear back on my radar.
-
-# # This command came from where all good Apple documentation comes from, which is Twitter.
-# # From https://twitter.com/rosyna/status/1004418504408252416?lang=en
-# xcrun altool --eval-app --primary-bundle-id com.googlecode.iterm2 -u apple@georgester.com -f $ZIPNAME
-# echo Now wait a long time. Paste the UUID into the command below to get progress.
-# echo xcrun altool --eval-info UUID -u apple@georgester.com
-# echo "Press return when it's good"
-# read xxx
-
-# xcrun stapler staple iTerm.app || die "Stapling failed"
-# rm $ZIPNAME
-# zip -ry $ZIPNAME iTerm.app
-
+  # Zip it, notarize it, staple it, and re-zip it.
+  PRENOTARIZED_ZIP=iTerm2-${NAME}-prenotarized.zip
+  zip -ry $PRENOTARIZED_ZIP iTerm.app
+  xcrun notarytool submit --team-id H7V7XYVQ7D --apple-id "apple@georgester.com" --password "$NOTPASS" $PRENOTARIZED_ZIP > /tmp/upload.out 2>&1 || die "Notarization failed"
+  UUID=$(grep id: /tmp/upload.out | head -1 | sed -e 's/.*id: //')
+  echo "uuid is $UUID"
+  xcrun notarytool info --team-id H7V7XYVQ7D --apple-id "apple@georgester.com" --password "$NOTPASS" $UUID
+  sleep 1
+  while xcrun notarytool info --team-id H7V7XYVQ7D --apple-id "apple@georgester.com" --password "$NOTPASS" $UUID 2>&1 | egrep -i "in progress|Could not find the RequestUUID|Submission does not exist or does not belong to your team":
+  do
+      echo "Trying again"
+      sleep 1
+  done
+  NOTARIZED_ZIP=iTerm2-${NAME}.zip
+  xcrun stapler staple iTerm.app
+  zip -ry $NOTARIZED_ZIP iTerm.app
 
   # Update the list of changes
   vi $SVNDIR/source/appcasts/full_changes.txt
@@ -84,23 +93,29 @@ function Build {
   test -f $SVNDIR/downloads/stable/iTerm2-${NAME}.summary || (echo "iTerm2 "$VERSION" ($SUMMARY)" > $SVNDIR/downloads/stable/iTerm2-${NAME}.summary)
   test -f $SVNDIR/downloads/stable/iTerm2-${NAME}.description || (echo "$DESCRIPTION" > $SVNDIR/downloads/stable/iTerm2-${NAME}.description)
   vi $SVNDIR/downloads/stable/iTerm2-${NAME}.description
-  echo 'SHA-256 of the zip file is' > $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
-  shasum -a256 iTerm2-${NAME}.zip | awk '{print $1}' >> $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
+  BUILDDATE=$(date +"%B %-d, %Y")
+  echo "Version $VERSION of iTerm2 was built on $BUILDDATE." > $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
+  echo '' >> $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
+  echo 'SHA-256 of the zip file is' >> $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
+  shasum -a256 iTerm2-${NAME}.zip | awk '{print $1}' > /tmp/sum
+  gpg --clearsign /tmp/sum
+  echo "You can use the following to verify the zip file on https://keybase.io/verify:" >> $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
+  echo "" >> $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
+  cat /tmp/sum.asc >> $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
   vi $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
   pushd $SVNDIR
 
   echo 'Options +FollowSymlinks' > ~/iterm2-website/downloads/stable/.htaccess
   echo 'Redirect 302 /downloads/stable/latest https://iterm2.com/downloads/stable/iTerm2-'${NAME}'.zip' >> ~/iterm2-website/downloads/stable/.htaccess
+  echo '<FilesMatch "\.changelog$">' >> ~/iterm2-website/downloads/stable/.htaccess
+  echo '    AddCharset UTF-8 .changelog' >> ~/iterm2-website/downloads/stable/.htaccess
+  echo '</FilesMatch>' >> ~/iterm2-website/downloads/stable/.htaccess
 
-  git add downloads/stable/iTerm2-${NAME}.summary downloads/stable/iTerm2-${NAME}.description downloads/stable/iTerm2-${NAME}.changelog downloads/stable/iTerm2-${NAME}.zip source/appcasts/final.xml source/appcasts/final_new.xml source/appcasts/final_modern.xml source/appcasts/full_changes.txt downloads/stable/.htaccess
+  git add downloads/stable/iTerm2-${NAME}.summary downloads/stable/iTerm2-${NAME}.description downloads/stable/iTerm2-${NAME}.changelog downloads/stable/iTerm2-${NAME}.zip source/appcasts/final_modern.xml source/appcasts/full_changes.txt downloads/stable/.htaccess
   popd
 
-  # Legacy
-  SparkleSign ${SPARKLE_PREFIX}final.xml ${SPARKLE_PREFIX}final_template.xml
-  # Transitional
-  SparkleSign ${SPARKLE_PREFIX}final_new.xml ${SPARKLE_PREFIX}final_new_template.xml
-  # Modern
-  SparkleSign ${SPARKLE_PREFIX}final_modern.xml ${SPARKLE_PREFIX}final_modern.xml
+  SparkleSign ${SPARKLE_PREFIX}final_new.xml ${SPARKLE_PREFIX}final_template_new.xml
+  SparkleSign ${SPARKLE_PREFIX}final_modern.xml ${SPARKLE_PREFIX}final_template_modern.xml
 
   popd
 }
@@ -121,11 +136,10 @@ make release
 
 BUILDTYPE=Deployment
 
-Build $BUILDTYPE "" "OS 10.12+" "This is the recommended build for most users." "" "--deep"
+Build $BUILDTYPE "" "OS 10.15+" "This is the recommended build for most users." "" "--deep"
 
 git checkout -- version.txt
 #set -x
-
 
 git tag v${VERSION}
 git commit -am ${VERSION}

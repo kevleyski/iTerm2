@@ -17,13 +17,14 @@ typedef NS_ENUM(NSInteger, ITermCursorType) {
                   doubleWidth:(BOOL)doubleWidth
                 overrideColor:(NSColor*)overrideColor
                       context:(CGContextRef)ctx
-              backgroundColor:(NSColor *)backgroundColor;
+              backgroundColor:(NSColor *)backgroundColor
+                virtualOffset:(CGFloat)virtualOffset;
 
 @end
 
 @interface iTermCursor : NSObject
 
-@property(nonatomic, assign) id<iTermCursorDelegate> delegate;
+@property (nonatomic, assign) id<iTermCursorDelegate> delegate;
 
 + (iTermCursor *)cursorOfType:(ITermCursorType)theType;
 + (instancetype)itermCopyModeCursorInSelectionState:(BOOL)selecting;
@@ -37,7 +38,10 @@ typedef NS_ENUM(NSInteger, ITermCursorType) {
                smart:(BOOL)smart
              focused:(BOOL)focused
                coord:(VT100GridCoord)coord
-             outline:(BOOL)outline;
-
+             outline:(BOOL)outline
+       virtualOffset:(CGFloat)virtualOffset;
+- (void)drawShadow;
+- (BOOL)isSolidRectangleWithFocused:(BOOL)focused;
+- (NSRect)frameForSolidRectangle:(NSRect)rect;
 
 @end

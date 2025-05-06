@@ -12,6 +12,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 @class PTYTextView;
 @class VT100Screen;
+@class iTermAttributedStringBuilder;
+@class iTermImageWrapper;
 
 @protocol iTermMetalPerFrameStateDelegate <NSObject>
 // Screen-relative cursor location on last frame
@@ -19,6 +21,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Used to remember the last time the cursor moved to avoid drawing a blinked-out
 // cursor while it's moving.
 @property (nonatomic) NSTimeInterval lastTimeCursorMoved;
+@property (nonatomic, readonly) iTermImageWrapper *backgroundImage;
+@property (nonatomic, readonly) iTermBackgroundImageMode backroundImageMode;
+@property (nonatomic, readonly) CGFloat backgroundImageBlend;
 @end
 
 @interface iTermMetalPerFrameState : NSObject<
@@ -33,7 +38,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithTextView:(PTYTextView *)textView
                           screen:(VT100Screen *)screen
                             glue:(id<iTermMetalPerFrameStateDelegate>)glue
-                         context:(CGContextRef)context NS_DESIGNATED_INITIALIZER;
+                         context:(CGContextRef)context
+         attributedStringBuilder:(iTermAttributedStringBuilder *)attributedStringBuilder NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 @end

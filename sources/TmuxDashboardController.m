@@ -8,10 +8,15 @@
 
 #import "TmuxDashboardController.h"
 
+#import "DebugLogging.h"
 #import "ITAddressBookMgr.h"
 #import "iTermInitialDirectory.h"
 #import "iTermNotificationCenter.h"
+#import "iTermPreferenceDidChangeNotification.h"
 #import "iTermPreferences.h"
+#import "iTermUserDefaults.h"
+#import "iTermVariableScope.h"
+#import "iTermVariableScope+Global.h"
 #import "TmuxSessionsTable.h"
 #import "TmuxController.h"
 #import "TSVParser.h"
@@ -32,6 +37,7 @@
     IBOutlet NSPopUpButton *connectionsButton_;
     IBOutlet NSTextField *setting_;
     IBOutlet NSStepper *stepper_;
+    IBOutlet NSButton *_openDashboardIfHiddenWindows;
 }
 
 + (TmuxDashboardController *)sharedInstance {
@@ -43,60 +49,60 @@
 }
 
 - (instancetype)init {
-    self = [super initWithWindowNibName:@"TmuxDashboard"];
-    if (self) {
-        [self window];
-
-        [sessionsTable_ selectSessionWithName:[[self tmuxController] sessionName]];
-        [self reloadWindows];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(tmuxControllerDetached:)
-                                                     name:kTmuxControllerDetachedNotification
-                                                   object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(tmuxControllerSessionsDidChange:)
-                                                     name:kTmuxControllerSessionsDidChange
-                                                   object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(tmuxControllerWindowsDidChange:)
-                                                     name:kTmuxControllerWindowsChangeNotification
-                                                   object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(tmuxControllerWindowWasRenamed:)
-                                                     name:kTmuxControllerWindowWasRenamed
-                                                   object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(tmuxControllerWindowOpenedOrClosed:)
-                                                     name:kTmuxControllerWindowDidOpen
-                                                   object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(tmuxControllerWindowOpenedOrClosed:)
-                                                     name:kTmuxControllerWindowDidClose
-                                                   object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(tmuxControllerAttachedSessionChanged:)
-                                                     name:kTmuxControllerAttachedSessionDidChange
-                                                   object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(tmuxControllerSessionWasRenamed:)
-                                                     name:kTmuxControllerSessionWasRenamed
-                                                   object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(tmuxControllerRegistryDidChange:)
-                                                     name:kTmuxControllerRegistryDidChange
-                                                   object:nil];
-        __weak __typeof(self) weakSelf = self;
-        [iTermPreferenceDidChangeNotification subscribe:self block:^(iTermPreferenceDidChangeNotification *notification) {
-            [weakSelf preferenceDidChange:notification];
-        }];
-    }
-
-    return self;
+    return [super initWithWindowNibName:@"TmuxDashboard"];
 }
 
-- (void)windowDidLoad
-{
+- (void)windowDidLoad {
+    DLog(@"dashboard: windowDidLoad with tmux controller %@", self.tmuxController);
     [super windowDidLoad];
+
+    [sessionsTable_ selectSessionNumber:[[self tmuxController] sessionId]];
+    [self reloadWindows];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerDetached:)
+                                                 name:kTmuxControllerDetachedNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerSessionsDidChange:)
+                                                 name:kTmuxControllerSessionsDidChange
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerSessionsWillChange:)
+                                                 name:kTmuxControllerSessionsWillChange
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerWindowsDidChange:)
+                                                 name:kTmuxControllerWindowsChangeNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerWindowWasRenamed:)
+                                                 name:kTmuxControllerWindowWasRenamed
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerWindowOpenedOrClosed:)
+                                                 name:kTmuxControllerWindowDidOpen
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerWindowOpenedOrClosed:)
+                                                 name:kTmuxControllerWindowDidClose
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerAttachedSessionChanged:)
+                                                 name:kTmuxControllerAttachedSessionDidChange
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerSessionWasRenamed:)
+                                                 name:kTmuxControllerSessionWasRenamed
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(tmuxControllerRegistryDidChange:)
+                                                 name:kTmuxControllerRegistryDidChange
+                                               object:nil];
+    __weak __typeof(self) weakSelf = self;
+    [iTermPreferenceDidChangeNotification subscribe:self block:^(iTermPreferenceDidChangeNotification *notification) {
+        [weakSelf preferenceDidChange:notification];
+    }];
+
     [self tmuxControllerRegistryDidChange:nil];
     if ([connectionsButton_ numberOfItems] > 0) {
         [connectionsButton_ selectItemAtIndex:0];
@@ -105,6 +111,26 @@
     [windowsTable_ setDelegate:self];
     setting_.integerValue = [iTermPreferences intForKey:kPreferenceKeyTmuxDashboardLimit];
     stepper_.integerValue = setting_.integerValue;
+    _openDashboardIfHiddenWindows.state = iTermUserDefaults.openTmuxDashboardIfHiddenWindows ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
+- (void)didAttachWithHiddenWindows:(BOOL)anyHidden
+                    tooManyWindows:(BOOL)tooMany {
+    DLog(@"anyHidden=%@ tooMany=%@", @(anyHidden), @(tooMany));
+    if (anyHidden && iTermUserDefaults.openTmuxDashboardIfHiddenWindows) {
+        [self show];
+        return;
+    }
+    if (tooMany) {
+        [self show];
+        return;
+    }
+}
+
+- (void)show {
+    DLog(@"Show");
+    [[TmuxDashboardController sharedInstance] showWindow:nil];
+    [[[TmuxDashboardController sharedInstance] window] makeKeyAndOrderFront:nil];
 }
 
 - (void)preferenceDidChange:(iTermPreferenceDidChangeNotification *)notification {
@@ -136,71 +162,87 @@
     }
 }
 
+- (IBAction)toggleOpenDashboardIfHiddenWindows:(id)sender {
+    iTermUserDefaults.openTmuxDashboardIfHiddenWindows = _openDashboardIfHiddenWindows.state == NSControlStateValueOn;
+    _openDashboardIfHiddenWindows.state = iTermUserDefaults.openTmuxDashboardIfHiddenWindows ? NSControlStateValueOn : NSControlStateValueOff;
+}
+
 #pragma mark TmuxSessionsTableProtocol
 
-- (void)renameSessionWithName:(NSString *)oldName toName:(NSString *)newName
-{
-    [[self tmuxController] renameSession:oldName to:newName];
+- (void)renameSessionWithNumber:(int)sessionNumber toName:(NSString *)newName {
+    [[self tmuxController] renameSessionNumber:sessionNumber
+                                            to:newName];
 }
 
-- (void)removeSessionWithName:(NSString *)sessionName
-{
-    [[self tmuxController] killSession:sessionName];
+- (void)removeSessionWithNumber:(int)sessionNumber {
+    [[self tmuxController] killSessionNumber:sessionNumber];
 }
 
-- (void)addSessionWithName:(NSString *)sessionName
-{
+- (void)addSessionWithName:(NSString *)sessionName {
     [[self tmuxController] addSessionWithName:sessionName];
 }
 
-- (void)attachToSessionWithName:(NSString *)sessionName
-{
-    [[self tmuxController] attachToSession:sessionName];
+- (void)attachToSessionWithNumber:(int)sessionNumber {
+    [[self tmuxController] attachToSessionWithNumber:sessionNumber];
 }
 
-- (void)detach
-{
+- (void)detach {
     [[self tmuxController] requestDetach];
 }
 
-- (NSString *)nameOfAttachedSession
-{
-    return [[self tmuxController] sessionName];
+- (NSNumber *)numberOfAttachedSession {
+    TmuxController *controller = [self tmuxController];
+    if (!controller) {
+        return nil;
+    }
+    return @([controller sessionId]);
 }
 
-- (NSArray *)sessions
-{
-    return [[self tmuxController] sessions];
+- (NSArray<iTermTmuxSessionObject *> *)sessionsTableModelValues:(id)sender {
+    return [self.tmuxController sessionObjects];
 }
 
-- (void)selectedSessionChangedTo:(NSString *)newSessionName
-{
+- (NSArray<iTermTmuxSessionObject *> *)sessionsTableObjects:(TmuxSessionsTable *)sender {
+    return [[self tmuxController] sessionObjects];
+}
+
+- (void)selectedSessionDidChange {
     [windowsTable_ setWindows:[NSArray array]];
     [self reloadWindows];
 }
 
 - (void)linkWindowId:(int)windowId
-           inSession:(NSString *)sessionName
-           toSession:(NSString *)targetSession
-{
+     inSessionNumber:(int)sourceSessionNumber
+     toSessionNumber:(int)targetSessionNumber {
     [[self tmuxController] linkWindowId:windowId
-                              inSession:sessionName
-                              toSession:targetSession];
+                        inSessionNumber:sourceSessionNumber
+                        toSessionNumber:targetSessionNumber];
+}
+
+- (void)moveWindowId:(int)windowId
+     inSessionNumber:(int)sessionNumber
+     toSessionNumber:(int)targetSessionNumber {
+    [[self tmuxController] moveWindowId:windowId
+                        inSessionNumber:sessionNumber
+                        toSessionNumber:targetSessionNumber];
 }
 
 #pragma mark TmuxWindowsTableProtocol
 
-- (void)reloadWindows
-{
-    [[self tmuxController] listWindowsInSession:[sessionsTable_ selectedSessionName]
-                                         target:self
-                                       selector:@selector(setWindows:forSession:)
-                                         object:[sessionsTable_ selectedSessionName]];
+- (void)reloadWindows {
+    NSNumber *sessionNumber = [sessionsTable_ selectedSessionNumber];
+    if (!sessionNumber) {
+        return;
+    }
+    [[self tmuxController] listWindowsInSessionNumber:sessionNumber.intValue
+                                               target:self
+                                             selector:@selector(setWindows:forSession:)
+                                               object:[sessionsTable_ selectedSessionNumber]];
 }
 
-- (void)setWindows:(TSVDocument *)doc forSession:(NSString *)sessionName
-{
-    if ([sessionName isEqualToString:[sessionsTable_ selectedSessionName]]) {
+- (void)setWindows:(TSVDocument *)doc forSession:(NSNumber *)sessionNumber {
+    DLog(@"dashboard: setWindows:%@ forSession:%@", doc, sessionNumber);
+    if ([sessionNumber isEqual:[sessionsTable_ selectedSessionNumber]]) {
         NSMutableArray *windows = [NSMutableArray array];
         for (NSArray *record in doc.records) {
             [windows addObject:[NSMutableArray arrayWithObjects:
@@ -212,18 +254,19 @@
     }
 }
 
-- (void)renameWindowWithId:(int)windowId toName:(NSString *)newName
-{
+- (void)renameWindowWithId:(int)windowId toName:(NSString *)newName {
+    NSNumber *sessionNumber = [sessionsTable_ selectedSessionNumber];
+    if (!sessionNumber) {
+        return;
+    }
     [[self tmuxController] renameWindowWithId:windowId
-                                    inSession:[sessionsTable_ selectedSessionName]
+                              inSessionNumber:sessionNumber
                                        toName:newName];
     [self reloadWindows];
 }
 
-- (void)unlinkWindowWithId:(int)windowId
-{
-    [[self tmuxController] unlinkWindowWithId:windowId
-                                    inSession:[sessionsTable_ selectedSessionName]];
+- (void)unlinkWindowWithId:(int)windowId {
+    [[self tmuxController] unlinkWindowWithId:windowId];
     [self reloadWindows];
 }
 
@@ -231,47 +274,46 @@
     NSString *lastName = [[windowsTable_ names] lastObject];
     if (lastName) {
         TmuxController *tmuxController = self.tmuxController;
-        [tmuxController newWindowInSession:[sessionsTable_ selectedSessionName]
-                          initialDirectory:[iTermInitialDirectory initialDirectoryFromProfile:tmuxController.profile
-                                                                                   objectType:iTermWindowObject]];
+        [tmuxController newWindowInSessionNumber:[sessionsTable_ selectedSessionNumber]
+                                           scope:[iTermVariableScope globalsScope]
+                                initialDirectory:[iTermInitialDirectory initialDirectoryFromProfile:tmuxController.sharedProfile
+                                                                                         objectType:iTermWindowObject]];
     }
 }
 
-- (void)showWindowsWithIds:(NSArray *)windowIds inTabs:(BOOL)inTabs
-{
+- (void)showWindowsWithIds:(NSArray *)windowIds inTabs:(BOOL)inTabs {
     if (inTabs) {
         for (NSNumber *wid in windowIds) {
             [[self tmuxController] openWindowWithId:[wid intValue]
                                          affinities:windowIds
-										intentional:YES];
+                                        intentional:YES
+                                            profile:self.tmuxController.sharedProfile];
         }
     } else {
         for (NSNumber *wid in windowIds) {
             [[self tmuxController] openWindowWithId:[wid intValue]
-										intentional:YES];
+                                        intentional:YES
+                                            profile:self.tmuxController.sharedProfile];
         }
     }
-	[[self tmuxController] saveHiddenWindows];
+    [[self tmuxController] saveHiddenWindows];
 }
 
 - (void)hideWindowWithId:(int)windowId
 {
-	[[self tmuxController] hideWindow:windowId];
+    [[self tmuxController] hideWindow:windowId];
     [windowsTable_ updateEnabledStateOfButtons];
 }
 
-- (BOOL)haveSelectedSession
-{
-    return [sessionsTable_ selectedSessionName] != nil;
+- (BOOL)haveSelectedSession {
+    return [sessionsTable_ selectedSessionNumber] != nil;
 }
 
-- (BOOL)currentSessionSelected
-{
-    return [[sessionsTable_ selectedSessionName] isEqualToString:[[self tmuxController] sessionName]];
+- (BOOL)currentSessionSelected {
+    return [[sessionsTable_ selectedSessionNumber] isEqual:@([[self tmuxController] sessionId])];
 }
 
-- (BOOL)haveOpenWindowWithId:(int)windowId
-{
+- (BOOL)haveOpenWindowWithId:(int)windowId {
     return [[self tmuxController] window:windowId] != nil;
 }
 
@@ -280,48 +322,45 @@
     [tab.activeSession reveal];
 }
 
-- (NSString *)selectedSessionName
-{
-    return [sessionsTable_ selectedSessionName];
+- (NSNumber *)selectedSessionNumber {
+    return [sessionsTable_ selectedSessionNumber];
 }
 
 #pragma mark - Private
 
-- (void)tmuxControllerDetached:(NSNotification *)notification
-{
-    [sessionsTable_ setSessions:[NSArray array]];
+- (void)tmuxControllerDetached:(NSNotification *)notification {
+    [sessionsTable_ setSessionObjects:@[]];
 }
 
-- (void)tmuxControllerSessionsDidChange:(NSNotification *)notification
-{
-    [sessionsTable_ setSessions:[[self tmuxController] sessions]];
+- (void)tmuxControllerSessionsWillChange:(NSNotification *)notification {
+    [sessionsTable_ endEditing];
 }
 
-- (void)tmuxControllerWindowsDidChange:(NSNotification *)notification
-{
+- (void)tmuxControllerSessionsDidChange:(NSNotification *)notification {
+    [sessionsTable_ setSessionObjects:[[self tmuxController] sessionObjects]];
+}
+
+- (void)tmuxControllerWindowsDidChange:(NSNotification *)notification {
     if ([[self window] isVisible]) {
         [self reloadWindows];
     }
 }
 
-- (void)tmuxControllerAttachedSessionChanged:(NSNotification *)notification
-{
+- (void)tmuxControllerAttachedSessionChanged:(NSNotification *)notification {
     if ([[self window] isVisible]) {
-        [sessionsTable_ selectSessionWithName:[[self tmuxController] sessionName]];
+        [sessionsTable_ selectSessionNumber:[[self tmuxController] sessionId]];
         [windowsTable_ updateEnabledStateOfButtons];
     }
 }
 
-- (void)tmuxControllerWindowOpenedOrClosed:(NSNotification *)notification
-{
+- (void)tmuxControllerWindowOpenedOrClosed:(NSNotification *)notification {
     if ([[self window] isVisible]) {
         [windowsTable_ updateEnabledStateOfButtons];
         [windowsTable_ reloadData];
     }
 }
 
-- (void)tmuxControllerWindowWasRenamed:(NSNotification *)notification
-{
+- (void)tmuxControllerWindowWasRenamed:(NSNotification *)notification {
     if ([[self window] isVisible]) {
         NSArray *objects = [notification object];
         int wid = [[objects objectAtIndex:0] intValue];
@@ -330,38 +369,66 @@
     }
 }
 
-- (void)tmuxControllerSessionWasRenamed:(NSNotification *)notification
-{
+- (void)tmuxControllerSessionWasRenamed:(NSNotification *)notification {
     // This is a bit of extra work but the sessions table wasn't built knowing about session IDs.
     [[self tmuxController] listSessions];
 }
 
 - (void)tmuxControllerRegistryDidChange:(NSNotification *)notification {
+    DLog(@"dashboard: tmuxControllerRegistryDidChange");
     NSString *previousSelection = [[self currentClient] copy];
     [connectionsButton_.menu cancelTracking];
     [connectionsButton_.cell dismissPopUp];
     [connectionsButton_ removeAllItems];
-    [connectionsButton_ addItemsWithTitles:[[TmuxControllerRegistry sharedInstance] clientNames]];
-    if (previousSelection && [connectionsButton_ itemWithTitle:previousSelection]) {
-        [connectionsButton_ selectItemWithTitle:previousSelection];
+
+    // Get a load of this! Nonbreaking spaces are converted to regular spaces in menu item
+    // titles, which means they do not round trip. So we use the identifier to find the connection
+    // by name.
+    [[[TmuxControllerRegistry sharedInstance] clientNames] enumerateObjectsUsingBlock:^(NSString * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:obj action:nil keyEquivalent:@""];
+        item.identifier = obj;
+        [connectionsButton_.menu addItem:item];
+    }];
+    if (previousSelection && [self haveConnection:previousSelection]) {
+        [self selectConnection:previousSelection];
     } else if ([connectionsButton_ numberOfItems] > 0) {
         [connectionsButton_ selectItemAtIndex:0];
     }
     [self connectionSelectionDidChange:nil];
 }
 
-- (TmuxController *)tmuxController
-{
+- (BOOL)haveConnection:(NSString *)identifier {
+    for (NSMenuItem *item in connectionsButton_.menu.itemArray) {
+        if ([item.identifier isEqualToString:identifier]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (void)selectConnection:(NSString *)identifier {
+    for (NSMenuItem *item in connectionsButton_.menu.itemArray) {
+        if ([item.identifier isEqualToString:identifier]) {
+            [connectionsButton_ selectItem:item];
+            return;
+        }
+    }
+}
+
+- (TmuxController *)tmuxController {
+    DLog(@"dashboard: Looking for tmux controller for current client, %@", self.currentClient);
+    DLog(@"dashboard: Registry: %@", [TmuxControllerRegistry sharedInstance]);
     return [[TmuxControllerRegistry sharedInstance] controllerForClient:[self currentClient]];  // TODO: track the current client when multiples are supported
 }
 
 - (NSString *)currentClient {
-    return [[connectionsButton_ selectedItem] title];
+    return [[connectionsButton_ selectedItem] identifier];
 }
 
 
 - (IBAction)connectionSelectionDidChange:(id)sender {
-    [sessionsTable_ setSessions:[[self tmuxController] sessions]];
+    DLog(@"dashboard: connectionSelectionDidChange controller=%@", [self tmuxController]);
+    [sessionsTable_ setSessionObjects:[[self tmuxController] sessionObjects]];
     [self reloadWindows];
 }
 

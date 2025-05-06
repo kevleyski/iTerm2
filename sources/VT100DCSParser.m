@@ -18,14 +18,17 @@
 // sequences) may occur prior to its termination and should be interpreted literally.
 
 #import "VT100DCSParser.h"
+
+#import "iTerm2SharedARC-Swift.h"
 #import "DebugLogging.h"
 #import "NSStringITerm.h"
+#import "VT100SixelParser.h"
 #import "VT100StateMachine.h"
 #import "VT100TmuxParser.h"
 
 // Caps the amount of data to accumulate in _data before returning to the ground state. Prevents
 // a random ESC P from eating output forever by leaving us in the passthrough state until we get
-// an ST.
+// an ST. Note that there's an exception for file downloads wrapped in DCS tmux; … ST
 static const NSUInteger kMaxDataLength = 1024 * 1024;
 
 // Creates a unique-enough encoding of a DCS sequence at compile time so it can
@@ -54,8 +57,9 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
     // |_hook|. This is here only for the tmux workaround (and the tmux parser is the only hook).
     BOOL _hookFinished;
 
-    // Holds the current state and the fine state machine.
-    VT100StateMachine *_stateMachine;
+    // Holds the current state and the fine state machine. Up to one of these will be nonnull.
+    VT100StateMachine *_stateMachineWithout8BitControlCharacters;
+    VT100StateMachine *_stateMachineWith8BitControlCharacters;
 
     // Concatenation of passthrough characters. Not added to when a hook is present.
     NSMutableString *_data;
@@ -71,22 +75,12 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
     // is for the buggy tmux protocol, which is not terminated by ST alone (only %exit followed by
     // ST).
     id<VT100DCSParserHook> _hook;
-}
 
-+ (NSDictionary *)termcapTerminfoNameDictionary {
-    return @{ @"TN": @(kDcsTermcapTerminfoRequestTerminalName),
-              @"name": @(kDcsTermcapTerminfoRequestTerminfoName),
-              @"iTerm2Profile": @(kDcsTermcapTerminfoRequestiTerm2ProfileName) };
-}
+    BOOL _support8BitControlCharacters;
 
-+ (NSDictionary *)termcapTerminfoInverseNameDictionary {
-    NSMutableDictionary *result = [NSMutableDictionary dictionary];
-    NSDictionary *dict = [self termcapTerminfoNameDictionary];
-    for (NSString *key in dict) {
-        id value = dict[key];
-        result[value] = key;
-    }
-    return result;
+    // We periodically check if _data looks like binary garbage. To avoid quadratic runtime we
+    // remember the number of UTF-16 codepoints that have been checked already.
+    NSInteger _checkedCount;
 }
 
 - (instancetype)init {
@@ -103,13 +97,23 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
 
 // Defines the state machine.
 - (VT100StateMachine *)stateMachine {
-    if (_stateMachine) {
-        return _stateMachine;
+    if (_support8BitControlCharacters) {
+        if (!_stateMachineWith8BitControlCharacters) {
+            _stateMachineWith8BitControlCharacters = [self newStateMachineWith8BitControlCharacters:YES];
+            _stateMachineWithout8BitControlCharacters = nil;
+        }
+        return _stateMachineWith8BitControlCharacters;
     }
 
-    VT100StateMachine *stateMachine;
+    if (!_stateMachineWithout8BitControlCharacters) {
+        _stateMachineWithout8BitControlCharacters = [self newStateMachineWith8BitControlCharacters:YES];
+        _stateMachineWith8BitControlCharacters = nil;
+    }
+    return _stateMachineWithout8BitControlCharacters;
+}
 
-    stateMachine = [[VT100StateMachine alloc] init];
+- (VT100StateMachine *)newStateMachineWith8BitControlCharacters:(BOOL)support8BitControlCharacters {
+    VT100StateMachine *stateMachine = [[VT100StateMachine alloc] init];
 
     // This is where we start and end.
     VT100State *groundState = [VT100State stateWithName:@"ground"
@@ -165,6 +169,11 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
         [state addStateTransitionForCharacter:VT100CC_ESC
                                            to:dcsEscapeState
                                    withAction:nil ];
+        if (support8BitControlCharacters) {
+            [state addStateTransitionForCharacterRange:MakeCharacterRange(VT100CC_C1_IND, VT100CC_C1_APC)
+                                                    to:groundState
+                                            withAction:^(unsigned char c) { [weakSelf execute]; } ];
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -172,6 +181,11 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
     [groundState addStateTransitionForCharacter:VT100CC_ESC
                                              to:escapeState
                                      withAction:nil];
+    if (support8BitControlCharacters) {
+        [groundState addStateTransitionForCharacter:VT100CC_C1_DCS
+                                                 to:dcsEntryState
+                                         withAction:nil];
+    }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Add transitions from escape state.
@@ -193,6 +207,7 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
             strongSelf->_malformed = NO;
             strongSelf->_executed = NO;
             [strongSelf->_data setString:@""];
+            strongSelf->_checkedCount = 0;
             [strongSelf->_parameterString setString:@""];
             [strongSelf->_intermediateString setString:@""];
             [strongSelf->_privateMarkers setString:@""];
@@ -310,6 +325,13 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
                                         withAction:^(unsigned char character) {
                                             [weakSelf unhook];
                                         }];
+    if (support8BitControlCharacters) {
+        [dcsIgnoreState addStateTransitionForCharacter:VT100CC_C1_ST
+                                                    to:groundState
+                                            withAction:^(unsigned char c) {
+                                                [weakSelf execute];
+                                            }];
+    }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Add transitions from dcs escape state.
@@ -365,15 +387,21 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
                                                   withAction:^(unsigned char c) {
                                                       [weakSelf put:c];
                                                   }];
+    if (support8BitControlCharacters) {
+        [dcsPassthroughState addStateTransitionForCharacter:VT100CC_C1_ST
+                                                         to:groundState
+                                                 withAction:^(unsigned char c) {
+                                                     [weakSelf execute];
+                                                 }];
+    }
 
-    _stateMachine = stateMachine;
-    _stateMachine.groundState = groundState;
+    stateMachine.groundState = groundState;
     return stateMachine;
 }
 
 // Retrieve the token from the state machine's user info dictionary.
 - (VT100Token *)token {
-    return _stateMachine.userInfo[kVT100DCSUserInfoToken];
+    return self.stateMachine.userInfo[kVT100DCSUserInfoToken];
 }
 
 // Save a passthrough character. If the tmux hack weren't here, it would direct to the hook if one
@@ -404,8 +432,21 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
         [characterSet invert];
         garbageCharacterSet = characterSet;
     });
-    return (_data.length > kMaxDataLength ||
-            [_data rangeOfCharacterFromSet:garbageCharacterSet].location != NSNotFound);
+    NSInteger offset = MAX(0, _checkedCount);
+    const NSInteger limit = _data.length;
+    if (offset > limit) {
+        offset = MAX(0, limit);
+    }
+    _checkedCount = limit;
+    NSInteger maxLength = kMaxDataLength;
+    if ([_data hasPrefix:@"tmux;\e]1337;File="]) {
+        // Allow file downloads to get really big.
+        maxLength = NSIntegerMax;
+    }
+    return (_data.length > maxLength ||
+            [_data rangeOfCharacterFromSet:garbageCharacterSet
+                                   options:0
+                                     range:NSMakeRange(offset, limit - offset)].location != NSNotFound);
 }
 
 - (void)decodeFromContext:(iTermParserContext *)context
@@ -413,31 +454,52 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
                  encoding:(NSStringEncoding)encoding
                savedState:(NSMutableDictionary *)savedState {
     DLog(@"DCS parser running");
+    _support8BitControlCharacters = (encoding == NSASCIIStringEncoding || encoding == NSISOLatin1StringEncoding);
     static NSString *const kOffset = @"offset";
     if (savedState[kOffset]) {
         iTermParserAdvanceMultiple(context, [savedState[kOffset] intValue]);
     }
-    _stateMachine.userInfo = @{ kVT100DCSUserInfoToken: result };
+    self.stateMachine.userInfo = @{ kVT100DCSUserInfoToken: result };
     result->type = VT100_WAIT;
-    while (result->type == VT100_WAIT && iTermParserCanAdvance(context)) {
+    BOOL blocked = NO;
+    while (result->type == VT100_WAIT && iTermParserCanAdvance(context) && !blocked) {
         if (_hook && !_hookFinished) {
-            DLog(@"Sending input to hook %@", _hook);
-            _hookFinished = [_hook handleInput:context token:result];
+            DLog(@"Sending input to hook %@ with context %@", _hook, iTermParserDebugString(context));
+            const VT100DCSParserHookResult hookResult = [_hook handleInput:context
+                                              support8BitControlCharacters:_support8BitControlCharacters
+                                                                     token:result];
+            switch (hookResult) {
+                case VT100DCSParserHookResultBlocked:
+                    DLog(@"Hook blocked");
+                    _hookFinished = NO;
+                    blocked = YES;
+                    break;
+                case VT100DCSParserHookResultCanReadAgain:
+                    DLog(@"Hook can read again");
+                    _hookFinished = NO;
+                    break;
+                case VT100DCSParserHookResultUnhook:
+                    DLog(@"Hook wants to unhook");
+                    _hookFinished = YES;
+                    [self unhook];
+                    break;
+            }
+            DLog(@"Hook %@ produced %@: %@", [_hook hookDescription], @(hookResult), result);
         } else {
-            [_stateMachine handleCharacter:iTermParserConsume(context)];
-            if ([_stateMachine.currentState.identifier isEqual:@(kVT100DCSStatePassthrough)] &&
+            [self.stateMachine handleCharacter:iTermParserConsume(context)];
+            if ([self.stateMachine.currentState.identifier isEqual:@(kVT100DCSStatePassthrough)] &&
                 [self dataLooksLikeBinaryGarbage]) {
                 result->type = VT100_BINARY_GARBAGE;
             }
         }
-        if (_stateMachine.currentState == _stateMachine.groundState) {
+        if (self.stateMachine.currentState == self.stateMachine.groundState) {
             break;
         }
     }
 
-    _stateMachine.userInfo = nil;
+    self.stateMachine.userInfo = nil;
 
-    if (_stateMachine.currentState != _stateMachine.groundState) {
+    if (self.stateMachine.currentState != self.stateMachine.groundState) {
         if (result->type == VT100_WAIT && !_hook) {
             savedState[kOffset] = @(iTermParserNumberOfBytesConsumed(context));
             iTermParserBacktrack(context);
@@ -447,30 +509,63 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
     }
 }
 
+// Only add to this if you're doing something fancy. You can usually add your case to -execute
+// instead.
 - (void)hook {
-    if ([self compactSequence] == MAKE_COMPACT_SEQUENCE(0, 0, 'p') &&
-        [[self parameters] isEqual:@[ @"1000" ]]) {
-        VT100Token *token = _stateMachine.userInfo[kVT100DCSUserInfoToken];
-        if (token) {
-            token->type = DCS_TMUX_HOOK;
-            _uniqueID = [[[NSUUID UUID] UUIDString] copy];
-            token.string = _uniqueID;
-        }
+    switch ([self compactSequence]) {
+    case MAKE_COMPACT_SEQUENCE(0, 0, 'p'):
+        if ([[self parameters] isEqual:@[ @"1000" ]]) {
+            VT100Token *token = self.stateMachine.userInfo[kVT100DCSUserInfoToken];
+            if (token) {
+                token->type = DCS_TMUX_HOOK;
+                _uniqueID = [[[NSUUID UUID] UUIDString] copy];
+                token.string = _uniqueID;
+            }
 
-        _hook = [[VT100TmuxParser alloc] init];
-        _hookFinished = NO;
+            _hook = [[VT100TmuxParser alloc] init];
+            _hookFinished = NO;
+        } else if ([[self parameters] isEqual:@[ @"2000" ]]) {
+            VT100Token *token = self.stateMachine.userInfo[kVT100DCSUserInfoToken];
+            if (token) {
+                token->type = DCS_SSH_HOOK;
+                _uniqueID = [[[NSUUID UUID] UUIDString] copy];
+                token.string = _uniqueID;
+            }
+
+            _hook = [[VT100ConductorParser alloc] initWithUniqueID:_uniqueID];
+            _hookFinished = NO;
+        }
+        break;
+
+        case MAKE_COMPACT_SEQUENCE(0, 0, 'q'): {
+            VT100Token *token = self.stateMachine.userInfo[kVT100DCSUserInfoToken];
+            if (token) {
+                token->type = VT100_SKIP;
+                _uniqueID = [[[NSUUID UUID] UUIDString] copy];
+                token.string = _uniqueID;
+            }
+
+            _hook = [[VT100SixelParser alloc] initWithParameters:[self parameters]];
+            _hookFinished = NO;
+            break;
+        }
     }
 }
 
 - (void)unhook {
+    if (_hook) {
+        DLog(@"Unhook DCS. Hook was %@. Called from\n%@", _hook, [NSThread callStackSymbols]);
+    }
     _hook = nil;
     _uniqueID = nil;
+    [_parameterString deleteCharactersInRange:NSMakeRange(0, _parameterString.length)];
+    self.stateMachine.currentState = self.stateMachine.groundState;
 }
 
 // Force the ground state. Used when force-quitting tmux mode.
 - (void)reset {
     [self unhook];
-    _stateMachine.currentState = _stateMachine.groundState;
+    self.stateMachine.currentState = self.stateMachine.groundState;
 }
 
 // Combines the private-mode character, intermediate character, and first
@@ -508,17 +603,22 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
     _executed = YES;
     token->type = VT100_NOTSUPPORT;
     switch ([self compactSequence]) {
-        case MAKE_COMPACT_SEQUENCE(0, '+', 'q'): {
+        case MAKE_COMPACT_SEQUENCE(0, '+', 'q'): {  // ESC P + q Param ST
             [self parseTermcapTerminfoToken:token];
             return;
         }
 
-        case MAKE_COMPACT_SEQUENCE(0, 0, 'p'):
+        case MAKE_COMPACT_SEQUENCE(0, 0, 'p'):  // ESC P 1000 p
             if ([[self parameters] isEqual:@[ @"1000" ]]) {
                 // This shouldn't happen.
                 [self unhook];
                 token->type = VT100_SKIP;
             }
+            break;
+
+        case MAKE_COMPACT_SEQUENCE(0, 0, 'q'):
+            [self unhook];
+            token->type = VT100_SKIP;
             break;
 
         case MAKE_COMPACT_SEQUENCE(0, 0, 't'):
@@ -528,13 +628,41 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
             }
             break;
 
-        case MAKE_COMPACT_SEQUENCE('=', 0, 's'):
+        case MAKE_COMPACT_SEQUENCE('=', 0, 's'):  // ESC P = Param s
             if ([_parameterString isEqualToString:@"1"]) {
                 token->type = DCS_BEGIN_SYNCHRONIZED_UPDATE;
             } else if ([_parameterString isEqualToString:@"2"]) {
                 token->type = DCS_END_SYNCHRONIZED_UPDATE;
             }
             break;
+        case MAKE_COMPACT_SEQUENCE(0, '$', 'q'):
+            token->type = DCS_DECRQSS;
+            token.string = [_data substringFromIndex:1];
+            break;
+
+        case MAKE_COMPACT_SEQUENCE(0, '$', 't'):  // ESC P Param $ t
+            if ([_parameterString isEqualToString:@"1"]) {
+                token->type = DCS_DECRSPS_DECCIR;
+            } else if ([_parameterString isEqualToString:@"2"]) {
+                token->type = DCS_DECRSPS_DECTABSR;
+            } else {
+                token->type = VT100_SKIP;
+            }
+            if (token->type != VT100_SKIP) {
+                token.string = [_data substringFromIndex:1];
+            }
+            break;
+
+        case MAKE_COMPACT_SEQUENCE(0, '+', 'p'): {
+            NSString *term = [_data substringFromIndex:1];
+            if (term.length == 0) {
+                token->type = VT100_SKIP;
+                break;
+            }
+            token->type = DCS_XTSETTCAP;
+            token.string = term;
+            break;
+        }
     }
 }
 
@@ -548,34 +676,49 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
 
 - (void)parseTermcapTerminfoToken:(VT100Token *)token {
     NSString *semicolonDelimitedHexEncodedNames = [_data substringFromIndex:1];
-    NSArray *hexEncodedNames =
-        [semicolonDelimitedHexEncodedNames componentsSeparatedByString:@";"];
     token->type = DCS_REQUEST_TERMCAP_TERMINFO;
-    token.csi->count = 0;
-    NSDictionary *nameMap = [[self class] termcapTerminfoNameDictionary];
-    for (NSString *hexEncodedName in hexEncodedNames) {
-        NSString *name = [NSString stringWithHexEncodedString:hexEncodedName];
-        NSNumber *value = nameMap[name];
-        if (value) {
-            token.csi->p[token.csi->count++] = [value intValue];
-        } else {
-            token.csi->p[token.csi->count++] = kDcsTermcapTerminfoRequestUnrecognizedName;
-        }
-        if (token.csi->count == VT100CSIPARAM_MAX) {
-            break;
-        }
-    }
+    token.string = semicolonDelimitedHexEncodedNames;
 }
 
-- (void)startTmuxRecoveryMode {
+// TODO: recovery mode for conductor/ssh
+- (void)startTmuxRecoveryModeWithID:(NSString *)dcsID {
     // Put the state machine in the passthrough mode.
     char *fakeControlSequence = "\eP1000p";
     for (int i = 0; fakeControlSequence[i]; i++) {
-        [_stateMachine handleCharacter:fakeControlSequence[i]];
+        [self.stateMachine handleCharacter:fakeControlSequence[i]];
     }
 
     // Replace the hook with one in recovery mode.
     _hook = [[VT100TmuxParser alloc] initInRecoveryMode];
+    _uniqueID = [dcsID copy];
+    DLog(@"dcs parser code injected and parser hooked.");
+}
+
+- (void)cancelTmuxRecoveryMode {
+    if ([_hook isKindOfClass:[VT100TmuxParser class]]) {
+        DLog(@"unhook");
+        [self unhook];
+    }
+}
+
+- (void)startConductorRecoveryModeWithID:(NSString *)dcsID {
+    // Put the state machine in the passthrough mode.
+    char *fakeControlSequence = "\eP2000p";
+    for (int i = 0; fakeControlSequence[i]; i++) {
+        [self.stateMachine handleCharacter:fakeControlSequence[i]];
+    }
+
+    // Replace the hook with one in recovery mode.
+    _hook = [VT100ConductorParser newRecoveryModeInstanceWithUniqueID:dcsID];
+    _uniqueID = [dcsID copy];
+    DLog(@"dcs parser code injected and parser hooked.");
+}
+
+- (void)cancelConductorRecoveryMode {
+    if ([_hook isKindOfClass:[VT100ConductorParser class]]) {
+        DLog(@"unhook");
+        [self unhook];
+    }
 }
 
 @end
@@ -583,7 +726,7 @@ static NSRange MakeCharacterRange(unsigned char first, unsigned char lastInclusi
 @implementation VT100DCSParser (Testing)
 
 - (VT100DCSState)state {
-    return [(NSNumber *)_stateMachine.currentState.identifier intValue];
+    return [(NSNumber *)self.stateMachine.currentState.identifier intValue];
 }
 
 - (NSString *)data {

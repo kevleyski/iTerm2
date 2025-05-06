@@ -9,8 +9,15 @@
 
 @interface NSResponder (iTerm)
 
-@property (nonatomic, readonly) BOOL it_shouldIgnoreFirstResponderChanges;
+// For inscrutable reasons scrollWheel: is not called for "changed" or "ended" momentum phases.
+- (BOOL)it_wantsScrollWheelMomentumEvents;
+- (void)it_scrollWheelMomentum:(NSEvent *)event;
+- (BOOL)it_preferredFirstResponder;
+- (BOOL)it_isTerminalResponder;
+// FFM won't cause focus to be taken to controlling terminal except on mouse exit.
+- (BOOL)it_focusFollowsMouseImmune;
+@end
 
-- (void)it_ignoreFirstResponderChangesInBlock:(void (^)(void))block;
-
+@interface NSResponder (iTermFirstResponder)
+- (void)toggleTriggerEnabled:(id)sender;
 @end

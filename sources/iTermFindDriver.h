@@ -7,8 +7,10 @@
 
 #import <Cocoa/Cocoa.h>
 #import "iTermFindViewController.h"
+#import "FindContext.h"
 
 @class FindViewController;
+@class iTermSearchEngine;
 
 @protocol iTermFindDriverDelegate <NSObject>
 
@@ -22,7 +24,7 @@
 - (BOOL)findInProgress;
 
 // Search more. Fill in *progress with how much of the buffer has been searched.
-- (BOOL)continueFind:(double *)progress;
+- (BOOL)continueFind:(double *)progress range:(NSRange *)rangePtr;
 
 // Moves the beginning of the current selection leftward by a word.
 - (BOOL)growSelectionLeft;
@@ -53,26 +55,44 @@
   forwardDirection:(BOOL)direction
               mode:(iTermFindMode)mode
         withOffset:(int)offset
-scrollToFirstResult:(BOOL)scrollToFirstResult;
+scrollToFirstResult:(BOOL)scrollToFirstResult
+             force:(BOOL)force;
 
 // The search view became (in)visible.
 - (void)findViewControllerVisibilityDidChange:(id<iTermFindViewController>)sender;
 - (void)findViewControllerDidCeaseToBeMandatory:(id<iTermFindViewController>)sender;
+
+- (NSInteger)findDriverNumberOfSearchResults;
+
+- (NSInteger)findDriverCurrentIndex;
+- (void)findDriverSetFilter:(NSString *)filter withSideEffects:(BOOL)withSideEffects;
+- (void)findDriverInvalidateFrame;
+- (void)findDriverFilterVisibilityDidChange:(BOOL)visible;
+- (void)findDriverBottomUpPerformFindPanelAction:(id)sender;
+- (BOOL)findDriverBottomUpValidateMenuItem:(NSMenuItem *)menuItem;
+- (iTermSearchEngine *)findDriverSearchEngine;
+
 @end
 
 @interface iTermFindDriver : NSObject
 
++ (iTermFindMode)mode;
+
 @property (nonatomic, weak) id<iTermFindDriverDelegate> delegate;
 @property (nonatomic, readonly) NSViewController<iTermFindViewController> *viewController;
+@property (nonatomic, readonly) NSViewController<iTermFilterViewController> *filterViewController;
 @property (nonatomic) iTermFindMode mode;
+@property (nonatomic, readonly) BOOL shouldSearchAutomatically;
 
 // NOTE: Permanently visible find views (those added to status bars via configuration) never
 // return YES for isVisible.
 @property (nonatomic, readonly) BOOL isVisible;
 @property (nonatomic, copy) NSString *findString;
+- (void)setFindStringUnconditionally:(NSString *)findString;
 @property (nonatomic) BOOL needsUpdateOnFocus;
 
-- (instancetype)initWithViewController:(NSViewController<iTermFindViewController> *)viewController NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithViewController:(NSViewController<iTermFindViewController> *)viewController
+                  filterViewController:(NSViewController<iTermFilterViewController> *)filterViewController NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 // Animates in a hidden find view.
@@ -93,8 +113,18 @@ scrollToFirstResult:(BOOL)scrollToFirstResult;
 // navigate with with next-previous. When the find window is opened, the state
 // is restored.
 - (void)closeViewAndDoTemporarySearchForString:(NSString *)string
-                                          mode:(iTermFindMode)mode;
+                                          mode:(iTermFindMode)mode
+                                      progress:(void (^)(NSRange linesSearched))progress;
 
 - (void)owningViewDidBecomeFirstResponder;
+- (void)setFilterWithoutSideEffects:(NSString *)filter;
+- (void)setFilterHidden:(BOOL)hidden;
+- (void)toggleFilter;
+- (void)invalidateFrame;
+- (void)filterVisibilityDidChange;
+- (void)setFilterProgress:(double)progress;
+- (void)highlightWithoutSelectingSearchResultsForQuery:(NSString *)string;
+- (void)bottomUpPerformFindPanelAction:(id)sender;
+- (BOOL)bottomUpValidateMenuItem:(NSMenuItem *)menuItem;
 
 @end

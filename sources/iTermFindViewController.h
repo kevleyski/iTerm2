@@ -21,12 +21,25 @@ typedef NS_ENUM(NSUInteger, iTermFindMode) {
 @property (nonatomic, readonly) BOOL searchBarIsFirstResponder;
 @property (nonatomic, weak) iTermFindDriver *driver;
 @property (nonatomic, copy) NSString *findString;
+@property (nonatomic, copy) NSString *filter;
+@property (nonatomic, readonly) BOOL filterIsVisible;
+@property (nonatomic, readonly) BOOL searchIsVisible;
+@property (nonatomic, readonly) BOOL shouldSearchAutomatically;
 
 - (void)close;
 - (void)open;
 - (void)makeVisible;
-- (void)setFrameOrigin:(NSPoint)p;
+- (void)setOffsetFromTopRightOfSuperview:(NSSize)offset;
 - (void)setProgress:(double)progress;
 - (void)deselectFindBarTextField;
+- (void)countDidChange;
+- (void)toggleFilter;
+- (void)setFilterHidden:(BOOL)filterHidden;
+- (void)setFilterProgress:(double)progress;
 
 @end
+
+@protocol iTermFilterViewController<NSObject>
+- (void)setFilterProgress:(double)progress;
+@end
+

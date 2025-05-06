@@ -40,6 +40,7 @@
 @property(nonatomic, readonly) BOOL readOnly;
 @property(nonatomic, readonly) BOOL empty;
 @property(nonatomic, readonly) NSDictionary *dictionaryValue;
+@property(nonatomic, readonly) BOOL canClear;
 
 // Allocates a circular buffer of the given size in bytes to store screen
 // contents. Somewhat more memory is used because there's some per-frame
@@ -50,8 +51,13 @@
 // Save the screen state into the DVR.
 //   frameLines: An array of screen lines that DVREncoder understands.
 //   length: Number of bytes in buffer.
+//   cleanLines: Lines that are known unchanged
 //   info: Metadata for the frame.
-- (void)appendFrame:(NSArray*)frameLines length:(int)length info:(DVRFrameInfo*)info;
+- (void)appendFrame:(NSArray<NSData *> *)frameLines
+             length:(int)length
+           metadata:(NSArray<id<DVREncodable>> *)metadata
+         cleanLines:(NSIndexSet *)cleanLines
+               info:(DVRFrameInfo*)info;
 
 // allocate a new decoder. Use -[releaseDecoder:] when you're done with it.
 - (DVRDecoder*)getDecoder;
@@ -61,5 +67,6 @@
 
 - (NSDictionary *)dictionaryValueFrom:(long long)from to:(long long)to;
 - (long long)firstTimestampAfter:(long long)timestamp;
+- (void)clear;
 
 @end

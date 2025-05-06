@@ -9,7 +9,9 @@ typedef enum iTermVertexInputIndex {
     iTermVertexInputIndexPerInstanceUniforms,
     iTermVertexInputIndexOffset,
     iTermVertexInputIndexCursorDescription,
-    iTermVertexInputMojaveVertexTextInfo
+    iTermVertexInputIndexDefaultBackgroundColorInfo,  // Points at iTermMetalBackgroundColorInfo
+    iTermVertexTextInfo,
+    iTermVertexColorArray,  // Points at per-quad vector_float4 color
 } iTermVertexInputIndex;
 
 typedef enum iTermTextureIndex {
@@ -24,20 +26,44 @@ typedef enum iTermTextureIndex {
 
 typedef enum {
     iTermFragmentBufferIndexMarginColor = 0,  // Points at a single float4
-    iTermFragmentBufferIndexColorModels = 1, // Array of 256-byte color tables
     iTermFragmentInputIndexTextureDimensions = 2,  // Points at iTermTextureDimensions
     iTermFragmentBufferIndexIndicatorAlpha = 3, // Points at a single float giving alpha value
     iTermFragmentBufferIndexFullScreenFlashColor = 4, // Points at a float4
     iTermFragmentInputIndexAlpha = 5,  // float4 pointer. Used by transparent windows on 10.14
     iTermFragmentInputIndexColor = 6,  // float4. Gives color for letterboxes/pillarboxes
+    iTermFragmentBufferIndexScale = 7  // backing scale factor float
 } iTermFragmentBufferIndex;
 
+// AND with mask to remove strikethrough bit
+#define iTermMetalGlyphAttributesUnderlineBitmask 7
+// OR this to set the strikethrough bit
+#define iTermMetalGlyphAttributesUnderlineStrikethroughFlag 8
+// If this grows update the size of the bit field in iTermMetalGlyphAttributes.
 typedef enum {
     iTermMetalGlyphAttributesUnderlineNone = 0,
     iTermMetalGlyphAttributesUnderlineSingle = 1,
     iTermMetalGlyphAttributesUnderlineDouble = 2,
-    iTermMetalGlyphAttributesUnderlineDashedSingle = 3
+    iTermMetalGlyphAttributesUnderlineDashedSingle = 3,
+    iTermMetalGlyphAttributesUnderlineCurly = 4,
+    iTermMetalGlyphAttributesUnderlineHyperlink = 5,  // Rendered as a single with a dashed under it. Used for underlined text with hyperlink.
+
+    iTermMetalGlyphAttributesUnderlineStrikethrough = iTermMetalGlyphAttributesUnderlineStrikethroughFlag,
+    iTermMetalGlyphAttributesUnderlineStrikethroughAndSingle = iTermMetalGlyphAttributesUnderlineStrikethroughFlag + 1,
+    iTermMetalGlyphAttributesUnderlineStrikethroughAndDouble = iTermMetalGlyphAttributesUnderlineStrikethroughFlag + 2,
+    iTermMetalGlyphAttributesUnderlineStrikethroughAndDashedSingle = iTermMetalGlyphAttributesUnderlineStrikethroughFlag + 3,
+    iTermMetalGlyphAttributesUnderlineStrikethroughAndCurly = iTermMetalGlyphAttributesUnderlineStrikethroughFlag + 4,
 } iTermMetalGlyphAttributesUnderline;
+
+typedef enum {
+    iTermBackgroundColorRendererModeAll = 0,
+    iTermBackgroundColorRendererModeDefaultOnly = 1,
+    iTermBackgroundColorRendererModeNondefaultOnly = 2
+} iTermBackgroundColorRendererMode;
+
+typedef struct {
+    vector_float4 defaultBackgroundColor;  // Emulates the iTermBackgroundColorView.
+    iTermBackgroundColorRendererMode mode;
+} iTermMetalBackgroundColorInfo;
 
 typedef struct {
     // Distance in pixel space from origin
@@ -57,12 +83,8 @@ typedef struct iTermTextPIU {
     // Offset of source texture
     vector_float2 textureOffset;
 
-    // Values in 0-1. These will be composited over what's already rendered.
-    vector_float4 backgroundColor;
+    // Values in 0-1. This will be composited over what's already rendered.
     vector_float4 textColor;
-
-    // Passed through to the solid background color fragment shader.
-    vector_int3 colorModelIndex;  // deprecated for macOS 10.14+
 
     // What kind of underline to draw. The offset is provided in iTermTextureDimensions.
     iTermMetalGlyphAttributesUnderline underlineStyle;
@@ -80,6 +102,12 @@ typedef struct {
 } iTermMarkPIU;
 
 typedef struct {
+    float y;
+    vector_float4 color;
+    float rightInset;
+} iTermLineStyleMarkPIU;
+
+typedef struct {
     // Offset from vertex
     vector_float2 offset;
 
@@ -91,6 +119,9 @@ typedef struct {
 
     // Background color
     vector_float4 color;
+
+    // Is default background color?
+    unsigned char isDefault;
 } iTermBackgroundColorPIU;
 
 typedef struct {
@@ -102,20 +133,20 @@ typedef struct {
     vector_float2 textureSize;  // Size of texture atlas in pixels
     vector_float2 glyphSize;  // Size of a glyph within the atlas in pixels
     vector_float2 cellSize;  // Size of a cell
-    float underlineOffset;  // Distance from bottom of cell to underline in pixels
+    vector_float2 underlineOffset;  // Distance from bottom left of cell to underline in pixels
     float underlineThickness;  // Thickness of underline in pixels
+    vector_float2 strikethroughOffset;
+    float strikethroughThickness;
     float scale;  // 2 for retina, 1 for non retina
 } iTermTextureDimensions;
 
+#define iTermTextVertexInfoFlagsSolidUnderlines 1
 typedef struct {
-    vector_uint2 viewportSize;
-
-    // Used to adjust the alpha channel. Defines a function f(x)=c+m*b where
-    // f(x) is the alpha value to output, x is the alpha value of a pixel, and
-    // b is the perceived brightness of the text color. c is powerConstant,
-    // m is powerMultiplier.
-    float powerConstant;
-    float powerMultiplier;
-} iTermVertexInputMojaveVertexTextInfoStruct;
+    int flags;  // See iTermTextVertexInfoFlags defines
+    float glyphWidth;
+    float cellWidth;
+    unsigned int numInstances;
+    float verticalOffset;  // For non-grid-aligned text, such as offscreen command line.
+} iTermVertexTextInfoStruct;
 
 #endif

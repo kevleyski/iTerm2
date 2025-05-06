@@ -8,6 +8,7 @@
 
 #import "iTermCommandHistoryEntryMO+Additions.h"
 
+#import "iTermAdvancedSettingsModel.h"
 #import "iTermCommandHistoryCommandUseMO+Additions.h"
 #import "iTermCommandHistoryCommandUseMO.h"
 #import "iTermCommandHistoryEntryMO.h"
@@ -77,7 +78,7 @@ static NSString *const kCommandUses = @"use times";  // The name is a historical
     [self didChange:NSKeyValueChangeInsertion valuesAtIndexes:indexSet forKey:key];
 }
 
-- (VT100ScreenMark *)lastMark {
+- (id<VT100ScreenMarkReading>)lastMark {
     iTermCommandHistoryCommandUseMO *use = [self.uses lastObject];
     return use.mark;
 }
@@ -91,30 +92,16 @@ static NSString *const kCommandUses = @"use times";  // The name is a historical
     return [(other.timeOfLastUse ?: @0) compare:(self.timeOfLastUse ?: @0)];
 }
 
-// Used to sort from highest to lowest score. So Ascending means self's score is higher
-// than other's.
 - (NSComparisonResult)compare:(iTermCommandHistoryEntryMO *)other {
-    if (self.matchLocation.intValue == 0 && other.matchLocation.intValue > 0) {
-        return NSOrderedDescending;
-    }
-    if (other.matchLocation.intValue == 0 && self.matchLocation.intValue > 0) {
-        return NSOrderedAscending;
-    }
-    NSInteger otherUses = other.numberOfUses.integerValue;
-    if (self.numberOfUses.integerValue < otherUses) {
-        return NSOrderedDescending;
-    } else if (self.numberOfUses.integerValue > otherUses) {
-        return NSOrderedAscending;
-    }
+    return [@(other.score) compare:@(self.score)];
+}
 
-    NSTimeInterval otherLastUsed = other.timeOfLastUse.doubleValue;
-    if (self.timeOfLastUse.doubleValue < otherLastUsed) {
-        return NSOrderedDescending;
-    } else if (self.timeOfLastUse.doubleValue > otherLastUsed) {
-        return NSOrderedAscending;
-    } else {
-        return NSOrderedSame;
-    }
+- (double)score {
+    const double uses = MAX(0, self.numberOfUses.doubleValue);
+    const double age = MAX(0, [NSDate timeIntervalSinceReferenceDate] - self.timeOfLastUse.doubleValue);
+    const double usePower = [iTermAdvancedSettingsModel commandHistoryUsePower];
+    const double agePower = [iTermAdvancedSettingsModel commandHistoryAgePower];
+    return pow(log10(10 + uses), usePower) / pow(log10(10 + age), agePower);
 }
 
 @end

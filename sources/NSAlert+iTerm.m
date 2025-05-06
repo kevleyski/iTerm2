@@ -6,10 +6,14 @@
 //
 
 #import "NSAlert+iTerm.h"
+#import "DebugLogging.h"
 
 @implementation NSAlert (iTerm)
 
-- (NSInteger)runSheetModalForWindow:(NSWindow *)window {
+- (NSModalResponse)runSheetModalForWindow:(NSWindow *)window {
+    DLog(@"Run sheet modal for window %@", window);
+
+    [NSApp activateIgnoringOtherApps:YES];
     [self beginSheetModalForWindow:window completionHandler:^(NSModalResponse returnCode) {
         [NSApp stopModalWithCode:returnCode];
     }];

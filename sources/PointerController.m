@@ -7,7 +7,9 @@
 //
 
 #import "PointerController.h"
+
 #import "iTermApplicationDelegate.h"
+#import "NSEvent+iTerm.h"
 #import "PointerPrefsController.h"
 #import "PreferencePanel.h"
 
@@ -28,7 +30,7 @@
 - (void)performAction:(NSString *)action
              forEvent:(NSEvent *)event
          withArgument:(NSString *)argument
-{
+compatibilityEscaping:(BOOL)compatibilityEscaping {
     DLog(@"Perform action %@", action);
     if ([action isEqualToString:kPasteFromClipboardPointerAction]) {
         if (argument.length) {
@@ -67,7 +69,9 @@
     } else if ([action isEqualToString:kSendHexCodePointerAction]) {
         [delegate_ sendHexCode:argument withEvent:event];
     } else if ([action isEqualToString:kSendTextPointerAction]) {
-        [delegate_ sendText:argument withEvent:event];
+        [delegate_ sendText:argument withEvent:event escaping:compatibilityEscaping ? iTermSendTextEscapingCompatibility : iTermSendTextEscapingCommon];
+    } else if ([action isEqualToString:kInvokeScriptFunction]) {
+        [delegate_ invokeScriptFunction:argument withEvent:event];
     } else if ([action isEqualToString:kSelectPaneLeftPointerAction]) {
         [delegate_ selectPaneLeftWithEvent:event];
     } else if ([action isEqualToString:kSelectPaneRightPointerAction]) {
@@ -92,40 +96,50 @@
         [delegate_ extendSelectionWithEvent:event];
     } else if ([action isEqualToString:kQuickLookAction]) {
         [delegate_ quickLookWithEvent:event];
+    } else if ([action isEqualToString:kSelectMenuItemPointerAction]) {
+        NSArray<NSString *> *parts = [argument componentsSeparatedByString:@"\n"];
+        if (parts.count > 1) {
+            NSString *identifier = parts[0];
+            NSString *title = parts[1];
+            [delegate_ selectMenuItemWithIdentifier:identifier title:title event:event];
+        }
+    } else if ([action isEqualToString:kIgnoreAction]) {
+        // Do nothing
     }
 }
 
-- (BOOL)viewShouldTrackTouches
-{
-    return [iTermPreferences boolForKey:kPreferenceKeyThreeFingerEmulatesMiddle] ||
-           [PointerPrefsController haveThreeFingerTapEvents];
-}
-
 // Caller is responsible to check that it's a single click
-- (BOOL)eventEmulatesRightClick:(NSEvent *)event
+- (BOOL)eventEmulatesRightClick:(NSEvent *)event reportable:(BOOL)reportable
 {
-    return ![iTermPreferences boolForKey:kPreferenceKeyControlLeftClickBypassesContextMenu] &&
+    return !([iTermPreferences boolForKey:kPreferenceKeyControlLeftClickBypassesContextMenu] && reportable) &&
            [event buttonNumber] == 0 &&
-           ([event modifierFlags] & (NSEventModifierFlagControl | NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagShift)) == NSEventModifierFlagControl;
+           ([event it_modifierFlags] & (NSEventModifierFlagControl | NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagShift)) == NSEventModifierFlagControl;
 }
 
 - (NSString *)actionForEvent:(NSEvent *)event
+                  reportable:(BOOL)reportable
                       clicks:(int)clicks
                  withTouches:(int)numTouches
 {
-    NSUInteger modifierFlags = [event modifierFlags];
+    NSUInteger modifierFlags = [event it_modifierFlags];
     if (ignoreOption_) {
         modifierFlags &= ~NSEventModifierFlagOption;
     }
 
     DLog(@"actionForEvent:%@ cicks:%d withTouches:%d", event, clicks, numTouches);
-    if (clicks == 1 && [self eventEmulatesRightClick:event]) {
+    if (clicks == 1 && [self eventEmulatesRightClick:event reportable:reportable]) {
         // Ctrl-click emulates right button
         DLog(@"Look up action for an emulated right-click");
         return [PointerPrefsController actionWithButton:1 numClicks:1 modifiers:0];
     }
     if (numTouches <= 2) {
         DLog(@"Look up action for a two or one-finger touch click");
+        if (reportable &&
+            event.buttonNumber == 1 &&
+            clicks == 1 &&
+            [iTermPreferences boolForKey:kPreferenceKeyRightClickClickBypassesContextMenu]) {
+            return nil;
+        }
         return [PointerPrefsController actionWithButton:[event buttonNumber]
                                               numClicks:clicks
                                               modifiers:modifierFlags];
@@ -136,11 +150,31 @@
     }
 }
 
+- (BOOL)compatibilityEscapingForEvent:(NSEvent *)event
+                               clicks:(int)clicks
+                          withTouches:(int)numTouches
+                           reportable:(BOOL)reportable {
+    if (clicks == 1 && [self eventEmulatesRightClick:event reportable:reportable]) {
+        // Ctrl-click emulates right button
+        return [PointerPrefsController useCompatibilityEscapingWithButton:1
+                                                                numClicks:1
+                                                                modifiers:0];
+    }
+    if (numTouches <= 2) {
+        return [PointerPrefsController useCompatibilityEscapingWithButton:[event buttonNumber]
+                                                                numClicks:clicks
+                                                                modifiers:[event it_modifierFlags]];
+    } else {
+        return [PointerPrefsController useCompatibilityEscapingForTapWithTouches:numTouches
+                                                                       modifiers:[event it_modifierFlags]];
+    }
+}
+
 - (NSString *)argumentForEvent:(NSEvent *)event
                         clicks:(int)clicks
                    withTouches:(int)numTouches
-{
-    if (clicks == 1 && [self eventEmulatesRightClick:event]) {
+                    reportable:(BOOL)reportable {
+    if (clicks == 1 && [self eventEmulatesRightClick:event reportable:reportable]) {
         // Ctrl-click emulates right button
         return [PointerPrefsController argumentWithButton:1
                                                 numClicks:1
@@ -149,10 +183,10 @@
     if (numTouches <= 2) {
         return [PointerPrefsController argumentWithButton:[event buttonNumber]
                                                 numClicks:clicks
-                                                modifiers:[event modifierFlags]];
+                                                modifiers:[event it_modifierFlags]];
     } else {
         return [PointerPrefsController argumentForTapWithTouches:numTouches
-                                                       modifiers:[event modifierFlags]];
+                                                       modifiers:[event it_modifierFlags]];
     }
 }
 
@@ -161,7 +195,23 @@
     mouseDownButton_ = 0;
 }
 
-- (BOOL)mouseDown:(NSEvent *)event withTouches:(int)numTouches ignoreOption:(BOOL)ignoreOption {
+- (BOOL)threeFingerTap:(NSEvent *)event {
+    if ([iTermPreferences boolForKey:kPreferenceKeyThreeFingerEmulatesMiddle]) {
+        return NO;
+    }
+    if ([self actionForEvent:event reportable:NO clicks:1 withTouches:3]) {
+        return NO;
+    }
+
+    NSNumber *number = [[NSUserDefaults standardUserDefaults] objectForKey:@"com.apple.trackpad.threeFingerTapGesture"];
+    if (number.integerValue == 2) {
+        [self performAction:kQuickLookAction forEvent:event withArgument:nil compatibilityEscaping:NO];
+        return YES;
+    }
+    return NO;
+}
+
+- (BOOL)mouseDown:(NSEvent *)event withTouches:(int)numTouches ignoreOption:(BOOL)ignoreOption reportable:(BOOL)reportable {
     // A double left click plus an immediate right click reports a triple right
     // click! So we keep our own click count and use the lower of the OS's
     // value and ours. Theirs is lower when the time between clicks is long.
@@ -174,21 +224,28 @@
     ignoreOption_ = ignoreOption;
     mouseDownButton_ = [event buttonNumber];
     return [self actionForEvent:event
+                     reportable:reportable
                          clicks:clicks_
                     withTouches:numTouches] != nil;
 }
 
-- (BOOL)mouseUp:(NSEvent *)event withTouches:(int)numTouches {
+- (BOOL)mouseUp:(NSEvent *)event withTouches:(int)numTouches reportable:(BOOL)reportable {
     _previousStage = 0;
     NSString *argument = [self argumentForEvent:event
                                          clicks:clicks_
-                                    withTouches:numTouches];
+                                    withTouches:numTouches
+                                     reportable:reportable];
     NSString *action = [self actionForEvent:event
+                                 reportable:reportable
                                      clicks:clicks_
                                 withTouches:numTouches];
+    BOOL compatibilityEscaping = [self compatibilityEscapingForEvent:event
+                                                              clicks:clicks_
+                                                         withTouches:numTouches
+                                                          reportable:reportable];
     DLog(@"mouseUp action=%@", action);
     if (action) {
-        [self performAction:action forEvent:event withArgument:argument];
+        [self performAction:action forEvent:event withArgument:argument compatibilityEscaping:compatibilityEscaping];
         return YES;
     } else {
         return NO;
@@ -196,29 +253,33 @@
 }
 
 - (BOOL)pressureChangeWithEvent:(NSEvent *)event {
-    ITERM_IGNORE_PARTIAL_BEGIN
     if ([event respondsToSelector:@selector(stage)]) {
         NSInteger previousStage = _previousStage;
         _previousStage = event.stage;
         if (event.stage == 2 && previousStage < 2) {
             NSString *action = [PointerPrefsController actionForGesture:kForceTouchSingleClick
-                                                              modifiers:[event modifierFlags]];
+                                                              modifiers:[event it_modifierFlags]];
             NSString *argument = [PointerPrefsController argumentForGesture:kForceTouchSingleClick
-                                                                  modifiers:[event modifierFlags]];
+                                                                  modifiers:[event it_modifierFlags]];
+            BOOL compatibilityEscaping = [PointerPrefsController useCompatibilityEscapingForGesture:kForceTouchSingleClick
+                                                                                          modifiers:[event it_modifierFlags]];
             if (action) {
-                [self performAction:action forEvent:event withArgument:argument];
+                [self performAction:action forEvent:event withArgument:argument compatibilityEscaping:compatibilityEscaping];
                 return YES;
             } else {
-                [self performAction:kQuickLookAction forEvent:event withArgument:nil];
+                NSNumber *number = [[NSUserDefaults standardUserDefaults] objectForKey:@"com.apple.trackpad.forceClick"];
+                if (number && number.boolValue) {
+                    // This hack stolen from Firefox: https://searchfox.org/mozilla-central/source/widget/cocoa/nsChildView.mm
+                    // I have no idea why -quicklookWithEvent: doesn't get called, but at least I'm in good company.
+                    [self performAction:kQuickLookAction forEvent:event withArgument:nil compatibilityEscaping:compatibilityEscaping];
+                }
             }
         }
     }
-    ITERM_IGNORE_PARTIAL_END
     return NO;
 }
 
-- (void)swipeWithEvent:(NSEvent *)event
-{
+- (void)swipeWithEvent:(NSEvent *)event {
     NSString *gesture = nil;
     if ([event deltaX] > 0) {
         gesture = kThreeFingerSwipeLeft;
@@ -231,11 +292,13 @@
         gesture = kThreeFingerSwipeDown;
     }
     NSString *action = [PointerPrefsController actionForGesture:gesture
-                                                      modifiers:[event modifierFlags]];
+                                                      modifiers:[event it_modifierFlags]];
     NSString *argument = [PointerPrefsController argumentForGesture:gesture
-                                                          modifiers:[event modifierFlags]];
+                                                          modifiers:[event it_modifierFlags]];
+    BOOL compatibilityEscaping = [PointerPrefsController useCompatibilityEscapingForGesture:gesture
+                                                                                  modifiers:[event it_modifierFlags]];
     if (action) {
-        [self performAction:action forEvent:event withArgument:argument];
+        [self performAction:action forEvent:event withArgument:argument compatibilityEscaping:compatibilityEscaping];
     }
 }
 

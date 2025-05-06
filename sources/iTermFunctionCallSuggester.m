@@ -7,6 +7,8 @@
 
 #import "iTermFunctionCallSuggester.h"
 
+#import "CPParser+Cache.h"
+#import "DebugLogging.h"
 #import "iTermExpressionParser+Private.h"
 #import "iTermGrammarProcessor.h"
 #import "iTermSwiftyStringParser.h"
@@ -17,11 +19,12 @@
 #import "NSObject+iTerm.h"
 
 @interface iTermFunctionCallSuggester()<CPParserDelegate, CPTokeniserDelegate>
+@property (nonatomic, readonly) CPLALR1Parser *parser;
 @end
 
 @implementation iTermFunctionCallSuggester {
 @protected
-    CPLR1Parser *_parser;
+    CPLALR1Parser *_parser;
     NSDictionary<NSString *,NSArray<NSString *> *> *_functionSignatures;
     NSSet<NSString *> *(^_pathSource)(NSString *prefix);
     NSString *_prefix;
@@ -36,15 +39,13 @@
         _functionSignatures = [functionSignatures copy];
         _pathSource = [pathSource copy];
         _tokenizer = [iTermExpressionParser newTokenizer];
+        [_tokenizer addTokenRecogniser:[CPKeywordRecogniser recogniserForKeyword:@"="]];
+
         [self addTokenRecognizersToTokenizer:_tokenizer];
         _tokenizer.delegate = self;
         _grammarProcessor = [[iTermGrammarProcessor alloc] init];
         [self loadRulesAndTransforms];
 
-        NSError *error = nil;
-        CPGrammar *grammar = [CPGrammar grammarWithStart:self.grammarStart
-                                          backusNaurForm:_grammarProcessor.backusNaurForm
-                                                   error:&error];
         // NOTE:
         // CPSLRParser is a slightly faster parser but is not capable of dealing with the grammar
         // rules for functions in expressions. You need lookahead to distinguish function calls
@@ -55,11 +56,15 @@
         // reason a funcname is not a path is that it can only have two parts.
         //
         // See the comments in the headers for the two parsers for more details about their costs.
-        _parser = [CPLALR1Parser parserWithGrammar:grammar];
+        _parser = [CPLALR1Parser parserWithBNF:_grammarProcessor.backusNaurForm start:self.grammarStart];
         assert(_parser);
         _parser.delegate = self;
     }
     return self;
+}
+
+- (void)dealloc {
+    [_parser it_releaseParser];
 }
 
 - (void)addTokenRecognizersToTokenizer:(CPTokeniser *)tokenizer {
@@ -80,20 +85,29 @@
 }
 
 - (NSString *)grammarStart {
-    return @"call";
+    return @"callsequence";
 }
 
 - (void)loadRulesAndTransforms {
     __weak __typeof(self) weakSelf = self;
-    [_grammarProcessor addProductionRule:@"call ::= <funcname> <arglist>"
+    [_grammarProcessor addProductionRule:@"callsequence ::= <incompletecall>"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+        return syntaxTree.children.lastObject;
+    }];
+    [_grammarProcessor addProductionRule:@"callsequence ::= <completecall> ';' <callsequence>"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+        return syntaxTree.children.lastObject;
+    }];
+
+    [_grammarProcessor addProductionRule:@"incompletecall ::= <funcname> <arglist>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
                                return [weakSelf callWithName:syntaxTree.children[0]
                                                      arglist:syntaxTree.children[1]];
                            }];
-    [_grammarProcessor addProductionRule:@"call ::= 'EOF'"
+    [_grammarProcessor addProductionRule:@"completecall ::= <funcname> <completearglist>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return [weakSelf callWithName:@""
-                                                     arglist:@{ @"partial-arglist": @YES }];
+                               return [weakSelf callWithName:syntaxTree.children[0]
+                                                     arglist:syntaxTree.children[1]];
                            }];
 
     [_grammarProcessor addProductionRule:@"funcname ::= 'Identifier'"
@@ -107,13 +121,18 @@
                                        [syntaxTree.children[2] identifier]];
                            }];
 
+    [_grammarProcessor addProductionRule:@"completearglist ::= '(' <args> ')'"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+                               return @{ @"complete-arglist": @YES };
+                           }];
+    [_grammarProcessor addProductionRule:@"completearglist ::= '(' ')'"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+                               return @{ @"complete-arglist": @YES };
+                           }];
+
     [_grammarProcessor addProductionRule:@"arglist ::= 'EOF'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
                                return @{ @"partial-arglist": @YES };
-                           }];
-    [_grammarProcessor addProductionRule:@"arglist ::= '(' <args> ')'"
-                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return @{ @"complete-arglist": @YES };
                            }];
     [_grammarProcessor addProductionRule:@"arglist ::= '(' ')'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
@@ -141,12 +160,23 @@
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
                                return [@[ syntaxTree.children[0], @"," ] arrayByAddingObjectsFromArray:syntaxTree.children[2]];
                            }];
-    [_grammarProcessor addProductionRule:@"arg ::= 'Identifier' ':' <expression>"
+    [_grammarProcessor addProductionRule:@"arg ::= <completearg>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return @{ @"identifier": [syntaxTree.children[0] identifier],
-                                         @"colon": @YES,
-                                         @"expression": syntaxTree.children[2] };
+        return syntaxTree.children[0];
                            }];
+    [_grammarProcessor addProductionRule:@"completearg ::= 'Identifier' ':' '&' <path>"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+        NSDictionary *expr = @{ @"path": syntaxTree.children[3] };
+        return @{ @"identifier": [syntaxTree.children[0] identifier],
+                  @"colon": @YES,
+                  @"expression": expr };
+    }];
+    [_grammarProcessor addProductionRule:@"completearg ::= 'Identifier' ':' <expression>"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+        return @{ @"identifier": [syntaxTree.children[0] identifier],
+                  @"colon": @YES,
+                  @"expression": syntaxTree.children[2] };
+    }];
     [_grammarProcessor addProductionRule:@"arg ::= 'Identifier' ':' 'EOF'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
                                return @{ @"identifier": [syntaxTree.children[0] identifier],
@@ -375,8 +405,9 @@
                 }];
             }
         }
-        return [self pathsAndFunctionSuggestionsWithPrefix:expression[@"path"]
-                                                legalPaths:legalPaths];
+        NSArray<NSString *> *suggestions = [self pathsAndFunctionSuggestionsWithPrefix:expression[@"path"]
+                                                                            legalPaths:legalPaths];
+        return suggestions;
     }
 }
 
@@ -446,6 +477,7 @@
 - (CPRecoveryAction *)parser:(CPParser *)parser
     didEncounterErrorOnInput:(CPTokenStream *)inputStream
                    expecting:(NSSet *)acceptableTokens {
+    DLog(@"Error with input stream %@ when expecting one of %@", inputStream, acceptableTokens);
     if (inputStream.peekToken == nil && [acceptableTokens containsObject:@"EOF"]) {
         return [CPRecoveryAction recoveryActionWithAdditionalToken:[CPEOFToken eof]];
     }

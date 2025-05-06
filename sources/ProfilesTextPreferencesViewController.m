@@ -7,21 +7,23 @@
 //
 
 #import "ProfilesTextPreferencesViewController.h"
+
+#import "DebugLogging.h"
 #import "FutureMethods.h"
 #import "ITAddressBookMgr.h"
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermFontPanel.h"
 #import "iTermSizeRememberingView.h"
 #import "iTermWarning.h"
+#import "NSDictionary+iTerm.h"
 #import "NSFont+iTerm.h"
 #import "NSStringITerm.h"
 #import "NSTextField+iTerm.h"
 #import "PreferencePanel.h"
 #import "PTYFontInfo.h"
+#import <BetterFontPicker/BetterFontPicker-Swift.h>
 
-// Tag on button to open font picker for non-ascii font.
-static NSInteger kNonAsciiFontButtonTag = 1;
-
-@interface ProfilesTextPreferencesViewController ()
+@interface ProfilesTextPreferencesViewController ()<BFPCompositeViewDelegate, BFPSizePickerViewDelegate>
 @property(nonatomic, strong) NSFont *normalFont;
 @property(nonatomic, strong) NSFont *nonAsciiFont;
 @end
@@ -30,14 +32,16 @@ static NSInteger kNonAsciiFontButtonTag = 1;
     // cursor type: underline/vertical bar/box
     // See ITermCursorType. One of: CURSOR_UNDERLINE, CURSOR_VERTICAL, CURSOR_BOX
     IBOutlet NSMatrix *_cursorType;
+    IBOutlet NSTextField *_cursorTypeLabel;
     IBOutlet NSButton *_blinkingCursor;
     IBOutlet NSButton *_useBoldFont;
     IBOutlet NSButton *_blinkAllowed;
+    IBOutlet NSButton *_shadow;
+    IBOutlet NSButton *_animateMovement;
     IBOutlet NSButton *_useItalicFont;
     IBOutlet NSButton *_ambiguousIsDoubleWidth;
     IBOutlet NSPopUpButton *_normalization;
-    IBOutlet NSSlider *_horizontalSpacing;
-    IBOutlet NSSlider *_verticalSpacing;
+    IBOutlet NSTextField *_normalizationLabel;
     IBOutlet NSButton *_useNonAsciiFont;
     IBOutlet NSButton *_asciiAntiAliased;
     IBOutlet NSButton *_nonasciiAntiAliased;
@@ -48,10 +52,11 @@ static NSInteger kNonAsciiFontButtonTag = 1;
     IBOutlet NSButton *_nonAsciiLigatures;
     IBOutlet NSButton *_subpixelAA;
     IBOutlet NSButton *_powerline;
-    
-    // Labels indicating current font. Not registered as controls.
-    IBOutlet NSTextField *_normalFontDescription;
-    IBOutlet NSTextField *_nonAsciiFontDescription;
+    IBOutlet BFPCompositeView *_asciiFontPicker;
+    IBOutlet BFPCompositeView *_nonASCIIFontPicker;
+    IBOutlet NSTextField *_ligatureWarning;
+    BFPSizePickerView *_horizontalSpacingView;
+    BFPSizePickerView *_verticalSpacingView;
 
     // Warning labels
     IBOutlet NSTextField *_normalFontWantsAntialiasing;
@@ -60,17 +65,10 @@ static NSInteger kNonAsciiFontButtonTag = 1;
     // Hide this view to hide all non-ASCII font settings.
     IBOutlet NSView *_nonAsciiFontView;
 
-    // If set, the font picker was last opened to change the non-ascii font.
-    // Used to interpret messages from it.
-    BOOL _fontPickerIsForNonAsciiFont;
-
-    // This view is added to the font panel.
-    IBOutlet NSView *_displayFontAccessoryView;
-    IBOutlet NSTextField *_horizontalSpacingAccessoryTextField;
-    IBOutlet NSTextField *_verticalSpacingAccessoryTextField;
-
     CGFloat _heightWithNonAsciiControls;
     CGFloat _heightWithoutNonAsciiControls;
+
+    SpecialExceptionsWindowController *_specialExceptionsWindowController;
 }
 
 - (void)dealloc {
@@ -86,8 +84,10 @@ static NSInteger kNonAsciiFontButtonTag = 1;
                                                  name:kReloadAllProfiles
                                                object:nil];
     __weak __typeof(self) weakSelf = self;
-    [self defineControl:_cursorType
+    PreferenceInfo *info;
+    info = [self defineControl:_cursorType
                     key:KEY_CURSOR_TYPE
+            displayName:@"Cursor style"
                    type:kPreferenceInfoTypeMatrix
          settingChanged:^(id sender) { [self setInt:[[sender selectedCell] tag] forKey:KEY_CURSOR_TYPE]; }
                  update:^BOOL{
@@ -98,51 +98,76 @@ static NSInteger kNonAsciiFontButtonTag = 1;
                      [strongSelf->_cursorType selectCellWithTag:[self intForKey:KEY_CURSOR_TYPE]];
                      return YES;
                  }];
+    info.observer = ^{
+        [weakSelf updateShadowEnabled];
+    };
 
     [self defineControl:_blinkingCursor
                     key:KEY_BLINKING_CURSOR
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_useBoldFont
                     key:KEY_USE_BOLD_FONT
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_thinStrokes
                     key:KEY_THIN_STROKES
+            relatedView:_thinStrokesLabel
                    type:kPreferenceInfoTypePopup];
 
     [self defineControl:_blinkAllowed
                     key:KEY_BLINK_ALLOWED
+            relatedView:nil
+                   type:kPreferenceInfoTypeCheckbox];
+
+    [self defineControl:_shadow
+                    key:KEY_CURSOR_SHADOW
+            relatedView:nil
+                   type:kPreferenceInfoTypeCheckbox];
+    [self updateShadowEnabled];
+
+    [self defineControl:_animateMovement
+                    key:KEY_ANIMATE_MOVEMENT
+            displayName:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_useItalicFont
                     key:KEY_USE_ITALIC_FONT
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
-    [self defineControl:_asciiLigatures
-                    key:KEY_ASCII_LIGATURES
-                   type:kPreferenceInfoTypeCheckbox];
-
-    [self defineControl:_nonAsciiLigatures
-                    key:KEY_NON_ASCII_LIGATURES
-                   type:kPreferenceInfoTypeCheckbox];
-
-    PreferenceInfo *info = [self defineControl:_ambiguousIsDoubleWidth
-                                           key:KEY_AMBIGUOUS_DOUBLE_WIDTH
-                                          type:kPreferenceInfoTypeCheckbox];
+    info = [self defineControl:_asciiLigatures
+                           key:KEY_ASCII_LIGATURES
+                   relatedView:nil
+                          type:kPreferenceInfoTypeCheckbox];
+    info.observer = ^{
+        [weakSelf updateLigatureWarning];
+    };
+    info = [self defineUnsearchableControl:_nonAsciiLigatures
+                                       key:KEY_NON_ASCII_LIGATURES
+                                      type:kPreferenceInfoTypeCheckbox];
+    info.observer = ^{
+        [weakSelf updateLigatureWarning];
+    };
+    info = [self defineControl:_ambiguousIsDoubleWidth
+                           key:KEY_AMBIGUOUS_DOUBLE_WIDTH
+                   relatedView:nil
+                          type:kPreferenceInfoTypeCheckbox];
     info.customSettingChangedHandler = ^(id sender) {
         __strong __typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) {
             return;
         }
-        BOOL isOn = [sender state] == NSOnState;
+        BOOL isOn = [(NSButton *)sender state] == NSControlStateValueOn;
         if (isOn) {
             static NSString *const kWarnAboutAmbiguousWidth = @"NoSyncWarnAboutAmbiguousWidth";
             // This is a feature of dubious value inherited from iTerm 0.1. Some users who work in
             // mixed Asian/non-asian environments find it useful but almost nobody should turn it on
             // unless they really know what they're doing.
             iTermWarningSelection selection =
-                [iTermWarning showWarningWithTitle:@"You probably don't want to turn this on. "
+                [iTermWarning showWarningWithTitle:@"You probably don’t want to turn this on. "
                                                    @"It will confuse interactive programs. "
                                                    @"You might want it if you work mostly with "
                                                    @"East Asian text combined with legacy or "
@@ -154,6 +179,8 @@ static NSInteger kNonAsciiFontButtonTag = 1;
                                             window:weakSelf.view.window];
             if (selection == kiTermWarningSelection0) {
                 [strongSelf setBool:YES forKey:KEY_AMBIGUOUS_DOUBLE_WIDTH];
+            } else {
+                strongSelf->_ambiguousIsDoubleWidth.state = NSControlStateValueOff;
             }
         } else {
             [strongSelf setBool:NO forKey:KEY_AMBIGUOUS_DOUBLE_WIDTH];
@@ -162,94 +189,152 @@ static NSInteger kNonAsciiFontButtonTag = 1;
 
     [self defineControl:_normalization
                     key:KEY_UNICODE_NORMALIZATION
+            relatedView:_normalizationLabel
                    type:kPreferenceInfoTypePopup];
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(unicodeVersionDidChange)
                                                  name:iTermUnicodeVersionDidChangeNotification
                                                object:nil];
-    [self defineControl:_unicodeVersion9
-                    key:KEY_UNICODE_VERSION
-                   type:kPreferenceInfoTypeCheckbox
-         settingChanged:^(id sender) {
-             __strong __typeof(weakSelf) strongSelf = weakSelf;
-             if (!strongSelf) {
-                 return;
-             }
-             const NSInteger version = (strongSelf->_unicodeVersion9.state == NSOnState) ? 9 : 8;
-             [strongSelf setInteger:version forKey:KEY_UNICODE_VERSION];
-         }
+    info = [self defineControl:_unicodeVersion9
+                           key:KEY_UNICODE_VERSION
+                   relatedView:nil
+                          type:kPreferenceInfoTypeCheckbox
+                settingChanged:^(id sender) {
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        const NSInteger version = (strongSelf->_unicodeVersion9.state == NSControlStateValueOn) ? 9 : 8;
+        [strongSelf setInteger:version forKey:KEY_UNICODE_VERSION];
+    }
+                        update:^BOOL{
+        __strong __typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return NO;
+        }
+        strongSelf->_unicodeVersion9.state = [strongSelf integerForKey:KEY_UNICODE_VERSION] == 9 ? NSControlStateValueOn : NSControlStateValueOff;
+        return YES;
+    }];
+    info.hasDefaultValue = ^BOOL{
+        // Computed value
+        return [weakSelf unsignedIntegerForKey:KEY_UNICODE_VERSION] == 9;
+    };
+    [self updateNonDefaultIndicatorVisibleForInfo:info];
+    if (@available(macOS 10.16, *)) {
+        // 😢 See issue 9209
+        _subpixelAA.enabled = NO;
+    }
+
+    _asciiFontPicker.delegate = self;
+    _asciiFontPicker.mode = BFPCompositeViewModeFixedPitch;
+    _nonASCIIFontPicker.delegate = self;
+    _nonASCIIFontPicker.mode = BFPCompositeViewModeFixedPitch;
+    _horizontalSpacingView = [_asciiFontPicker addHorizontalSpacingAccessoryWithInitialValue:[self doubleForKey:KEY_HORIZONTAL_SPACING] * 100];
+    _horizontalSpacingView.delegate = self;
+    [_horizontalSpacingView clampWithMin:50 max:200];
+    _verticalSpacingView = [_asciiFontPicker addVerticalSpacingAccessoryWithInitialValue:[self doubleForKey:KEY_VERTICAL_SPACING] * 100];
+    _verticalSpacingView.delegate = self;
+    [_verticalSpacingView clampWithMin:50 max:200];
+    [self defineControl:_asciiFontPicker.horizontalSpacing.textField
+                    key:KEY_HORIZONTAL_SPACING
+            relatedView:nil
+            displayName:@"Horizontal spacing"
+                   type:kPreferenceInfoTypeIntegerTextField
+         settingChanged:^(id sender) { assert(false); }
                  update:^BOOL{
                      __strong __typeof(weakSelf) strongSelf = weakSelf;
                      if (!strongSelf) {
                          return NO;
                      }
-                     strongSelf->_unicodeVersion9.state = [strongSelf integerForKey:KEY_UNICODE_VERSION] == 9 ? NSOnState : NSOffState;
+                     strongSelf->_asciiFontPicker.horizontalSpacing.size = [self doubleForKey:KEY_HORIZONTAL_SPACING] * 100;
                      return YES;
-                 }];
+                 }
+             searchable:YES];
 
-
-    info = [self defineControl:_horizontalSpacing
-                           key:KEY_HORIZONTAL_SPACING
-                          type:kPreferenceInfoTypeSlider];
-    info.observer = ^{
-        [weakSelf fontAccessorySliderDidChange];
-    };
-
-    info = [self defineControl:_verticalSpacing
-                           key:KEY_VERTICAL_SPACING
-                          type:kPreferenceInfoTypeSlider];
-    info.observer = ^{
-        [weakSelf fontAccessorySliderDidChange];
-    };
+    [self defineControl:_asciiFontPicker.verticalSpacing.textField
+                    key:KEY_VERTICAL_SPACING
+            relatedView:nil
+            displayName:@"Vertical spacing"
+                   type:kPreferenceInfoTypeIntegerTextField
+         settingChanged:^(id sender) { assert(false); }
+                 update:^BOOL{
+                     __strong __typeof(weakSelf) strongSelf = weakSelf;
+                     if (!strongSelf) {
+                         return NO;
+                     }
+                     strongSelf->_asciiFontPicker.verticalSpacing.size = [self doubleForKey:KEY_VERTICAL_SPACING] * 100;
+                     return YES;
+                 }
+             searchable:YES];
 
     info = [self defineControl:_useNonAsciiFont
                            key:KEY_USE_NONASCII_FONT
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.observer = ^{ [weakSelf updateNonAsciiFontViewVisibility]; };
 
     info = [self defineControl:_asciiAntiAliased
                            key:KEY_ASCII_ANTI_ALIASED
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.observer = ^{ [weakSelf updateWarnings]; };
 
-    info = [self defineControl:_nonasciiAntiAliased
-                           key:KEY_NONASCII_ANTI_ALIASED
-                          type:kPreferenceInfoTypeCheckbox];
+    info = [self defineUnsearchableControl:_nonasciiAntiAliased
+                                       key:KEY_NONASCII_ANTI_ALIASED
+                                      type:kPreferenceInfoTypeCheckbox];
     info.observer = ^{ [weakSelf updateWarnings]; };
 
     [self defineControl:_powerline
                     key:KEY_POWERLINE
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
-    [self updateFontsDescriptions];
+    [self updateFontsDescriptionsIncludingSpacing:YES];
     [self updateNonAsciiFontViewVisibility];
+    [self updateLigatureWarning];
 }
 
-- (void)fontAccessorySliderDidChange {
-    _horizontalSpacingAccessoryTextField.intValue = _horizontalSpacing.doubleValue * 100;
-    _verticalSpacingAccessoryTextField.intValue = _verticalSpacing.doubleValue * 100;
+- (void)updateLigatureWarning {
+    _ligatureWarning.hidden = ![self shouldShowLigaturesWarning];
+
+    // Show the options button only when ligatures are enabled. I didn't want to do this but the
+    // only way to prevent ligatures from being drawn is to use the "fast path" drawing code.
+    // In the fast path, we also do not support stylistic alternatives or contextual alternates.
+    if (_asciiLigatures.state == NSControlStateValueOn) {
+        if (!_asciiFontPicker.hasOptionsButton) {
+            [_asciiFontPicker addOptionsButton];
+        }
+    } else {
+        [_asciiFontPicker removeOptionsButton];
+    }
+    if (_nonAsciiLigatures.state == NSControlStateValueOn) {
+        if (![_nonASCIIFontPicker hasOptionsButton]) {
+            [_nonASCIIFontPicker addOptionsButton];
+        }
+    } else {
+        [_nonASCIIFontPicker removeOptionsButton];
+    }
 }
 
-- (void)controlTextDidEndEditing:(NSNotification *)notification {
-    NSTextField *control = [notification object];
-    NSString *key = nil;
-    NSSlider *slider;
-    if (control == _horizontalSpacingAccessoryTextField) {
-        key = KEY_HORIZONTAL_SPACING;
-        slider = _horizontalSpacing;
-    } else if (control == _verticalSpacingAccessoryTextField) {
-        key = KEY_VERTICAL_SPACING;
-        slider = _verticalSpacing;
+- (BOOL)shouldShowLigaturesWarning {
+    if (self.normalFont.it_defaultLigatures) {
+        return NO;
     }
-    if (key) {
-        const int clamped = MIN(MAX(control.intValue, 50), 200);
-        const double value = clamped / 100.0;
-        [self setFloat:value forKey:key];
-        slider.doubleValue = value;
-        control.intValue = clamped;
+    if (self.normalFont.it_ligatureLevel > 0 && [self boolForKey:KEY_ASCII_LIGATURES]) {
+        return YES;
     }
-    [super controlTextDidEndEditing:notification];
+    if (![self boolForKey:KEY_USE_NONASCII_FONT]) {
+        return NO;
+    }
+
+    if (self.nonAsciiFont.it_defaultLigatures) {
+        return NO;
+    }
+    if (self.nonAsciiFont.it_ligatureLevel > 0 && [self boolForKey:KEY_NON_ASCII_LIGATURES]) {
+        return YES;
+    }
+    return NO;
 }
 
 - (void)unicodeVersionDidChange {
@@ -263,12 +348,12 @@ static NSInteger kNonAsciiFontButtonTag = 1;
 
 - (void)reloadProfile {
     [super reloadProfile];
-    [self updateFontsDescriptions];
+    [self updateFontsDescriptionsIncludingSpacing:YES];
     [self updateNonAsciiFontViewVisibility];
 }
 
 - (NSArray *)keysForBulkCopy {
-    NSArray *keys = @[ KEY_NORMAL_FONT, KEY_NON_ASCII_FONT ];
+    NSArray *keys = @[ KEY_NORMAL_FONT, KEY_NON_ASCII_FONT, KEY_FONT_CONFIG ];
     return [[super keysForBulkCopy] arrayByAddingObjectsFromArray:keys];
 }
 
@@ -280,53 +365,43 @@ static NSInteger kNonAsciiFontButtonTag = 1;
 
 - (NSSize)myPreferredContentSize {
     if ([self boolForKey:KEY_USE_NONASCII_FONT]) {
-        return NSMakeSize(NSWidth(self.view.frame), _heightWithNonAsciiControls);
+        return NSMakeSize(((iTermSizeRememberingView *)self.view).originalSize.width, _heightWithNonAsciiControls);
     } else {
-        return NSMakeSize(NSWidth(self.view.frame), _heightWithoutNonAsciiControls);
+        return NSMakeSize(((iTermSizeRememberingView *)self.view).originalSize.width, _heightWithoutNonAsciiControls);
     }
 }
 
-- (void)updateFontsDescriptions {
+- (void)updateFontsDescriptionsIncludingSpacing:(BOOL)includingSpacing {
     // Update the fonts.
     self.normalFont = [[self stringForKey:KEY_NORMAL_FONT] fontValue];
     self.nonAsciiFont = [[self stringForKey:KEY_NON_ASCII_FONT] fontValue];
 
-    // Update the descriptions.
-    NSString *fontName;
-    if (_normalFont != nil) {
-        fontName = [NSString stringWithFormat: @"%gpt %@",
-                    [_normalFont pointSize], [_normalFont displayName]];
-    } else {
-        fontName = @"Unknown Font";
-    }
-    [_normalFontDescription setStringValue:fontName];
-
-    if (_nonAsciiFont != nil) {
-        fontName = [NSString stringWithFormat: @"%gpt %@",
-                    [_nonAsciiFont pointSize], [_nonAsciiFont displayName]];
-    } else {
-        fontName = @"Unknown Font";
-    }
-    [_nonAsciiFontDescription setStringValue:fontName];
+    // Update the controls.
+    const double horizontalSpacing = round([self doubleForKey:KEY_HORIZONTAL_SPACING] * 100);
+    _asciiFontPicker.horizontalSpacing.size = horizontalSpacing;
+    const double verticalSpacing = round([self doubleForKey:KEY_VERTICAL_SPACING] * 100);
+    _asciiFontPicker.verticalSpacing.size = verticalSpacing;
+    _asciiFontPicker.font = _normalFont;
+    _nonASCIIFontPicker.font = _nonAsciiFont;
 
     if (self.normalFont.it_defaultLigatures) {
-        _asciiLigatures.state = NSOnState;
+        _asciiLigatures.state = NSControlStateValueOn;
         _asciiLigatures.enabled = NO;
     } else if (self.normalFont.it_ligatureLevel == 0) {
-        _asciiLigatures.state = NSOffState;
+        _asciiLigatures.state = NSControlStateValueOff;
         _asciiLigatures.enabled = NO;
     } else {
-        _asciiLigatures.state = [self boolForKey:KEY_ASCII_LIGATURES] ? NSOnState : NSOffState;
+        _asciiLigatures.state = [self boolForKey:KEY_ASCII_LIGATURES] ? NSControlStateValueOn : NSControlStateValueOff;
         _asciiLigatures.enabled = YES;
     }
     if (self.nonAsciiFont.it_defaultLigatures) {
-        _nonAsciiLigatures.state = NSOnState;
+        _nonAsciiLigatures.state = NSControlStateValueOn;
         _nonAsciiLigatures.enabled = NO;
     } else if (self.nonAsciiFont.it_ligatureLevel == 0) {
-        _nonAsciiLigatures.state = NSOffState;
+        _nonAsciiLigatures.state = NSControlStateValueOff;
         _nonAsciiLigatures.enabled = NO;
     } else {
-        _nonAsciiLigatures.state = [self boolForKey:KEY_NON_ASCII_LIGATURES] ? NSOnState : NSOffState;
+        _nonAsciiLigatures.state = [self boolForKey:KEY_NON_ASCII_LIGATURES] ? NSControlStateValueOn : NSControlStateValueOff;
         _nonAsciiLigatures.enabled = YES;
     }
 
@@ -334,16 +409,33 @@ static NSInteger kNonAsciiFontButtonTag = 1;
     [self updateWarnings];
 }
 
+- (BOOL)cursorTypeSupportsShadow {
+    switch ((ITermCursorType)[self intForKey:KEY_CURSOR_TYPE]) {
+        case CURSOR_UNDERLINE:
+        case CURSOR_VERTICAL:
+            return YES;
+        case CURSOR_BOX:
+        case CURSOR_DEFAULT:
+            return NO;
+    }
+    return NO;
+}
+
+- (void)updateShadowEnabled {
+    _shadow.enabled = [self cursorTypeSupportsShadow];
+}
+
 - (void)updateThinStrokesEnabled {
-    if (@available(macOS 10.14, *)) {
+    if (@available(macOS 10.16, *)) {
+        _subpixelAA.state = NSControlStateValueOff;
+        _subpixelAA.enabled = NO;
+    } else {
         if (iTermTextIsMonochrome()) {
-            _subpixelAA.state = NSOffState;
+            _subpixelAA.state = NSControlStateValueOff;
         } else {
-            _subpixelAA.state = NSOnState;
+            _subpixelAA.state = NSControlStateValueOn;
         }
         _subpixelAA.enabled = YES;
-    } else {
-        _subpixelAA.hidden = YES;
     }
 }
 
@@ -355,14 +447,9 @@ static NSInteger kNonAsciiFontButtonTag = 1;
 
 #pragma mark - Actions
 
-- (IBAction)openFontPicker:(id)sender {
-    _fontPickerIsForNonAsciiFont = ([sender tag] == kNonAsciiFontButtonTag);
-    [self showFontPanel];
-}
-
 - (IBAction)didToggleSubpixelAntiAliasing:(id)sender {
     NSString *const key = @"CGFontRenderingFontSmoothingDisabled";
-    if (_subpixelAA.state == NSOffState) {
+    if (_subpixelAA.state == NSControlStateValueOff) {
         [[NSUserDefaults standardUserDefaults] removeObjectForKey:key];
     } else {
         [[NSUserDefaults standardUserDefaults] setBool:NO forKey:key];
@@ -374,42 +461,80 @@ static NSInteger kNonAsciiFontButtonTag = 1;
     [self updateWarnings];
 }
 
-#pragma mark - NSFontPanel and NSFontManager
-
-- (void)showFontPanel {
-    // make sure we get the messages from the NSFontManager
-    [[self.view window] makeFirstResponder:self];
-
-    NSFontPanel* aFontPanel = [[NSFontManager sharedFontManager] fontPanel: YES];
-    [aFontPanel setAccessoryView:_displayFontAccessoryView];
-    NSFont *theFont = (_fontPickerIsForNonAsciiFont ? _nonAsciiFont : _normalFont);
-    [[NSFontManager sharedFontManager] setSelectedFont:theFont isMultiple:NO];
-    [[NSFontManager sharedFontManager] orderFrontFontPanel:self];
+- (IBAction)manageSpecialExceptions:(id)sender {
+    _specialExceptionsWindowController = [SpecialExceptionsWindowController createWithConfigString:[self stringForKey:KEY_FONT_CONFIG]];
+    __weak __typeof(self) weakSelf = self;
+    [self.view.window beginSheet:_specialExceptionsWindowController.window completionHandler:^(NSModalResponse returnCode) {
+        if (returnCode == NSModalResponseOK) {
+            [weakSelf loadConfigFromSpecialExceptionsWindowController];
+        }
+    }];
 }
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wpartial-availability"
-- (NSFontPanelModeMask)validModesForFontPanel:(NSFontPanel *)fontPanel {
-#pragma clang diagnostic pop
-    return kValidModesForFontPanel;
-}
-
-// sent by NSFontManager up the responder chain
-- (void)changeFont:(id)fontManager {
-    if (_fontPickerIsForNonAsciiFont) {
-        [self setString:[[fontManager convertFont:_nonAsciiFont] stringValue]
-                 forKey:KEY_NON_ASCII_FONT];
-    } else {
-        [self setString:[[fontManager convertFont:_normalFont] stringValue]
-                 forKey:KEY_NORMAL_FONT];
-    }
-    [self updateFontsDescriptions];
+- (void)loadConfigFromSpecialExceptionsWindowController {
+    [self setString:_specialExceptionsWindowController.configString forKey:KEY_FONT_CONFIG];
 }
 
 #pragma mark - Notifications
 
 - (void)reloadProfiles {
-    [self updateFontsDescriptions];
+    [self updateFontsDescriptionsIncludingSpacing:YES];
+}
+
+- (void)preferenceDidChangeFromOtherPanel:(NSNotification *)notification {
+    NSString *key = notification.userInfo[kPreferenceDidChangeFromOtherPanelKeyUserInfoKey];
+    if ([key isEqualToString:KEY_NORMAL_FONT]) {
+        _asciiFontPicker.font = [self stringForKey:KEY_NORMAL_FONT].fontValue;
+    } else if ([key isEqualToString:KEY_NON_ASCII_FONT]) {
+        _nonASCIIFontPicker.font = [self stringForKey:KEY_NON_ASCII_FONT].fontValue;
+    }
+    [super preferenceDidChangeFromOtherPanel:notification];
+}
+
+#pragma mark - BFPCompositeViewDelegate
+
+- (void)fontPickerCompositeView:(BFPCompositeView *)view didSelectFont:(NSFont *)font {
+    NSString *key;
+    if (view == _asciiFontPicker) {
+        key = KEY_NORMAL_FONT;
+    } else {
+        assert(view == _nonASCIIFontPicker);
+        key = KEY_NON_ASCII_FONT;
+    }
+    [self setString:view.font.stringValue
+             forKey:key];
+    [self updateFontsDescriptionsIncludingSpacing:YES];
+    [self updateLigatureWarning];
+}
+
+#pragma mark - BFPSizePickerViewDelegate
+
+- (void)sizePickerView:(BFPSizePickerView *)sizePickerView didChangeSizeTo:(double)size {
+    [self saveChangesFromFontPicker];
+}
+
+- (void)saveDeferredUpdates {
+    [self.view.window makeFirstResponder:nil];
+    [self saveChangesFromFontPicker];
+    [super saveDeferredUpdates];
+}
+
+- (void)saveChangesFromFontPicker {
+    NSInteger (^clamp)(NSInteger value) = ^NSInteger(NSInteger value) {
+        return MIN(MAX(value, 50), 200);
+    };
+    // I don't know why these would sometimes be null, but let's not crash if
+    // that happens. It was one of the major crashes in 3.3.1.
+    id normalFont = _asciiFontPicker.font.stringValue ?: [NSNull null];
+    id nonAsciiFont = _nonASCIIFontPicker.font.stringValue ?: [NSNull null];
+    DLog(@"Save changes from font picker. asciiFontPicker=%@ asciiFontPicker.font=%@ asciiFontPicker.font.stringValue=%@", _asciiFontPicker, _asciiFontPicker.font, _asciiFontPicker.font.stringValue);
+    DLog(@"Save changes from font picker. nonASCIIFontPicker=%@ asciiFontPicker.font=%@ asciiFontPicker.font.stringValue=%@", _nonASCIIFontPicker, _nonASCIIFontPicker.font, _nonASCIIFontPicker.font.stringValue);
+    NSDictionary *dictionaryWithNulls = @{ KEY_HORIZONTAL_SPACING: @(clamp(_asciiFontPicker.horizontalSpacing.size) / 100.0),
+                                           KEY_VERTICAL_SPACING: @(clamp(_asciiFontPicker.verticalSpacing.size) / 100.0),
+                                           KEY_NORMAL_FONT: normalFont,
+                                           KEY_NON_ASCII_FONT: nonAsciiFont };
+    NSDictionary *dict = [dictionaryWithNulls dictionaryByRemovingNullValues];
+    [self setObjectsFromDictionary:dict];
 }
 
 @end

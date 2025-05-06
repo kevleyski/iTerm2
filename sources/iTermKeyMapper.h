@@ -7,10 +7,20 @@
 
 #import <Cocoa/Cocoa.h>
 
+typedef NS_ENUM(NSUInteger, iTermKeyMappingMode) {
+    iTermKeyMappingModeStandard,
+    iTermKeyMappingModeCSIu,
+    iTermKeyMappingModeRaw,
+    iTermKeyMappingModeModifyOtherKeys1,
+    iTermKeyMappingModeModifyOtherKeys2
+};
+
 NS_ASSUME_NONNULL_BEGIN
 
 // A key mapper is responsible for converting an event into the data that gets sent to the pty.
 @protocol iTermKeyMapper<NSObject>
+
+@property (nonatomic, readonly) BOOL keyMapperWantsKeyUp;
 
 // Before the event is routed through Cocoa's input handling (via the input method editor), this
 // gets a chance to handle it. For better or worse this is how we handle control keys. I have a
@@ -29,12 +39,37 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSData *)keyMapperDataForKeyUp:(NSEvent *)event;
 
 // If this returns YES then the event will be sent to the controller which, if it does not handle
-// the event itself, will send the event to the post-cocoa handler here. Don't return YES if the
-// event should go through the IME.
+// the event itself, will send the event to the post-cocoa handler here.
+//
+// If this returns NO, keyMapperStringForPreCocoaEvent is usually called (except for unusual cases
+// like cmd is pressed, it's a dead key, or marked text existed) and if it returns a nonnil value
+// it is sent.
+//
+// Most importantly: if you want the event to go through the IME, return NO.
 - (BOOL)keyMapperShouldBypassPreCocoaForEvent:(NSEvent *)event;
 
-@optional
-- (void)setDelegate:(id)delegate;
+// Prepare to handle this event. Update config from delegate.
+- (void)keyMapperSetEvent:(NSEvent *)event;
+
+// When a keystroke is routed to performKeyEquivalent instead of keyDown, this is called to check
+// if the key mapper is interested in it.
+- (BOOL)keyMapperWantsKeyEquivalent:(NSEvent *)event;
+
+- (NSDictionary *)keyMapperDictionaryValue;
+
+- (BOOL)wouldReportControlReturn;
+
+- (BOOL)shouldHandleBuckyBits;
+- (NSString * _Nullable)handleKeyDownWithBuckyBits:(NSEvent *)event;
+- (NSString * _Nullable)handleKeyUpWithBuckyBits:(NSEvent *)event;
+- (NSString * _Nullable)handleFlagsChangedWithBuckyBits:(NSEvent *)event;
+
+// When the IME provides text and calls insertText: the keymapper has a chance to transform
+// it (for example, to CSI-u encode it) in this method.
+- (NSString *)transformedTextToInsert:(NSString *)text;
+
+//@optional
+//- (void)setDelegate:(id)delegate;
 
 @end
 

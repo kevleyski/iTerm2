@@ -10,6 +10,7 @@
 
 #import "DebugLogging.h"
 #import "ITAddressBookMgr.h"
+#import "NSWorkspace+iTerm.h"
 
 static NSString *const kUrlHandlersUserDefaultsKey = @"URLHandlersByGuid";
 static NSString *const kOldStyleUrlHandlersUserDefaultsKey = @"URLHandlers";
@@ -103,6 +104,12 @@ static NSString *const kOldStyleUrlHandlersUserDefaultsKey = @"URLHandlers";
     [self updateUserDefaults];
 }
 
+- (void)registerForiTerm2Scheme {
+    LSSetDefaultHandlerForURLScheme((CFStringRef)@"iterm2",
+                                    (CFStringRef)[[NSBundle mainBundle] bundleIdentifier]);
+}
+
+
 - (void)disconnectHandlerForScheme:(NSString*)scheme {
     [_urlHandlersByGuid removeObjectForKey:scheme];
     [self updateUserDefaults];
@@ -117,17 +124,24 @@ static NSString *const kOldStyleUrlHandlersUserDefaultsKey = @"URLHandlers";
                                               forKey:kUrlHandlersUserDefaultsKey];
 }
 
-- (Profile *)profileForScheme:(NSString *)url {
-    NSString* handlerId = (NSString *)LSCopyDefaultHandlerForURLScheme((CFStringRef)url);
-    Profile *profile = nil;
-    if ([handlerId isEqualToString:@"com.googlecode.iterm2"] ||
-        [handlerId isEqualToString:@"net.sourceforge.iterm"]) {
-        profile = [[ProfileModel sharedInstance] bookmarkWithGuid:[self guidForScheme:url]];
+- (NSString *)bundleIDForDefaultHandlerForScheme:(NSString *)scheme {
+    NSURL *schemeAsURL = [NSURL URLWithString:[scheme stringByAppendingString:@":"]];
+    if (!schemeAsURL) {
+        return nil;
     }
-    if (handlerId) {
-        CFRelease(handlerId);
+    NSURL *appURL = [[NSWorkspace sharedWorkspace] URLForApplicationToOpenURL:schemeAsURL];
+    if (!appURL) {
+        return nil;
     }
-    return profile;
+    NSBundle *bundle = [NSBundle bundleWithURL:appURL];
+    return bundle.bundleIdentifier;
+}
+
+- (Profile *)profileForScheme:(NSString *)scheme {
+    if (![self iTermIsDefaultForScheme:scheme]) {
+        return nil;
+    }
+    return [[ProfileModel sharedInstance] bookmarkWithGuid:[self guidForScheme:scheme]];
 }
 
 - (BOOL)pickApplicationToOpenFile:(NSString *)fullPath {
@@ -175,7 +189,18 @@ static NSString *const kOldStyleUrlHandlersUserDefaultsKey = @"URLHandlers";
 }
 
 - (BOOL)openFile:(NSString *)fullPath {
-    DLog(@"openFile: %@", fullPath);
+    return [self openFile:fullPath fragment:nil];
+}
+
+- (BOOL)openFile:(NSString *)fullPath fragment:(NSString *)fragment {
+    DLog(@"openFile: %@ with fragment %@", fullPath, fragment);
+    if (fragment) {
+        NSURLComponents *components = [NSURLComponents componentsWithURL:[NSURL fileURLWithPath:fullPath]
+                                                 resolvingAgainstBaseURL:NO];
+        components.fragment = fragment;
+        [[NSWorkspace sharedWorkspace] it_openURL:components.URL];
+        return YES;
+    }
     BOOL ok = [[NSWorkspace sharedWorkspace] openFile:fullPath];
     if (!ok && [self offerToPickApplicationToOpenFile:fullPath]) {
         DLog(@"Try to open %@ again", fullPath);
@@ -208,12 +233,10 @@ static NSString *const kOldStyleUrlHandlersUserDefaultsKey = @"URLHandlers";
 }
 
 - (BOOL)iTermIsDefaultForScheme:(NSString *)scheme {
-    CFStringRef handler = LSCopyDefaultHandlerForURLScheme((CFStringRef)scheme);
+    NSString *handlerId = [self bundleIDForDefaultHandlerForScheme:scheme];
     NSString *iTermBundleId = [[NSBundle mainBundle] bundleIdentifier];
-    BOOL result = [iTermBundleId isEqualToString:(NSString *)handler];
-    CFRelease(handler);
+    BOOL result = [handlerId isEqualToString:iTermBundleId] || [@"net.sourceforge.iterm" isEqualToString:iTermBundleId];
     return result;
-
 }
 
 - (void)setDefaultTerminal:(NSString *)bundleId {

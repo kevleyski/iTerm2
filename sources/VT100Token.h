@@ -1,4 +1,6 @@
 #import <Foundation/Foundation.h>
+
+#import "iTermMalloc.h"
 #import "iTermParser.h"
 #import "ScreenChar.h"
 
@@ -39,6 +41,23 @@ typedef enum {
     VT100CC_US = 31,   // Not used
     VT100CC_DEL = 127, // Backspaces
 
+    VT100CC_C1_IND = 0x84,
+    VT100CC_C1_NEL = 0x85,
+    VT100CC_C1_HTS = 0x88,
+    VT100CC_C1_RI = 0x8d,
+    VT100CC_C1_SS2 = 0x8e,
+    VT100CC_C1_SS3 = 0x8f,
+    VT100CC_C1_DCS = 0x90,
+    VT100CC_C1_SPA = 0x96,
+    VT100CC_C1_EPA = 0x97,
+    VT100CC_C1_SOS = 0x98,
+    VT100CC_C1_DECID = 0x9a,
+    VT100CC_C1_CSI = 0x9b,
+    VT100CC_C1_ST = 0x9c,
+    VT100CC_C1_OSC = 0x9d,
+    VT100CC_C1_PM = 0x9e,
+    VT100CC_C1_APC = 0x9f,
+
     VT100_WAIT = 1000,
     VT100_NOTSUPPORT,
     VT100_SKIP,
@@ -59,6 +78,8 @@ typedef enum {
     VT100CSI_CPL,                   // Cursor Preceding Line
     VT100CSI_DA,                    // Device Attributes
     VT100CSI_DA2,                   // Secondary Device Attributes
+    VT100CSI_DA3,                   // Tertiary DA
+    VT100CSI_XDA,                   // Extended device attributes (https://github.com/mintty/mintty/issues/881)
     VT100CSI_DECALN,                // Screen Alignment Display
     VT100CSI_DECDHL,                // Double Height Line
     VT100CSI_DECDWL,                // Double Width Line
@@ -74,6 +95,8 @@ typedef enum {
     VT100CSI_ED,                    // Erase In Display
     VT100CSI_EL,                    // Erase In Line
     VT100CSI_HTS,                   // Horizontal Tabulation Set
+    VT100CC_SPA,                    // Start of Guarded/Protected Area
+    VT100CC_EPA,                    // End of Guarded/Protected Area
     VT100CSI_HVP,                   // Horizontal and Vertical Position
     VT100CSI_IND,                   // Index
     VT100CSI_NEL,                   // Next Line
@@ -86,6 +109,12 @@ typedef enum {
     VT100CSI_SCS2,                  // Select Character Set 2
     VT100CSI_SCS3,                  // Select Character Set 3
     VT100CSI_SGR,                   // Select Graphic Rendition
+    VT100CSI_DECCARA,               // Change Attributes in Rectangular Area
+    VT100CSI_DECRARA,               // Reverse Attributes in Rectangular Area. Also used to build team spirit.
+    VT100CSI_DECSACE,               // Select Attribute Change Extent
+    VT100CSI_DECCRA,                // Copy Rectangular Area
+    VT100CSI_DECFRA,                // Fill Rectangular Area
+    VT100CSI_DECERA,                // Erase Rectangular Area
     VT100CSI_SM,                    // Set Mode
     VT100CSI_TBC,                   // Tabulation Clear
     VT100CSI_DECSCUSR,              // Select the Style of the Cursor
@@ -94,17 +123,48 @@ typedef enum {
     VT100CSI_SET_MODIFIERS,         // CSI > Ps; Pm m (Whether to set modifiers for different kinds of key presses; no official name)
     VT100CSI_RESET_MODIFIERS,       // CSI > Ps n (Set all modifiers values to -1, disabled)
     VT100CSI_XTREPORTSGR,           // Report SGR
+    XTERMCC_XTPUSHCOLORS,           // Push colors
+    XTERMCC_XTPOPCOLORS,            // Pop colors
+    XTERMCC_XTREPORTCOLORS,         // Report current entry on plaette stack
+    XTERMCC_XTSMGRAPHICS,           // Set or request graphics attributes
+    XTERMCC_XTPUSHSGR,              // Push video attributes
+    XTERMCC_XTPOPSGR,               // Pop video attributes
+
     VT100CSI_DECSLRM,               // Set left-right margin
     VT100CSI_DECRQCRA,              // Request Checksum of Rectangular Area
     VT100CSI_REP,                   // Repeat
     VT100CSI_DECRQM_DEC,            // Request Mode - Host To Terminal (DEC Private)
     VT100CSI_DECRQM_ANSI,           // Request Mode - Host To Terminal (ANSI)
+    VT100_DECFI,                    // Forward Index
+    VT100_DECBI,                    // Back Index
+    VT100CSI_DECRQPSR,              // Request presentation state report
+    VT100CSI_SD,                    // Scroll down
+    VT100CSI_HPR,                   // Character position relative
+    VT100CSI_DECSCPP,               // Select 80 or 132 columns per page
+    VT100CSI_DECSNLS,               // Select number of lines per screen
+    VT100CSI_DECIC,                 // Insert column
+    VT100CSI_DECDC,                 // Delete column
+    VT100CSI_DECSERA,               // Selective Erase Rectangular Area
+    VT100CSI_DECSED,                // Selective Erase in Display
+    VT100CSI_DECSEL,                // Selective Erase in Line
+    VT100CSI_DECSCA,                // Select Character Protection Attribute
+    VT100CSI_DECRQDE,               // Request Displayed Extent
+    VT100CSI_DECSCL,                // Set conformance level
+
+    // https://sw.kovidgoyal.net/kitty/keyboard-protocol.html
+    VT100CSI_SET_KEY_REPORTING_MODE,
+    VT100CSI_PUSH_KEY_REPORTING_MODE,
+    VT100CSI_POP_KEY_REPORTING_MODE,
+    VT100CSI_QUERY_KEY_REPORTING_MODE,
+    VT100CSI_DECST8C,             // Reset tab stops to start at 9, space at 8
 
     // some xterm extensions
     XTERMCC_WIN_TITLE,            // Set window title
     XTERMCC_ICON_TITLE,
     XTERMCC_WINICON_TITLE,
     VT100CSI_ICH,                 // Insert blank
+    VT100CSI_SL,                  // Shift left
+    VT100CSI_SR,                  // Shift right
     XTERMCC_INSLN,                // Insert lines
     XTERMCC_DELCH,                // delete blank
     XTERMCC_DELLN,                // delete lines
@@ -126,6 +186,7 @@ typedef enum {
     XTERMCC_REPORT_WIN_TITLE,
     XTERMCC_PUSH_TITLE,
     XTERMCC_POP_TITLE,
+    VT100_DECSLPP,
     XTERMCC_SET_RGB,
     // This is not a real xterm code. It is from eTerm, which extended the xterm
     // protocol for its own purposes. We don't follow the eTerm protocol,
@@ -144,6 +205,18 @@ typedef enum {
     XTERMCC_MULTITOKEN_HEADER_SET_KVP,
     XTERMCC_PASTE64,
     XTERMCC_FINAL_TERM,
+    XTERMCC_FRAMER_WRAPPER,
+    XTERMCC_RESET_COLOR,
+    XTERMCC_RESET_VT100_TEXT_FOREGROUND_COLOR,
+    XTERMCC_RESET_VT100_TEXT_BACKGROUND_COLOR,
+    XTERMCC_RESET_TEXT_CURSOR_COLOR,
+    XTERMCC_RESET_HIGHLIGHT_COLOR,
+    XTERMCC_RESET_HIGHLIGHT_FOREGROUND_COLOR,
+
+    XTERMCC_SET_TEXT_CURSOR_COLOR,
+    XTERMCC_SET_HIGHLIGHT_COLOR,
+    XTERMCC_SET_HIGHLIGHT_FOREGROUND_COLOR,
+    XTERMCC_SET_POINTER_SHAPE,
 
     // If a sequence is split into multiple tokens, the first will be one of the above whose name
     // includes MULTITOKEN_HEADER, then zero or more of these, and then XTERMCC_MULTITOKEN_END.
@@ -167,6 +240,11 @@ typedef enum {
     // https://gitlab.com/gnachman/iterm2/wikis/synchronized-updates-spec
     DCS_BEGIN_SYNCHRONIZED_UPDATE,
     DCS_END_SYNCHRONIZED_UPDATE,
+    DCS_SIXEL,
+    DCS_DECRQSS,
+    DCS_DECRSPS_DECCIR,
+    DCS_DECRSPS_DECTABSR,
+    DCS_XTSETTCAP,
 
     // Toggle between ansi/vt52
     STRICT_ANSI_MODE,
@@ -178,6 +256,8 @@ typedef enum {
     // Wraps an escape code. The escape code is in csi.string.
     DCS_TMUX_CODE_WRAP,
 
+    VT100_APC,
+
     TMUX_LINE,  // A line of input from tmux
     TMUX_EXIT,  // Exit tmux mode
 
@@ -188,7 +268,20 @@ typedef enum {
     // there are escape codes for but they're really old-fashioned, so only these two are supported
     // so far.
     ISO2022_SELECT_LATIN_1,
-    ISO2022_SELECT_UTF_8
+    ISO2022_SELECT_UTF_8,
+
+    DCS_SSH_HOOK,
+    SSH_INIT,
+    SSH_LINE,
+    SSH_UNHOOK,  // Leave conductor mode and behave like a regular session
+    SSH_BEGIN,
+    SSH_END,   // At the end of a command
+    SSH_OUTPUT,  // %output
+    SSH_TERMINATE,  // %terminate
+    SSH_RECOVERY_BOUNDARY,
+    SSH_SIDE_CHANNEL,  // Synthetic - produced internally in VT100Terminal
+
+    VT100_LITERAL
 } VT100TerminalTokenType;
 
 // A preinitialized array of screen_char_t. When ASCII data is present, it will have the codes
@@ -210,6 +303,38 @@ typedef struct {
     ScreenChars *screenChars;
 } AsciiData;
 
+typedef struct {
+    AsciiData asciiData;
+    ScreenChars screenChars;
+} BundledAsciiData;
+
+NS_INLINE NSString *iTermCreateStringFromAsciiData(AsciiData *asciiData) {
+    return [[NSString alloc] initWithBytes:asciiData->buffer
+                                    length:asciiData->length
+                                  encoding:NSASCIIStringEncoding];
+}
+
+void iTermAsciiDataSet(AsciiData *asciiData, const char *bytes, int length, ScreenChars *screenChars);
+void iTermAsciiDataFree(AsciiData *asciiData);
+
+#define SSH_OUTPUT_AUTOPOLL_PID -1000
+#define SSH_OUTPUT_NOTIF_PID -1001
+
+typedef struct {
+    int8_t channel;
+    int32_t pid;
+    int depth: 23;
+    unsigned int valid: 1;
+} SSHInfo;
+
+NS_INLINE NSString *SSHInfoDescription(SSHInfo info) {
+    if (!info.valid) {
+        return @"<SSHInfo: invalid>";
+    }
+    return [NSString stringWithFormat:@"<SSHInfo: channel=%@ pid=%@ depth=%@>",
+            @(info.channel), @(info.pid), @(info.depth)];
+}
+
 @interface VT100Token : NSObject {
 @public
     VT100TerminalTokenType type;
@@ -218,13 +343,13 @@ typedef struct {
     // always set for ascii strings regardless of mode.
     BOOL savingData;
 
-    unsigned char code;  // For VT100_UNKNOWNCHAR and VT100CSI_SCS0...SCS3.
+    unsigned char code;  // For VT100_UNKNOWNCHAR, VT100CSI_SCS0...SCS3, and VT100_LITERAL.
 }
 
 // For VT100_STRING
 @property(nonatomic, retain) NSString *string;
 
-// For saved data (when copying to clipboard)
+// For saved data (when copying to clipboard) or sixel payload.
 @property(nonatomic, retain) NSData *savedData;
 
 // For XTERMCC_SET_KVP.
@@ -242,13 +367,17 @@ typedef struct {
 
 // For ascii strings (type==VT100_ASCIISTRING).
 @property(nonatomic, readonly) AsciiData *asciiData;
+@property(nonatomic) VT100TerminalTokenType type;
+@property(nonatomic) SSHInfo sshInfo;
 
 + (instancetype)token;
-+ (instancetype)tokenForControlCharacter:(unsigned char)controlCharacter;
++ (instancetype)newTokenForControlCharacter:(unsigned char)controlCharacter;
 
 - (void)setAsciiBytes:(char *)bytes length:(int)length;
 
 // Returns a string for |asciiData|, for convenience (this is slow).
 - (NSString *)stringForAsciiData;
+
+- (void)translateFromScreenTerminal;
 
 @end

@@ -7,26 +7,31 @@
 //
 
 #import "TerminalFile.h"
+
+#import "DebugLogging.h"
 #import "FileTransferManager.h"
 #import "FutureMethods.h"
 #import "NSSavePanel+iTerm.h"
 #import "RegexKitLite.h"
+
 #import <apr-1/apr_base64.h>
 
 NSString *const kTerminalFileShouldStopNotification = @"kTerminalFileShouldStopNotification";
 
 @interface TerminalFile ()
-@property(nonatomic, retain) NSMutableString *data;
+@property(nonatomic, strong) NSMutableString *data;
 @property(nonatomic, copy) NSString *filename;  // No path, just a name.
-@property(nonatomic, retain) NSString *error;
+@property(nonatomic, strong) NSString *error;
 @end
 
 @implementation TerminalFileDownload
 
-- (instancetype)initWithName:(NSString *)name size:(int)size {
+- (instancetype)initWithName:(NSString *)name size:(NSInteger)size {
     self = [super initWithName:name size:size];
     if (self) {
-        [TransferrableFile lockFileName:self.localPath];
+        if (self.localPath) {
+            [TransferrableFile lockFileName:self.localPath];
+        }
     }
     return self;
 }
@@ -35,7 +40,7 @@ NSString *const kTerminalFileShouldStopNotification = @"kTerminalFileShouldStopN
 
 @implementation TerminalFile
 
-- (instancetype)initWithName:(NSString *)name size:(int)size {
+- (instancetype)initWithName:(NSString *)name size:(NSInteger)size {
     self = [super init];
     if (self) {
         if (!name) {
@@ -44,7 +49,7 @@ NSString *const kTerminalFileShouldStopNotification = @"kTerminalFileShouldStopN
             NSString *path = [self downloadsDirectory];
             if (path) {
                 NSURL *url = [NSURL fileURLWithPath:path];
-                [panel setDirectoryURL:url onceForID:@"TerminalFile"];
+                [NSSavePanel setDirectoryURL:url onceForID:@"TerminalFile" savePanel:panel];
             }
             panel.nameFieldStringValue = @"";
 
@@ -64,14 +69,16 @@ NSString *const kTerminalFileShouldStopNotification = @"kTerminalFileShouldStopN
 
 - (void)dealloc {
     [TransferrableFile unlockFileName:_localPath];
-    [_localPath release];
-    [_data release];
-    [_filename release];
-    [_error release];
-    [super dealloc];
 }
 
 #pragma mark - Overridden methods from superclass
+
+- (void)didFailWithError:(NSString *)error {
+    @synchronized (self) {
+        [super didFailWithError:error];
+        self.error = error;
+    }
+}
 
 - (NSString *)displayName {
     return self.localPath ? [self.localPath lastPathComponent] : @"Unnamed file";
@@ -104,6 +111,7 @@ NSString *const kTerminalFileShouldStopNotification = @"kTerminalFileShouldStopN
 }
 
 - (void)stop {
+    DLog(@"Stop file download.\n%@", [NSThread callStackSymbols]);
     self.status = kTransferrableFileStatusCancelling;
     [[FileTransferManager sharedInstance] transferrableFileWillStop:self];
     self.data = nil;
@@ -122,20 +130,33 @@ NSString *const kTerminalFileShouldStopNotification = @"kTerminalFileShouldStopN
 
 #pragma mark - APIs
 
-- (void)appendData:(NSString *)data {
-    if (self.data) {
-        self.status = kTransferrableFileStatusTransferring;
-
-        // This keeps apr_base64_decode_len accurate.
-        data = [data stringByReplacingOccurrencesOfRegex:@"[\r\n]" withString:@""];
-
-        [self.data appendString:data];
-        self.bytesTransferred = apr_base64_decode_len([self.data UTF8String]);
-        if (self.fileSize >= 0) {
-            self.bytesTransferred = MIN(self.fileSize, self.bytesTransferred);
-        }
-        [[FileTransferManager sharedInstance] transferrableFileProgressDidChange:self];
+- (BOOL)appendData:(NSString *)data {
+    if (!self.data) {
+        return YES;
     }
+    self.status = kTransferrableFileStatusTransferring;
+
+    // This keeps apr_base64_decode_len accurate.
+    data = [data stringByReplacingOccurrencesOfRegex:@"[\r\n]" withString:@""];
+
+    [self.data appendString:data];
+    double approximateSize = self.data.length;
+    approximateSize *= 3.0 / 4.0;
+    self.bytesTransferred = ceil(approximateSize);
+    if (self.fileSize >= 0) {
+        self.bytesTransferred = MIN(self.fileSize, self.bytesTransferred);
+    }
+    [[FileTransferManager sharedInstance] transferrableFileProgressDidChange:self];
+    if (approximateSize > self.fileSize + 5) {
+        DLog(@"Have %@ bytes of base64 which encodes as much as %@ but the file's declared size is %@",
+             @(self.data.length), @(approximateSize + 4), @(self.fileSize));
+        return NO;
+    }
+    return YES;
+}
+
+- (NSInteger)length {
+    return self.data.length;
 }
 
 - (void)endOfData {
@@ -165,12 +186,25 @@ NSString *const kTerminalFileShouldStopNotification = @"kTerminalFileShouldStopN
         return;
     }
     [data setLength:resultLength];
-    if (![data writeToFile:self.localPath atomically:NO]) {
+    NSError *error = nil;
+    if (![data writeToFile:self.localPath options:NSDataWritingAtomic error:&error]) {
         [[FileTransferManager sharedInstance] transferrableFile:self
-                                 didFinishTransmissionWithError:[self errorWithDescription:@"Failed to write file to disk."]];
+                                 didFinishTransmissionWithError:[self errorWithDescription:error.localizedDescription]];
         return;
     }
-
+    if (![self quarantine:self.localPath sourceURL:nil]) {
+        [[FileTransferManager sharedInstance] transferrableFile:self
+                                 didFinishTransmissionWithError:[self errorWithDescription:@"Failed to set quarantine."]];
+        NSError *error = nil;
+        const BOOL ok = [[NSFileManager defaultManager] removeItemAtPath:self.localPath error:&error];
+        if (!ok || error) {
+            // Avoid runloop in side-effect.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self failedToRemoveUnquarantinedFileAt:self.localPath];
+            });
+        }
+        return;
+    }
     [[FileTransferManager sharedInstance] transferrableFile:self didFinishTransmissionWithError:nil];
     return;
 }
@@ -187,10 +221,6 @@ NSString *const kTerminalFileShouldStopNotification = @"kTerminalFileShouldStopN
 @end
 
 @implementation TerminalFileUpload
-
-- (void)dealloc {
-    [super dealloc];
-}
 
 - (BOOL)isDownloading {
     return NO;

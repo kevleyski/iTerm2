@@ -46,4 +46,33 @@ int DebugLogImpl(const char *file, int line, const char *function, NSString* val
                       withTabColor:(NSColor *)tabColor
                    highlightAmount:(CGFloat)highlightAmount
                         horizontal:(BOOL)horizontal;
+- (void)drawShadowForUnselectedTabInRect:(NSRect)backgroundRect;
+
+- (void)drawSubtitle:(PSMCachedTitle *)cachedSubtitle
+                   x:(CGFloat)labelPosition
+                cell:(PSMTabBarCell *)cell
+             hasIcon:(BOOL)drewIcon
+            iconRect:(NSRect)iconRect
+       reservedSpace:(CGFloat)reservedSpace
+           cellFrame:(NSRect)cellFrame
+         labelOffset:(CGFloat)labelOffset
+     mainLabelHeight:(CGFloat)mainLabelHeight;
+
+- (CGFloat)widthForLabelInCell:(PSMTabBarCell *)cell
+                 labelPosition:(CGFloat)labelPosition
+                       hasIcon:(BOOL)drewIcon
+                      iconRect:(NSRect)iconRect
+                   cachedTitle:(PSMCachedTitle *)cachedTitle
+                 reservedSpace:(CGFloat)reservedSpace
+                  boundingSize:(NSSize *)boundingSizeOut
+                      truncate:(BOOL *)truncateOut;
+
+- (BOOL)willDrawSubtitle:(PSMCachedTitle *)subtitle;
+- (CGFloat)verticalOffsetForTitleWhenSubtitlePresent;
+- (CGFloat)verticalOffsetForSubtitle;
+
+- (BOOL)shouldDrawTopLineSelected:(BOOL)selected
+                         attached:(BOOL)attached
+                         position:(PSMTabPosition)position NS_AVAILABLE_MAC(10_16);
+
 @end

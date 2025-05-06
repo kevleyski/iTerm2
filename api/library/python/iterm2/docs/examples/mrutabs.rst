@@ -1,7 +1,9 @@
+:orphan:
+
 .. _mrutabs_example:
 
-MRU Tabs
-========
+Persistent MRU Tabs
+===================
 
 This script keeps tabs in most-recently used order, with the current tab always first.
 

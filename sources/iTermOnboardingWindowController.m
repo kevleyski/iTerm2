@@ -6,9 +6,26 @@
 //
 
 #import "iTermOnboardingWindowController.h"
-#import "iTermPreferences.h"
 
-static NSString *const iTermOnboardingWindowControllerHasBeenShown = @"NoSyncOnboardingWindowHasBeenShown";
+#import "ITAddressBookMgr.h"
+#import "iTermClickableTextField.h"
+#import "iTermController.h"
+#import "iTermPreferences.h"
+#import "iTermProfilePreferences.h"
+#import "iTermSessionLauncher.h"
+#import "PTYSession.h"
+#import "PreferencePanel.h"
+#import "ProfileModel.h"
+#import "SessionView.h"
+
+static NSString *const iTermOnboardingWindowControllerHasBeenShown = @"NoSyncOnboardingWindowHasBeenShown34";
+
+static void iTermOpenWhatsNewURL(NSString *path, NSWindow *window) {
+//    if ([path isEqualToString:@"/foo"]) {
+//        iTermTryFoo(window);
+//        return;
+//    }
+}
 
 @interface iTermOnboardingView : NSView
 @end
@@ -16,13 +33,32 @@ static NSString *const iTermOnboardingWindowControllerHasBeenShown = @"NoSyncOnb
 @implementation iTermOnboardingView
 
 - (void)drawRect:(NSRect)dirtyRect {
-    [[NSColor whiteColor] set];
+    dirtyRect = NSIntersectionRect(dirtyRect, self.bounds);
+    [[NSColor textBackgroundColor] set];
     NSRectFill(dirtyRect);
 }
 
 @end
 
-@interface iTermOnboardingWindowController ()<NSPageControllerDelegate>
+// For some stupid reason links aren't clickable in this window. It's probably
+// because of the type of panel. I don't feel light spending hours fighting
+// with Cocoa's undocumented insolence so let's just route around the damage.
+@interface iTermOnboardingTextField : iTermClickableTextField
+@end
+
+@implementation iTermOnboardingTextField
+
+- (void)openURL:(NSURL *)url {
+    if ([url.scheme isEqualToString:@"iterm2whatsnew"]) {
+        iTermOpenWhatsNewURL(url.path, self.window);
+        return;
+    }
+    [super openURL:url];
+}
+
+@end
+
+@interface iTermOnboardingWindowController ()<NSPageControllerDelegate, NSTextViewDelegate>
 
 @end
 
@@ -42,6 +78,11 @@ static NSString *const iTermOnboardingWindowControllerHasBeenShown = @"NoSyncOnb
     NSArray<NSView *> *_pageIndicators;
     IBOutlet NSButton *_previousPageButton;
     IBOutlet NSButton *_nextPageButton;
+
+    IBOutlet NSTextField *_textField1;
+    IBOutlet NSTextField *_textField2;
+    IBOutlet NSTextField *_textField3;
+    IBOutlet NSTextField *_textField4;
 }
 
 + (BOOL)hasBeenShown {
@@ -62,7 +103,7 @@ static NSString *const iTermOnboardingWindowControllerHasBeenShown = @"NoSyncOnb
         return NO;
     }
     NSString *twoPartVersion = [[parts subarrayWithRange:NSMakeRange(0, 2)] componentsJoinedByString:@"."];
-    NSArray<NSString *> *versionsForAnnouncement = @[ @"3.1", @"3.2" ];
+    NSArray<NSString *> *versionsForAnnouncement = @[ @"3.1", @"3.2", @"3.3", @"3.4" ];
     return [versionsForAnnouncement containsObject:twoPartVersion];
 }
 
@@ -74,6 +115,13 @@ static NSString *const iTermOnboardingWindowControllerHasBeenShown = @"NoSyncOnb
 }
 
 - (void)awakeFromNib {
+    // LOL the IB setting is not respected in 10.12 so you have to do it in code.
+    self.window.titlebarAppearsTransparent = YES;
+
+    // This is the place to tweak the contents of text fields for conditionally available features
+    // or to add hyperlinks. None needed in 3.4, but maybe the next version will want them.
+    // Also look at the commit history to see how it was done for 3.3.
+
     _views = @[ [self wrap:_view1], [self wrap:_view2], [self wrap:_view3], [self wrap:_view4] ];
     _pageIndicators = @[ _pageIndicator1, _pageIndicator2, _pageIndicator3, _pageIndicator4 ];
     _pageController.arrangedObjects = @[ @0, @1, @2, @3 ];

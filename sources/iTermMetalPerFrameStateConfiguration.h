@@ -9,11 +9,16 @@
 #import <simd/simd.h>
 #import "ITAddressBookMgr.h"
 #import "iTermTextRendererCommon.h"
+#import "iTermLineStyleMarkRenderer.h"
 #import "VT100GridTypes.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class iTermColorMap;
+@class iTermFontTable;
+@protocol iTermMetalPerFrameStateDelegate;
+@class iTermRectArray;
+@class iTermTerminalButton;
 @class iTermTextDrawingHelper;
 @class NSColor;
 @class PTYFontInfo;
@@ -30,31 +35,42 @@ NS_ASSUME_NONNULL_BEGIN
     iTermColorMap *_colorMap;
     vector_float4 _fullScreenFlashColor;
     NSColor *_processedDefaultBackgroundColor;  // dimmed, etc.
+    NSColor *_processedDefaultTextColor;
+    NSColor *_blockHoverColor;
+    NSColor *_defaultTextColor;
+    vector_float4 _selectionColor;
+    iTermLineStyleMarkColors _lineStyleMarkColors;
     vector_float4 _unfocusedSelectionColor;
     CGFloat _transparencyAlpha;
     BOOL _transparencyAffectsOnlyDefaultBackgroundColor;
     NSColor *_cursorGuideColor;
+    NSColorSpace *_colorSpace;
+    BOOL _forceRegularBottomMargin;
 
     // Text
-    PTYFontInfo *_asciiFont;
-    PTYFontInfo *_nonAsciiFont;
+    iTermFontTable *_fontTable;
     BOOL _useNonAsciiFont;
     BOOL _asciiAntialias;
     BOOL _nonasciiAntialias;
     iTermMetalUnderlineDescriptor _asciiUnderlineDescriptor;
     iTermMetalUnderlineDescriptor _nonAsciiUnderlineDescriptor;
+    iTermMetalUnderlineDescriptor _strikethroughUnderlineDescriptor;
     CGFloat _baselineOffset;
     iTermThinStrokesSetting _thinStrokes;
     BOOL _useBoldFont;
     BOOL _useItalicFont;
     BOOL _reverseVideo;
-    BOOL _useBoldColor;
+    BOOL _useCustomBoldColor;
+    BOOL _brightenBold;
     BOOL _useNativePowerlineGlyphs;
+    BOOL _useSelectedTextColor;
+    BOOL _ligaturesEnabled;
 
     // Focus
     BOOL _isFrontTextView;
     BOOL _isInKeyWindow;
     BOOL _textViewIsActiveSession;
+    BOOL _textViewIsFirstResponder;
 
     // Screen
     BOOL _isRetina;
@@ -69,17 +85,33 @@ NS_ASSUME_NONNULL_BEGIN
     NSEdgeInsets _edgeInsets;
 
     // Background image
-    CGFloat _backgroundImageBlending;
+    CGFloat _backgroundImageBlend;
+    CGFloat _backgroundColorAlpha;  // See iTermAlphaBlendingHelper.h
     iTermBackgroundImageMode _backgroundImageMode;
 
     // Other
     BOOL _showBroadcastStripes;
     BOOL _timestampsEnabled;
     BOOL _blinkingItemsVisible;
+    NSFont *_timestampFont;
+    NSArray<iTermTerminalButton *> *_terminalButtons NS_AVAILABLE_MAC(11);
+    long long _totalScrollbackOverflow;
+    iTermRectArray *_buttonsBackgroundRects;
+
+    // Offscreen command line
+    NSColor *_offscreenCommandLineBackgroundColor;
+    NSColor *_offscreenCommandLineOutlineColor;
+
+    // Selected command (absolute lines)
+    NSRange _selectedCommandRegion;
+
+    vector_float4 _selectedCommandOutlineColors[2];
+    vector_float4 _shadeColor;
 };
 
 - (void)loadSettingsWithDrawingHelper:(iTermTextDrawingHelper *)drawingHelper
-                             textView:(PTYTextView *)textView;
+                             textView:(PTYTextView *)textView
+                                 glue:(id<iTermMetalPerFrameStateDelegate>)glue;
 
 @end
 

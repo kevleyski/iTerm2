@@ -1,4 +1,6 @@
 #import "iTermCursorGuideRenderer.h"
+#import "iTermSharedImageStore.h"
+#import "NSObject+iTerm.h"
 
 @interface iTermCursorGuideRendererTransientState()
 @property (nonatomic, strong) id<MTLTexture> texture;
@@ -17,9 +19,9 @@
     CGSize cellSize = self.cellConfiguration.cellSize;
     VT100GridSize gridSize = self.cellConfiguration.gridSize;
 
-    const CGRect quad = CGRectMake(self.margins.left,
+    const CGRect quad = CGRectMake(0,
                                    self.margins.top + (gridSize.height - self.row - 1) * cellSize.height,
-                                   cellSize.width * gridSize.width,
+                                   self.configuration.viewportSize.x,
                                    cellSize.height);
     const CGRect textureFrame = CGRectMake(0, 0, 1, 1);
     const iTermVertex vertices[] = {
@@ -52,6 +54,7 @@
     id<MTLTexture> _texture;
     NSColor *_color;
     CGSize _lastCellSize;
+    NSColorSpace *_colorSpace;
 }
 
 - (instancetype)initWithDevice:(id<MTLDevice>)device {
@@ -89,14 +92,19 @@
 }
 
 - (void)initializeTransientState:(iTermCursorGuideRendererTransientState *)tState {
-    if (!CGSizeEqualToSize(tState.cellConfiguration.cellSize, _lastCellSize)) {
+    if (!CGSizeEqualToSize(tState.cellConfiguration.cellSize, _lastCellSize) ||
+        ![NSObject object:tState.configuration.colorSpace isEqualToObject:_colorSpace]) {
         _texture = [self newCursorGuideTextureWithTransientState:tState];
         _lastCellSize = tState.cellConfiguration.cellSize;
+        _colorSpace = tState.configuration.colorSpace;
     }
     tState.texture = _texture;
 }
 
 - (void)setColor:(NSColor *)color {
+    if (color == _color || [color isEqual:_color]) {
+        return;
+    }
     _color = color;
 
     // Invalidate cell size so the texture gets created again
@@ -143,7 +151,9 @@
     }
     [image unlockFocus];
 
-    return [_cellRenderer textureFromImage:image context:tState.poolContext];
+    return [_cellRenderer textureFromImage:[iTermImageWrapper withImage:image]
+                                   context:tState.poolContext
+                                colorSpace:tState.configuration.colorSpace];
 }
 
 @end

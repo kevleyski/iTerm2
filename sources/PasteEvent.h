@@ -15,11 +15,12 @@ typedef NS_ENUM(NSInteger, iTermTabTransformTags) {
     kTabTransformEscapeWithCtrlV = 2
 };
 
-// These flags are used on the tags in menu items.
+// These flags can be used on the tags in menu items.
 typedef NS_OPTIONS(unsigned int, PTYSessionPasteFlags) {
     kPTYSessionPasteEscapingSpecialCharacters = (1 << 0),  // Does not appear to be used
     kPTYSessionPasteSlowly = (1 << 1),
-    kPTYSessionPasteWithShellEscapedTabs = (1 << 2)  // Does not appear to be used.
+    kPTYSessionPasteWithShellEscapedTabs = (1 << 2),  // Does not appear to be used.
+    kPTYSessionPasteBracketingDisabled = (1 << 3)
 };
 
 typedef NS_OPTIONS(NSUInteger, iTermPasteFlags) {
@@ -43,11 +44,15 @@ typedef NS_OPTIONS(NSUInteger, iTermPasteFlags) {
     kPasteFlagsRemovingNewlines = (1 << 9),
 
     kPasteFlagsUseRegexSubstitution = (1 << 10),
+
+    // Disable warnings?
+    kPasteFlagsDisableWarnings = (1 << 11)
 };
 
 @interface PasteEvent : NSEvent
 
-@property(nonatomic, copy) NSString *string;
+@property(nonatomic, copy, readonly) NSString *originalString;
+@property(nonatomic, readonly) NSString *string;
 @property(nonatomic, assign) iTermPasteFlags flags;
 @property(nonatomic, assign) int defaultChunkSize;
 @property(nonatomic, copy) NSString *chunkKey;
@@ -75,5 +80,9 @@ typedef NS_OPTIONS(NSUInteger, iTermPasteFlags) {
                         spacesPerTab:(int)spacePerTab
                                regex:(NSString *)regex
                         substitution:(NSString *)substitution;
+
+- (void)setModifiedString:(NSString *)modifiedString;
+- (void)addPasteBracketing;
+- (void)trimNewlines;
 
 @end

@@ -8,96 +8,181 @@
 
 #import "PSMRolloverButton.h"
 
-@implementation PSMRolloverButton
+static const CGFloat PSMRolloverButtonDifferenceThreshold = 0.0001;
+static const CGFloat PSMRolloverButtonFramesPerSecond = 60.0;
+static const CGFloat PSMRolloverButtonMaxAlpha = 0.25;
 
-- (void)dealloc
-{
-    [_rolloverImage release];
-    [_usualImage release];
-    [super dealloc];
+extern BOOL gDebugLogging;
+int DebugLogImpl(const char *file, int line, const char *function, NSString* value);
+#define DLog(args...) \
+    do { \
+        if (gDebugLogging) { \
+            DebugLogImpl(__FILE__, __LINE__, __FUNCTION__, [NSString stringWithFormat:args]); \
+        } \
+    } while (0)
+
+@implementation PSMRolloverButton {
+    NSImage *_rolloverImage;
+    NSImage *_usualImage;
+    CGFloat _targetAlpha;
+    CGFloat _alpha;
+    NSTimer *_timer;
+    NSTrackingArea *_trackingArea;
+    CGFloat _dragDistance;
+    NSPoint _lastDragLocation;
+}
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.wantsLayer = YES;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_trackingArea) {
+        [self removeTrackingArea:_trackingArea];
+    }
+}
+
+- (BOOL)becomeFirstResponder {
+    return NO;
 }
 
 // the regular image
-- (void)setUsualImage:(NSImage *)newImage
-{
-    [newImage retain];
-    [_usualImage release];
+- (void)setUsualImage:(NSImage *)newImage {
     _usualImage = newImage;
     [self setImage:_usualImage];
 }
 
-- (NSImage *)usualImage
-{
+- (NSImage *)usualImage {
     return _usualImage;
 }
 
-- (void)setRolloverImage:(NSImage *)newImage
-{
-    [newImage retain];
-    [_rolloverImage release];
+- (void)setRolloverImage:(NSImage *)newImage {
     _rolloverImage = newImage;
 }
 
-- (NSImage *)rolloverImage
-{
+- (NSImage *)rolloverImage {
     return _rolloverImage;
 }
 
-- (void)addTrackingRect
-{
-    // assign a tracking rect to watch for mouse enter/exit
-    _myTrackingRectTag = [self addTrackingRect:[self bounds] owner:self userData:nil assumeInside:NO];
-}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (_trackingArea) {
+        [self removeTrackingArea:_trackingArea];
+    }
 
-- (void)removeTrackingRect
-{
-	if (_myTrackingRectTag) {
-		[self removeTrackingRect:_myTrackingRectTag];
-	}
-	_myTrackingRectTag = 0;
+
+    _trackingArea = [[NSTrackingArea alloc] initWithRect:self.bounds
+                                                 options:(NSTrackingMouseEnteredAndExited |
+                                                          NSTrackingMouseMoved |
+                                                          NSTrackingCursorUpdate |
+                                                          NSTrackingActiveAlways)
+                                                   owner:self
+                                                userInfo:nil];
+    [self setTargetAlpha:0];
+    [self addTrackingArea:_trackingArea];
 }
 
 // override for rollover effect
-- (void)mouseEntered:(NSEvent *)theEvent
-{
+- (void)mouseEntered:(NSEvent *)theEvent {
+    [self setTargetAlpha:PSMRolloverButtonMaxAlpha];
     // set rollover image
     [self setImage:_rolloverImage];
-    [self setNeedsDisplay];
+    [self setNeedsDisplay:YES];
     [[self superview] setNeedsDisplay:YES]; // eliminates a drawing artifact
 }
 
-- (void)mouseExited:(NSEvent *)theEvent
-{
+- (void)mouseExited:(NSEvent *)theEvent {
     // restore usual image
+    [self setTargetAlpha:0];
     [self setImage:_usualImage];
-    [self setNeedsDisplay];
+    [self setNeedsDisplay:YES];
     [[self superview] setNeedsDisplay:YES]; // eliminates a drawing artifact
 }
 
-- (void)mouseDown:(NSEvent *)theEvent
-{
+- (void)setTargetAlpha:(CGFloat)targetAlpha {
+    if (fabs(targetAlpha - _targetAlpha) < PSMRolloverButtonDifferenceThreshold) {
+        return;
+    }
+    _targetAlpha = targetAlpha;
+    if (!_timer) {
+        _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / PSMRolloverButtonFramesPerSecond
+                                                  target:self
+                                                selector:@selector(updateBackgroundAlphaTimer:)
+                                                userInfo:nil
+                                                 repeats:YES];
+    }
+}
+
+// macOS 10.14+ because it needs layers to properly composite the background color.
+- (void)updateBackgroundAlphaTimer:(NSTimer *)timer NS_AVAILABLE_MAC(10_14) {
+    const CGFloat duration = 0.25;
+    const CGFloat changePerSecond = PSMRolloverButtonMaxAlpha / duration;
+    if (_alpha < _targetAlpha) {
+        _alpha = MIN(_targetAlpha, _alpha + changePerSecond / PSMRolloverButtonFramesPerSecond);
+    } else {
+        _alpha = MAX(_targetAlpha, _alpha - changePerSecond / PSMRolloverButtonFramesPerSecond);
+    }
+    if (fabs(_alpha - _targetAlpha) < PSMRolloverButtonDifferenceThreshold) {
+        // Close enough
+        [_timer invalidate];
+        _timer = nil;
+        _alpha = _targetAlpha;
+    }
+    self.layer.backgroundColor = [[NSColor colorWithWhite:0.5 alpha:_alpha] CGColor];
+}
+
+// Must override mouseDown and mouseUp and not call super for mouseDragged: to work.
+- (void)mouseDown:(NSEvent *)theEvent {
     // eliminates drawing artifact
-    [[NSRunLoop currentRunLoop] performSelector:@selector(display) target:[self superview] argument:nil order:1 modes:[NSArray arrayWithObjects:@"NSEventTrackingRunLoopMode", @"NSDefaultRunLoopMode", nil]];
-    [super mouseDown:theEvent];
+    [[NSRunLoop currentRunLoop] performSelector:@selector(display)
+                                         target:[self superview]
+                                       argument:nil
+                                          order:1
+                                          modes:@[ NSEventTrackingRunLoopMode, NSDefaultRunLoopMode ]];
+    _dragDistance = 0;
+    _lastDragLocation = theEvent.locationInWindow;
+    DLog(@"mouseDown. Set dragDistance=0, lastDragLocation=%@", NSStringFromPoint(_lastDragLocation));
 }
 
-- (void)resetCursorRects
-{
+- (void)mouseUp:(NSEvent *)event {
+    if (event.clickCount == 1 && _dragDistance < 4) {
+        DLog(@"mouseUp. dragDistance=%@ so act like click", @(_dragDistance));
+        [self performClick:self];
+    }
+    DLog(@"mouseUp. dragDistance=%@ so reset drag distance to 0", @(_dragDistance));
+    _dragDistance = 0;
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+    if (!self.allowDrags) {
+        DLog(@"mouseDragged. drags not allowed");
+        [super mouseDragged:event];
+        return;
+    }
+    _dragDistance += sqrt(pow(event.locationInWindow.y - _lastDragLocation.y, 2) +
+                          pow(event.locationInWindow.x - _lastDragLocation.x, 2));
+    _lastDragLocation = event.locationInWindow;
+    DLog(@"mouseDragged. dragDistance<-%@ lastDragLocation<-%@", @(_dragDistance), @(_lastDragLocation));
+    [self.window makeKeyAndOrderFront:nil];
+    [self.window performWindowDragWithEvent:event];
+}
+
+- (void)resetCursorRects {
     // called when the button rect has been changed
-    [self removeTrackingRect];
-    [self addTrackingRect];
     [[self superview] setNeedsDisplay:YES]; // eliminates a drawing artifact
 }
 
-#pragma mark -
-#pragma mark Archiving
+#pragma mark -  Archiving
 
 - (void)encodeWithCoder:(NSCoder *)aCoder {
     [super encodeWithCoder:aCoder];
     if ([aCoder allowsKeyedCoding]) {
         [aCoder encodeObject:_rolloverImage forKey:@"rolloverImage"];
         [aCoder encodeObject:_usualImage forKey:@"usualImage"];
-        [aCoder encodeInt:_myTrackingRectTag forKey:@"myTrackingRectTag"];
     }
 }
 
@@ -105,9 +190,8 @@
     self = [super initWithCoder:aDecoder];
     if (self) {
         if ([aDecoder allowsKeyedCoding]) {
-            _rolloverImage = [[aDecoder decodeObjectForKey:@"rolloverImage"] retain];
-            _usualImage = [[aDecoder decodeObjectForKey:@"usualImage"] retain];
-            _myTrackingRectTag = [aDecoder decodeIntForKey:@"myTrackingRectTag"];
+            _rolloverImage = [aDecoder decodeObjectForKey:@"rolloverImage"];
+            _usualImage = [aDecoder decodeObjectForKey:@"usualImage"];
         }
     }
     return self;

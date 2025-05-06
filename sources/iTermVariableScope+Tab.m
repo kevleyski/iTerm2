@@ -38,6 +38,14 @@
     return [iTermVariableScope newSessionScopeWithVariables:[self valueForVariableName:iTermVariableKeyTabCurrentSession]];
 }
 
+- (NSString *)title {
+    return [self valueForVariableName:iTermVariableKeyTabTitle];
+}
+
+- (void)setTitle:(NSString *)title {
+    [self setValue:title forVariableNamed:iTermVariableKeyTabTitle];
+}
+
 - (NSNumber *)tmuxWindow {
     return [self valueForVariableName:iTermVariableKeyTabTmuxWindow];
 }
@@ -46,17 +54,21 @@
     [self setValue:newValue forVariableNamed:iTermVariableKeyTabTmuxWindow];
 }
 
-- (NSNumber *)tabID {
+- (NSString *)tabID {
     return [self valueForVariableName:iTermVariableKeyTabID];
 }
 
-- (void)setTabID:(NSNumber *)newValue {
+- (void)setTabID:(NSString *)newValue {
     [self setValue:newValue forVariableNamed:iTermVariableKeyTabID];
 }
 
 - (iTermVariableScope<iTermWindowScope> *)window {
     return [iTermVariableScope newWindowScopeWithVariables:[self valueForVariableName:iTermVariableKeyTabWindow]
                                               tabVariables:[[self variablesInScopeNamed:nil] lastObject]];
+}
+
+- (NSString *)tmuxWindowName {
+    return [self valueForVariableName:iTermVariableKeyTabTmuxWindowName];
 }
 
 @end

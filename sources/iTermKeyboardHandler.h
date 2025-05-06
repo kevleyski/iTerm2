@@ -43,6 +43,9 @@ typedef struct {
 - (void)keyboardHandler:(iTermKeyboardHandler *)keyboardhandler
              insertText:(NSString *)aString;
 
+- (NSInteger)keyboardHandlerWindowNumber:(iTermKeyboardHandler *)keyboardhandler;
+- (BOOL)keyboardHandler:(iTermKeyboardHandler *)keyboardhandler shouldBackspaceAt:(NSUInteger)location;
+
 @end
 
 // This is responsible for the logic involving the NSTextInput insanity, including dealing with
@@ -58,12 +61,16 @@ typedef struct {
 @property (nonatomic, weak) id<iTermKeyboardHandlerDelegate> delegate;
 @property (nonatomic, readonly) BOOL keyIsARepeat;
 @property (nonatomic, strong) id<iTermKeyMapper> keyMapper;
+@property (nonatomic, readonly) NSDictionary *dictionaryValue;
 
 - (void)keyDown:(NSEvent *)event inputContext:(NSTextInputContext *)inputContext;
 - (void)doCommandBySelector:(SEL)aSelector;
 - (void)insertText:(id)aString replacementRange:(NSRange)replacementRange;
 - (BOOL)hasMarkedText;
 - (void)flagsChanged:(NSEvent *)event;
+- (BOOL)performKeyEquivalent:(NSEvent *)event inputContext:(NSTextInputContext *)inputContext;
+- (nullable NSString *)stringForEventWithoutSideEffects:(NSEvent *)event
+                                               encoding:(NSStringEncoding)encoding;
 
 @end
 

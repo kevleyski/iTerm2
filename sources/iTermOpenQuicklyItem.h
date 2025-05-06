@@ -2,6 +2,10 @@
 
 @class iTermLogoGenerator;
 @class iTermOpenQuicklyTableCellView;
+@class iTermVariableScope;
+@protocol VT100ScreenMarkReading;
+@class PTYSession;
+@class NSMenuItem;
 
 // Represents and item in the Open Quickly table.
 @interface iTermOpenQuicklyItem : NSObject
@@ -36,6 +40,9 @@
 
 @end
 
+@interface iTermOpenQuicklyWindowItem : iTermOpenQuicklyItem
+@end
+
 @interface iTermOpenQuicklyProfileItem : iTermOpenQuicklyItem
 @end
 
@@ -56,5 +63,30 @@
 // Holds the session's colors and can create a logo with them as needed.
 @property(nonatomic, retain) iTermLogoGenerator *logoGenerator;
 @property(nonatomic, copy) NSString *presetName;
+@end
+
+@class iTermAction;
+@interface iTermOpenQuicklyActionItem : iTermOpenQuicklyItem
+@property(nonatomic, strong) iTermAction *action;
+@end
+
+@class iTermSnippet;
+@interface iTermOpenQuicklySnippetItem : iTermOpenQuicklyItem
+@property(nonatomic, strong) iTermSnippet *snippet;
+@end
+
+NS_AVAILABLE_MAC(11_0)
+@interface iTermOpenQuicklyInvocationItem : iTermOpenQuicklyItem
+@property(nonatomic, strong) iTermVariableScope *scope;
+@end
+
+@interface iTermOpenQuicklyNamedMarkItem: iTermOpenQuicklyItem
+@property(nonatomic, strong) id<VT100ScreenMarkReading> namedMark;
+@property(nonatomic, weak) PTYSession *session;
+@end
+
+@interface iTermOpenQuicklyMenuItem: iTermOpenQuicklyItem
+@property(nonatomic, strong) NSMenuItem *menuItem;
+@property(nonatomic, readonly) BOOL valid;
 @end
 

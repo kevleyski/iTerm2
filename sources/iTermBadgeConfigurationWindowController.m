@@ -11,28 +11,18 @@
 #import "ITAddressBookMgr.h"
 #import "iTermBadgeLabel.h"
 #import "iTermProfilePreferences.h"
+#import "NSAppearance+iTerm.h"
 #import "NSColor+iTerm.h"
 #import "NSDictionary+iTerm.h"
 #import "NSObject+iTerm.h"
+#import <BetterFontPicker/BetterFontPicker-Swift.h>
 
 static const CGFloat iTermBadgeConfigurationBadgeViewInset = 3;
-static NSString *const iTermBadgeConfigurationWindowWillChangeFirstResponderNotification = @"iTermBadgeConfigurationWindowWillChangeFirstResponderNotification";
 
 @interface iTermBadgeConfigurationWindow : NSWindow
 @end
 
 @implementation iTermBadgeConfigurationWindow
-
-- (BOOL)makeFirstResponder:(NSResponder *)responder {
-    const BOOL result = [super makeFirstResponder:responder];
-    if (result) {
-        [[NSNotificationCenter defaultCenter] postNotificationName:iTermBadgeConfigurationWindowWillChangeFirstResponderNotification
-                                                            object:self
-                                                          userInfo:@{ @"responder": responder ?: [NSNull null] }];
-    }
-    return result;
-}
-
 @end
 
 @protocol iTermBadgeConfigurationBadgeViewDelegate<NSObject>
@@ -43,7 +33,6 @@ static NSString *const iTermBadgeConfigurationWindowWillChangeFirstResponderNoti
 
 @interface iTermBadgeConfigurationBadgeView : NSBox<iTermBadgeLabelDelegate>
 @property (nonatomic, weak) id<iTermBadgeConfigurationBadgeViewDelegate> delegate;
-@property (nonatomic) BOOL fontPanelOpen;
 @end
 
 typedef struct {
@@ -81,32 +70,20 @@ typedef struct {
 }
 
 - (void)awakeFromNib {
-    _badge.viewSize = self.bounds.size;
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(firstResponderWillChange:)
-                                                 name:iTermBadgeConfigurationWindowWillChangeFirstResponderNotification
-                                               object:self.window];
-}
-
-- (void)firstResponderWillChange:(NSNotification *)notification {
-    if (!_fontPanelOpen) {
-        return;
-    }
-    id responder = notification.userInfo[@"responder"];
-    if ([responder isKindOfClass:[NSNull class]] || responder == self.window) {
-        return;
-    }
-    _fontPanelOpen = NO;
-    [[[NSFontManager sharedFontManager] fontPanel:NO] close];
+    _badge.viewSize = self.superview.bounds.size;
 }
 
 - (void)setDelegate:(id<iTermBadgeConfigurationBadgeViewDelegate>)delegate {
     _delegate = delegate;
     if (delegate) {
-        _badge.fillColor = [[[iTermProfilePreferences objectForKey:KEY_BADGE_COLOR inProfile:[delegate badgeViewProfile]] colorValue] colorWithAlphaComponent:1];
+        Profile *profile = [delegate badgeViewProfile];
+        const BOOL dark = [NSApp effectiveAppearance].it_isDark;
+        _badge.fillColor = [[iTermProfilePreferences colorForKey:KEY_BADGE_COLOR dark:dark profile:profile] colorWithAlphaComponent:1];
         _badge.backgroundColor = [NSColor clearColor];
         _loremIpsum.image = [_badge image];
-        NSColor *backgroundColor = [[iTermProfilePreferences objectForKey:KEY_BACKGROUND_COLOR inProfile:[delegate badgeViewProfile]] colorValue];
+        NSColor *backgroundColor = [iTermProfilePreferences colorForKey:KEY_BACKGROUND_COLOR
+                                                                   dark:dark
+                                                                profile:profile];
         if (backgroundColor.perceivedBrightness > 0.5) {
             _borderColor = [NSColor blackColor];
         } else {
@@ -319,17 +296,23 @@ typedef struct {
 
 - (void)updateImageViewFrame {
     NSRect myFrame = NSInsetRect(self.bounds, 6, 6);
+    myFrame.size.width = MAX(0, myFrame.size.width);
+    myFrame.size.height = MAX(0, myFrame.size.height);
     if (_loremIpsum.image.size.height == 0 || myFrame.size.height == 0) {
         _loremIpsum.frame = myFrame;
     }
     CGFloat imageAspectRatio = _loremIpsum.image.size.width / _loremIpsum.image.size.height;
+    if (imageAspectRatio != imageAspectRatio || _loremIpsum.image.size.height < 1) {
+        _loremIpsum.frame = NSZeroRect;
+        return;
+    }
     CGFloat myAspectRatio = myFrame.size.width / myFrame.size.height;
     if (imageAspectRatio > myAspectRatio) {
         // image is wider
         _loremIpsum.frame = NSMakeRect(myFrame.origin.x,
                                        myFrame.origin.y + myFrame.size.height - (myFrame.size.width / imageAspectRatio),
-                                       myFrame.size.width,
-                                       myFrame.size.width / imageAspectRatio);
+                                       MAX(0, myFrame.size.width),
+                                       MAX(0, myFrame.size.width / imageAspectRatio));
     } else {
         // image is taller
         _loremIpsum.frame = NSMakeRect(myFrame.size.width - (myFrame.size.height * imageAspectRatio),
@@ -346,8 +329,8 @@ typedef struct {
 
 - (void)layoutSubviews {
     _badge.dirty = YES;
-    _badge.viewSize = NSMakeSize(self.bounds.size.width * 2,
-                                 self.bounds.size.height * 2);
+    _badge.viewSize = NSMakeSize(self.superview.bounds.size.width,
+                                 self.superview.bounds.size.height);
     _loremIpsum.image = [_badge image];
     [self updateImageViewFrame];
 }
@@ -366,16 +349,14 @@ typedef struct {
 }
 
 - (NSSize)badgeLabelSizeFraction {
-    Profile *profile = [self.delegate badgeViewProfile];
-    const CGFloat width = [iTermProfilePreferences floatForKey:KEY_BADGE_MAX_WIDTH inProfile:profile];
-    const CGFloat height = [iTermProfilePreferences floatForKey:KEY_BADGE_MAX_HEIGHT inProfile:profile];
+    const CGFloat width = MIN(0.95, self.bounds.size.width / self.superview.bounds.size.width);
+    const CGFloat height = MIN(0.95, self.bounds.size.height / self.superview.bounds.size.height);
     return NSMakeSize(width, height);
 }
 
 @end
 
-@interface iTermBadgeConfigurationWindowController ()<iTermBadgeConfigurationBadgeViewDelegate, NSTextFieldDelegate>
-@property (nonatomic, strong) IBOutlet NSTextField *fontNameLabel;
+@interface iTermBadgeConfigurationWindowController ()<iTermBadgeConfigurationBadgeViewDelegate, NSTextFieldDelegate, BFPCompositeViewDelegate>
 @property (nonatomic, strong) IBOutlet NSTextField *maxWidthTextField;
 @property (nonatomic, strong) IBOutlet NSTextField *maxHeightTextField;
 @property (nonatomic, strong) IBOutlet NSTextField *rightMarginTextField;
@@ -388,6 +369,7 @@ typedef struct {
     NSMutableDictionary *_profileMutations;
     NSString *_fontName;
     BOOL _ignoreFrameChange;
+    IBOutlet BFPCompositeView *_fontPicker;
 }
 
 - (instancetype)initWithProfile:(Profile *)profile {
@@ -434,7 +416,10 @@ typedef struct {
     const CGFloat maxWidth = [iTermProfilePreferences doubleForKey:KEY_BADGE_MAX_WIDTH inProfile:_profile];
     const CGFloat maxHeight = [iTermProfilePreferences doubleForKey:KEY_BADGE_MAX_HEIGHT inProfile:_profile];
 
-    _fontNameLabel.stringValue = self.font.fontName;
+    _fontPicker.font = self.font;
+    _fontPicker.delegate = self;
+    [_fontPicker removeSizePicker];
+    [_fontPicker removeMemberPicker];
     _maxWidthTextField.doubleValue = MIN(0.95, maxWidth) * 100.0;
     _maxHeightTextField.doubleValue = MIN(0.95, maxHeight) * 100.0;
     _rightMarginTextField.doubleValue = MAX(0, rightMargin);
@@ -444,7 +429,9 @@ typedef struct {
     _ignoreFrameChange = YES;
     [self setBadgeFrameFromTextFields];
     _ignoreFrameChange = NO;
-    _fakeSessionView.fillColor = [[iTermProfilePreferences objectForKey:KEY_BACKGROUND_COLOR inProfile:_profile] colorValue];
+    _fakeSessionView.fillColor = [iTermProfilePreferences colorForKey:KEY_BACKGROUND_COLOR
+                                                                 dark:[NSApp effectiveAppearance].it_isDark
+                                                              profile:_profile];
 }
 
 - (NSFont *)font {
@@ -472,33 +459,6 @@ typedef struct {
               KEY_BADGE_FONT: _fontName ?: @"" };
 }
 
-- (void)changeFont:(nullable id)sender {
-    NSFont *font = [sender convertFont:self.font];
-    if ([iTermAdvancedSettingsModel badgeFontIsBold]) {
-        font = [[NSFontManager sharedFontManager] convertFont:font toHaveTrait:NSBoldFontMask];
-    }
-    _fontName = font.fontName;
-    [_badgeView reload];
-}
-
-- (IBAction)openFontPanel:(id)sender {
-    self.window.nextResponder = self;
-    [[NSFontManager sharedFontManager] fontPanel:YES];
-    [[NSFontManager sharedFontManager] setSelectedFont:self.font isMultiple:NO];
-    [[NSFontManager sharedFontManager] orderFrontFontPanel:self];
-    [self.window makeFirstResponder:nil];
-    self.badgeView.fontPanelOpen = YES;
-}
-
-- (NSFontPanelModeMask)validModesForFontPanel:(NSFontPanel *)fontPanel {
-    return NSFontPanelCollectionModeMask;
-}
-
-- (BOOL)validateProposedFirstResponder:(NSResponder *)responder forEvent:(NSEvent *)event {
-    BOOL result = [super validateProposedFirstResponder:responder forEvent:event];
-    return result;
-}
-
 - (void)setBadgeFrameFromTextFields {
     [self updateWindowFrame];
 
@@ -520,16 +480,10 @@ typedef struct {
 
 - (IBAction)ok:(id)sender {
     _ok = YES;
-    if (_badgeView.fontPanelOpen) {
-        [[[NSFontManager sharedFontManager] fontPanel:NO] close];
-    }
     [self.window.sheetParent endSheet:self.window];
 }
 
 - (IBAction)cancel:(id)sender {
-    if (_badgeView.fontPanelOpen) {
-        [[[NSFontManager sharedFontManager] fontPanel:NO] close];
-    }
     [self.window.sheetParent endSheet:self.window];
 }
 
@@ -561,6 +515,17 @@ typedef struct {
 
 - (NSFont *)badgeViewFont {
     return [self font];
+}
+
+#pragma mark - BFPCompositeViewDelegate
+
+- (void)fontPickerCompositeView:(BFPCompositeView * _Nonnull)view didSelectFont:(NSFont * _Nonnull)selectedFont {
+    NSFont *font = selectedFont;
+    if ([iTermAdvancedSettingsModel badgeFontIsBold]) {
+        font = [[NSFontManager sharedFontManager] convertFont:font toHaveTrait:NSBoldFontMask];
+    }
+    _fontName = font.fontName;
+    [_badgeView reload];
 }
 
 @end

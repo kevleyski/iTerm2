@@ -7,6 +7,9 @@
 //
 
 #import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+
+NS_ASSUME_NONNULL_BEGIN
 
 // https://www.mikeash.com/pyblog/friday-qa-2010-06-18-implementing-equality-and-hashing.html
 // NOTE: This does not compose well. Use iTermCombineHash if you need to chain hashes.
@@ -16,7 +19,7 @@ NS_INLINE NSUInteger iTermMikeAshHash(NSUInteger hash1, NSUInteger hash2) {
 }
 
 // http://www.cse.yorku.ca/~oz/hash.html
-NS_INLINE NSUInteger iTermDJB2Hash(unsigned char *bytes, size_t length) {
+NS_INLINE NSUInteger iTermDJB2Hash(const unsigned char *bytes, size_t length) {
     NSUInteger hash = 5381;
 
     for (NSUInteger i = 0; i < length; i++) {
@@ -44,10 +47,26 @@ NS_INLINE NSUInteger iTermCombineHash(NSUInteger hash1, NSUInteger hash2) {
 
 @interface NSObject (iTerm)
 
-+ (BOOL)object:(NSObject *)a isEqualToObject:(NSObject *)b;
-+ (instancetype)castFrom:(id)object;
+// For Swift convenience.
+@property(nonatomic, readonly) NSString *it_addressString;
 
-- (void)performSelectorOnMainThread:(SEL)selector withObjects:(NSArray *)objects;
+// Override this if you can compare your current value to a value equal to nil for the purposes of object:isNullablyEqualToObject:
+@property(nonatomic, readonly) BOOL it_hasZeroValue;
+
++ (BOOL)object:(NSObject * _Nullable)a isEqualToObject:(NSObject * _Nullable)b;
+
+// nil == "", nil == @0, nil == @[], nil == @{}
++ (BOOL)object:(NSObject * _Nullable)a isNullablyEqualToObject:(NSObject * _Nullable)b epsilon:(CGFloat)epsilon;
+
+// Supports NSArray, NSDictionary, and NSNumber.
++ (BOOL)object:(__kindof NSObject * _Nullable)a isApproximatelyEqualToObject:(__kindof NSObject * _Nullable)b epsilon:(double)epsilon;
+
++ (instancetype _Nullable)castFrom:(id _Nullable)object;
++ (instancetype)forceCastFrom:(id)object;
+
+- (void)performSelectorOnMainThread:(SEL)selector withObjects:(NSArray * _Nullable)objects;
+
++ (void)it_enumerateDynamicProperties:(void (^)(NSString *name))block;
 
 // Retains self for |delay| time, whether canceled or not.
 // Set canceled=YES on the result to keep the block from running. Its completed flag will be set to
@@ -75,16 +94,38 @@ NS_INLINE NSUInteger iTermCombineHash(NSUInteger hash1, NSUInteger hash2) {
 - (iTermDelayedPerform *)performBlock:(void (^)(void))block afterDelay:(NSTimeInterval)delay;
 
 // Returns nil if this object is an instance of NSNull, otherwise returns self.
-- (instancetype)nilIfNull;
+- (instancetype _Nullable)nilIfNull;
 
-- (void)it_setAssociatedObject:(id)associatedObject forKey:(void *)key;
-- (void)it_setWeakAssociatedObject:(id)associatedObject forKey:(void *)key;
-- (id)it_associatedObjectForKey:(void *)key;
+- (void)it_setAssociatedObject:(id _Nullable)associatedObject forKey:(const void *)key;
+- (void)it_setWeakAssociatedObject:(id _Nullable)associatedObject forKey:(const void *)key;
+- (id _Nullable)it_associatedObjectForKey:(const void *)key;
 
-- (void)it_performNonObjectReturningSelector:(SEL)selector withObject:(id)object;
+- (void)it_performNonObjectReturningSelector:(SEL)selector
+                                  withObject:(id _Nullable)object;
+
+- (void)it_performNonObjectReturningSelector:(SEL)selector
+                                  withObject:(id _Nullable)object1
+                                  withObject:(id _Nullable)object2;
+
+- (void)it_performNonObjectReturningSelector:(SEL)selector
+                                  withObject:(id _Nullable)object1
+                                      object:(id _Nullable)object2
+                                      object:(id _Nullable)object3;
+
 - (id)it_performAutoreleasedObjectReturningSelector:(SEL)selector withObject:(id)object;
 
 - (BOOL)it_isSafeForPlist;
-- (NSString *)it_invalidPathInPlist;
+- (NSString * _Nullable)it_invalidPathInPlist;
+- (instancetype)it_weakProxy;
+- (NSString *)tastefulDescription;
+- (id)it_jsonSafeValue;
+
+- (NSData *)it_keyValueCodedData;
++ (instancetype _Nullable)it_fromKeyValueCodedData:(NSData *)data;
+- (NSString *)jsonEncoded;
++ (instancetype)fromJsonEncodedString:(NSString *)string;
+
 
 @end
+
+NS_ASSUME_NONNULL_END

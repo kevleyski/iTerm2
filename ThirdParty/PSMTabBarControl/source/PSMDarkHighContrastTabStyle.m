@@ -15,8 +15,16 @@
   return @"Dark High Contrast";
 }
 
+- (BOOL)highVisibility {
+    return [[self.tabBar.delegate tabView:self.tabBar valueOfOption:PSMTabBarControlOptionHighVisibility] boolValue];
+}
+
 - (NSColor *)textColorDefaultSelected:(BOOL)selected backgroundColor:(NSColor *)backgroundColor windowIsMainAndAppIsActive:(BOOL)mainAndActive {
-  return [NSColor whiteColor];
+    if ([self highVisibility]) {
+        return selected ? [NSColor blackColor] : [NSColor whiteColor];
+    } else {
+        return [NSColor whiteColor];
+    }
 }
 
 - (NSColor *)accessoryTextColor {
@@ -24,11 +32,18 @@
 }
 
 - (NSColor *)backgroundColorSelected:(BOOL)selected highlightAmount:(CGFloat)highlightAmount {
-  CGFloat value = !selected ? 0.20 : 0.03;
-  if (selected) {
-    value += highlightAmount * 0.05;
-  }
-  return [NSColor colorWithCalibratedWhite:value alpha:1.00];
+    CGFloat value;
+    if ([self highVisibility]) {
+        value = selected ? 0.80 : 0.03;
+    } else {
+        BOOL shouldBeLight;
+        shouldBeLight = selected;
+        value = shouldBeLight ? 0.2 : 0.03;
+    }
+    if (selected) {
+        value += highlightAmount * 0.05;
+    }
+    return [NSColor colorWithCalibratedWhite:value alpha:1.00];
 }
 
 - (CGFloat)fontSize {

@@ -7,18 +7,37 @@
 
 #import <Cocoa/Cocoa.h>
 
+#import "iTerm2SharedARC-Swift.h"
+
 NS_ASSUME_NONNULL_BEGIN
 
-@protocol iTermComposerTextViewDelegate<NSObject>
-- (void)composerTextViewDidFinish;
-@end
+@class iTermCompletionItem;
+@class iTermStatusBarLargeComposerViewController;
+@class TmuxController;
+@protocol VT100RemoteHostReading;
 
-@interface iTermComposerTextView : NSTextView
-@property (nonatomic, weak) IBOutlet id<iTermComposerTextViewDelegate> composerDelegate;
+@protocol iTermStatusBarLargeComposerViewControllerDelegate<NSObject>
+- (void)largeComposerViewControllerTextDidChange:(iTermStatusBarLargeComposerViewController *)controller;
+- (BOOL)largeComposerViewControllerShouldFetchSuggestions:(iTermStatusBarLargeComposerViewController *)controller
+                                                  forHost:(id<VT100RemoteHostReading>)remoteHost
+                                           tmuxController:(TmuxController *)tmuxController;
+- (void)largeComposerViewController:(iTermStatusBarLargeComposerViewController *)controller
+                   fetchSuggestions:(iTermSuggestionRequest *)request
+                      byUserRequest:(BOOL)byUserRequest;
+- (NSString * _Nullable)largeComposerViewController:(iTermStatusBarLargeComposerViewController *)controller
+                         valueOfEnvironmentVariable:(NSString *)name;
 @end
 
 @interface iTermStatusBarLargeComposerViewController : NSViewController
 @property (nonatomic, strong) IBOutlet iTermComposerTextView *textView;
+@property (nonatomic, strong, nullable) id<VT100RemoteHostReading> host;
+@property (nonatomic, strong, nullable) NSString *workingDirectory;
+@property (nonatomic, copy) iTermVariableScope *scope;
+@property (nonatomic, weak, nullable) TmuxController *tmuxController;
+@property (nonatomic) BOOL hideAccessories;
+@property (nonatomic, weak) IBOutlet id<iTermStatusBarLargeComposerViewControllerDelegate> delegate;
+
+- (void)fetchCompletions;
 
 @end
 

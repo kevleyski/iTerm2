@@ -10,7 +10,9 @@
 #import "PointerController.h"
 #import "PreferencePanel.h"
 #import "NSPopUpButton+iTerm.h"
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermApplicationDelegate.h"
+#import "iTermFunctionCallTextFieldDelegate.h"
 #import "iTermPasteSpecialViewController.h"
 #import "ITAddressBookMgr.h"
 #import "FutureMethods.h"
@@ -19,6 +21,7 @@
 static NSString *kPointerActionsKey = @"PointerActions";  // Used in NSUserDefaults
 static NSString *kActionKey = @"Action";  // Used within values
 static NSString *kArgumentKey = @"Argument";  // Used within values
+static NSString *kVersionKey = @"Version";
 static NSString *kCommandKeyChar = @"c";
 static NSString *kOptionKeyChar = @"o";
 static NSString *kShiftKeyChar = @"s";
@@ -62,6 +65,7 @@ NSString *kMovePanePointerAction = @"kMovePanePointerAction";
 NSString *kSendEscapeSequencePointerAction = @"kSendEscapeSequencePointerAction";
 NSString *kSendHexCodePointerAction = @"kSendHexCodePointerAction";
 NSString *kSendTextPointerAction = @"kSendTextPointerAction";
+NSString *kInvokeScriptFunction = @"kInvokeScriptFunction";
 NSString *kSelectPaneLeftPointerAction = @"kSelectPaneLeftPointerAction";
 NSString *kSelectPaneRightPointerAction = @"kSelectPaneRightPointerAction";
 NSString *kSelectPaneAbovePointerAction = @"kSelectPaneAbovePointerAction";
@@ -74,6 +78,8 @@ NSString *kSelectNextPanePointerAction = @"kSelectNextPanePointerAction";
 NSString *kSelectPreviousPanePointerAction = @"kSelectPreviousPanePointerAction";
 NSString *kExtendSelectionPointerAction = @"kExtendSelectionPointerAction";
 NSString *kQuickLookAction = @"kQuickLookAction";
+NSString *kIgnoreAction = @"kIgnoreAction";
+NSString *kSelectMenuItemPointerAction = @"kSelectMenuItemPointerAction";
 
 typedef enum {
     kNoArg,
@@ -81,7 +87,9 @@ typedef enum {
     kHexCodeArg,
     kTextArg,
     kProfileArg,
-    kAdvancedPasteArg
+    kAdvancedPasteArg,
+    kMenuItemArg,
+    kScriptFunctionArg
 } ArgumentType;
 
 @interface NSString (PointerPrefsController)
@@ -148,10 +156,16 @@ typedef enum {
     IBOutlet NSButton *remove_;
     iTermPasteSpecialViewController *_pasteSpecialViewController;
     IBOutlet NSView *_pasteSpecialViewContainer;
+
+    IBOutlet iTermMenuItemPopupView *_menuItemPopupView;
+
+    iTermFunctionCallTextFieldDelegate *_invocationDelegate;
+
     NSRect _initialFrame;
     NSRect _initialPasteContainerFrame;
 
     NSString *origKey_;
+    int version_;
 }
 
 - (void)dealloc {
@@ -159,8 +173,7 @@ typedef enum {
     tableView_.dataSource = nil;
 }
 
-+ (NSDictionary *)dictForAction:(NSString *)action
-{
++ (NSDictionary *)dictForAction:(NSString *)action {
     return [NSDictionary dictionaryWithObject:action forKey:kActionKey];
 }
 
@@ -390,6 +403,8 @@ typedef enum {
 + (NSDictionary *)localizedActionMap
 {
     NSDictionary *names = [NSDictionary dictionaryWithObjectsAndKeys:
+                           @"Ignore", kIgnoreAction,
+                           @"Invoke Script Function…", kInvokeScriptFunction,
                            @"Paste from Clipboard…", kPasteFromClipboardPointerAction,
                            @"Paste from Selection…", kPasteFromSelectionPointerAction,
                            @"Extend Selection", kExtendSelectionPointerAction,
@@ -416,6 +431,7 @@ typedef enum {
                            @"New Vertical Split With Profile…", kNewVerticalSplitWithProfilePointerAction,
                            @"New Horizontal Split With Profile…", kNewHorizontalSplitWithProfilePointerAction,
                            @"QuickLook", kQuickLookAction,
+                           @"Select Menu Item", kSelectMenuItemPointerAction,
                            @"Select Next Pane", kSelectNextPanePointerAction,
                            @"Select Previous Pane", kSelectPreviousPanePointerAction,
                            nil];
@@ -428,12 +444,14 @@ typedef enum {
                           @(kEscPlusArg), kSendEscapeSequencePointerAction,
                           @(kHexCodeArg), kSendHexCodePointerAction,
                           @(kTextArg), kSendTextPointerAction,
+                          @(kScriptFunctionArg), kInvokeScriptFunction,
                           @(kProfileArg), kNewWindowWithProfilePointerAction,
                           @(kProfileArg), kNewTabWithProfilePointerAction,
                           @(kProfileArg), kNewVerticalSplitWithProfilePointerAction,
                           @(kProfileArg), kNewHorizontalSplitWithProfilePointerAction,
                           @(kAdvancedPasteArg), kPasteFromClipboardPointerAction,
                           @(kAdvancedPasteArg), kPasteFromSelectionPointerAction,
+                          @(kMenuItemArg), kSelectMenuItemPointerAction,
                           nil];
     NSNumber *n = [args objectForKey:action];
     if (n) {
@@ -457,8 +475,7 @@ typedef enum {
     return name;
 }
 
-+ (NSString *)formattedLocalizedActionForDict:(NSDictionary *)dict
-{
++ (NSString *)formattedLocalizedActionForDict:(NSDictionary *)dict {
     NSDictionary *names = [PointerPrefsController localizedActionMap];
     NSString *action = [dict objectForKey:kActionKey];
     NSString *argument = [dict objectForKey:kArgumentKey];
@@ -478,6 +495,7 @@ typedef enum {
                                                        withString:[NSString stringWithFormat:@" Esc + %@", argument]];
             case kHexCodeArg:
             case kTextArg:
+            case kScriptFunctionArg:
                 return [name stringByReplacingOccurrencesOfString:@"…"
                                                        withString:[NSString stringWithFormat:@" \"%@\"", argument]];
             case kProfileArg: {
@@ -490,10 +508,19 @@ typedef enum {
             }
             case kAdvancedPasteArg: {
                 if (argument.length) {
-                    name = [NSString stringWithFormat:@"%@: %@",
+                    return [NSString stringWithFormat:@"%@: %@",
                             [name stringByReplacingOccurrencesOfString:@"…" withString:@""],
                             [iTermPasteSpecialViewController descriptionForCodedSettings:argument]];
                 }
+                break;
+            }
+            case kMenuItemArg: {
+                NSArray *parts = [argument componentsSeparatedByString:@"\n"];
+                NSString *title = parts.firstObject;
+                if (!title.length) {
+                    break;
+                }
+                return [NSString stringWithFormat:@"Select Menu Item “%@”", title];
             }
         }
     }
@@ -629,14 +656,24 @@ typedef enum {
 
 + (NSString *)argumentWithButton:(int)buttonNumber
                        numClicks:(int)numClicks
-                       modifiers:(int)modMask
-{
+                       modifiers:(int)modMask {
     NSString *key = [PointerPrefsController keyForButton:buttonNumber
                                                   clicks:numClicks
                                                modifiers:modMask];
     NSDictionary *settings = [PointerPrefsController settings];
     NSDictionary *setting = [settings objectForKey:key];
     return [setting objectForKey:kArgumentKey];
+}
+
++ (BOOL)useCompatibilityEscapingWithButton:(int)buttonNumber
+                                 numClicks:(int)numClicks
+                                 modifiers:(int)modMask {
+    NSString *key = [PointerPrefsController keyForButton:buttonNumber
+                                                  clicks:numClicks
+                                               modifiers:modMask];
+    NSDictionary *settings = [PointerPrefsController settings];
+    NSDictionary *setting = [settings objectForKey:key];
+    return [[setting objectForKey:kVersionKey] intValue] == 0;
 }
 
 + (NSString *)actionWithButton:(int)buttonNumber
@@ -677,9 +714,19 @@ typedef enum {
     return [PointerPrefsController argumentForGesture:gesture modifiers:modMask];
 }
 
++ (BOOL)useCompatibilityEscapingForTapWithTouches:(int)numTouches
+                                        modifiers:(int)modMask {
+    NSString *gesture = @"";
+    if (numTouches == 3) {
+        gesture = kThreeFingerClickGesture;
+    } else {
+        return NO;
+    }
+    return [PointerPrefsController useCompatibilityEscapingForGesture:gesture modifiers:modMask];
+}
+
 + (NSString *)actionForGesture:(NSString *)gesture
-                     modifiers:(int)modMask
-{
+                     modifiers:(int)modMask {
     NSString *key;
     key = [PointerPrefsController keyForGesture:gesture
                                       modifiers:modMask];
@@ -689,15 +736,35 @@ typedef enum {
     return [setting objectForKey:kActionKey];
 }
 
++ (BOOL)useCompatibilityEscapingForGesture:(NSString *)gesture
+                                 modifiers:(int)modMask {
+    NSString *key;
+    key = [PointerPrefsController keyForGesture:gesture
+                                      modifiers:modMask];
+    DLog(@"Look up use compatibility escaping for gesture %@", key);
+    NSDictionary *settings = [PointerPrefsController settings];
+    NSDictionary *setting = [settings objectForKey:key];
+    return [[setting objectForKey:kVersionKey] intValue] == 0;
+}
+
 + (NSString *)argumentForGesture:(NSString *)gesture
-                       modifiers:(int)modMask
-{
+                       modifiers:(int)modMask {
     NSString *key;
     key = [PointerPrefsController keyForGesture:gesture
                                       modifiers:modMask];
     NSDictionary *settings = [PointerPrefsController settings];
     NSDictionary *setting = [settings objectForKey:key];
     return [setting objectForKey:kArgumentKey];
+}
+
++ (BOOL)compatibilityEscapingForGesture:(NSString *)gesture
+                              modifiers:(NSEventModifierFlags)modMask {
+    NSString *key;
+    key = [PointerPrefsController keyForGesture:gesture
+                                      modifiers:modMask];
+    NSDictionary *settings = [PointerPrefsController settings];
+    NSDictionary *setting = [settings objectForKey:key];
+    return [[setting objectForKey:kVersionKey] intValue] == 0;
 }
 
 + (BOOL)haveThreeFingerTapEvents
@@ -737,10 +804,10 @@ typedef enum {
 
 - (void)setModifierButtons:(int)modMask
 {
-    [editModifiersCommand_ setState:(modMask & NSEventModifierFlagCommand) ? NSOnState : NSOffState];
-    [editModifiersOption_ setState:(modMask & NSEventModifierFlagOption) ? NSOnState : NSOffState];
-    [editModifiersShift_ setState:(modMask & NSEventModifierFlagShift) ? NSOnState : NSOffState];
-    [editModifiersControl_ setState:(modMask & NSEventModifierFlagControl) ? NSOnState : NSOffState];
+    [editModifiersCommand_ setState:(modMask & NSEventModifierFlagCommand) ? NSControlStateValueOn : NSControlStateValueOff];
+    [editModifiersOption_ setState:(modMask & NSEventModifierFlagOption) ? NSControlStateValueOn : NSControlStateValueOff];
+    [editModifiersShift_ setState:(modMask & NSEventModifierFlagShift) ? NSControlStateValueOn : NSControlStateValueOff];
+    [editModifiersControl_ setState:(modMask & NSEventModifierFlagControl) ? NSControlStateValueOn : NSControlStateValueOff];
 }
 
 - (void)setButtonNumber:(int)buttonNumber clickCount:(int)clickCount modifiers:(int)modMask
@@ -813,6 +880,11 @@ typedef enum {
     return [setting objectForKey:kArgumentKey];
 }
 
++ (BOOL)useCompatibilityEscapingForKey:(NSString *)key {
+    NSDictionary *setting = [[PointerPrefsController settings] objectForKey:key];
+    return [[setting objectForKey:kVersionKey] intValue] == 0;
+}
+
 - (void)updateArgumentFieldsForAction:(NSString *)actionIdent argument:(NSString *)currentArg
 {
     if (NSEqualRects(NSZeroRect, _initialFrame)) {
@@ -828,6 +900,7 @@ typedef enum {
             [editArgumentLabel_ setHidden:YES];
             [editArgumentField_ setHidden:YES];
             [editArgumentButton_ setHidden:YES];
+            _menuItemPopupView.hidden = YES;
             _pasteSpecialViewContainer.hidden = YES;
             break;
 
@@ -836,12 +909,14 @@ typedef enum {
             [editArgumentField_ setHidden:NO];
             [editArgumentField_ setEnabled:YES];
             [editArgumentButton_ setHidden:YES];
+            _menuItemPopupView.hidden = YES;
             [editArgumentLabel_ setStringValue:@"Esc +"];
             [[editArgumentField_ cell] setPlaceholderString:@"characters to send"];
             [editArgumentField_ setStringValue:currentArg];
             [editArgumentField_ setRefusesFirstResponder:NO];
             [editArgumentField_ setSelectable:YES];
             _pasteSpecialViewContainer.hidden = YES;
+            editArgumentField_.delegate = nil;
             break;
 
         case kHexCodeArg:
@@ -849,10 +924,12 @@ typedef enum {
             [editArgumentField_ setHidden:NO];
             [editArgumentField_ setEnabled:YES];
             [editArgumentButton_ setHidden:YES];
+            _menuItemPopupView.hidden = YES;
             [editArgumentLabel_ setStringValue:@"Hex codes:"];
             [[editArgumentField_ cell] setPlaceholderString:@"ex: 0x7f 0x20"];
             [editArgumentField_ setStringValue:currentArg];
             _pasteSpecialViewContainer.hidden = YES;
+            editArgumentField_.delegate = nil;
             break;
 
         case kTextArg:
@@ -860,16 +937,35 @@ typedef enum {
             [editArgumentField_ setHidden:NO];
             [editArgumentField_ setEnabled:YES];
             [editArgumentButton_ setHidden:YES];
+            _menuItemPopupView.hidden = YES;
             [editArgumentLabel_ setStringValue:@"Text:"];
             [[editArgumentField_ cell] setPlaceholderString:@"Enter value to send"];
             [editArgumentField_ setStringValue:currentArg];
             _pasteSpecialViewContainer.hidden = YES;
+            editArgumentField_.delegate = nil;
+            break;
+
+        case kScriptFunctionArg:
+            [editArgumentLabel_ setHidden:NO];
+            [editArgumentField_ setHidden:NO];
+            [editArgumentField_ setEnabled:YES];
+            [editArgumentButton_ setHidden:YES];
+            _menuItemPopupView.hidden = YES;
+            [editArgumentLabel_ setStringValue:@"Text:"];
+            [[editArgumentField_ cell] setPlaceholderString:@"Enter function invocation"];
+            [editArgumentField_ setStringValue:currentArg];
+            _pasteSpecialViewContainer.hidden = YES;
+            _invocationDelegate = [[iTermFunctionCallTextFieldDelegate alloc] initWithPathSource:[iTermVariableHistory pathSourceForContext:iTermVariablesSuggestionContextSession]
+                                                                                     passthrough:nil
+                                                                                   functionsOnly:YES];
+            editArgumentField_.delegate = _invocationDelegate;
             break;
 
         case kProfileArg:
             [editArgumentLabel_ setHidden:NO];
             [editArgumentField_ setHidden:YES];
             [editArgumentButton_ setHidden:NO];
+            _menuItemPopupView.hidden = YES;
             [editArgumentLabel_ setStringValue:@"Profile:"];
             [editArgumentButton_ populateWithProfilesSelectingGuid:currentArg];
             _pasteSpecialViewContainer.hidden = YES;
@@ -880,8 +976,24 @@ typedef enum {
             editArgumentField_.hidden = YES;
             editArgumentButton_.hidden = YES;
             _pasteSpecialViewContainer.hidden = NO;
+            _menuItemPopupView.hidden = YES;
             [self configurePasteSpecialWithArgument:currentArg];
             break;
+
+        case kMenuItemArg: {
+            editArgumentLabel_.hidden = YES;
+            editArgumentField_.hidden = YES;
+            editArgumentButton_.hidden = YES;
+            _pasteSpecialViewContainer.hidden = YES;
+            _menuItemPopupView.hidden = NO;
+            [_menuItemPopupView reloadData];
+            NSArray<NSString *> *parts = [currentArg componentsSeparatedByString:@"\n"];
+            if (parts.count > 0) {
+                (void)[_menuItemPopupView selectItemWithIdentifier:parts.firstObject];
+            }
+            break;
+        }
+
     }
     [self updateWindowFrame];
 }
@@ -902,10 +1014,10 @@ typedef enum {
     NSString *currentArg = [PointerPrefsController argumentForKey:key];
     [self updateArgumentFieldsForAction:actionIdent argument:currentArg];
 
-    [editModifiersCommand_ setState:(modMask & NSEventModifierFlagCommand) ? NSOnState : NSOffState];
-    [editModifiersOption_ setState:(modMask & NSEventModifierFlagOption) ? NSOnState : NSOffState];
-    [editModifiersShift_ setState:(modMask & NSEventModifierFlagShift) ? NSOnState : NSOffState];
-    [editModifiersControl_ setState:(modMask & NSEventModifierFlagControl) ? NSOnState : NSOffState];
+    [editModifiersCommand_ setState:(modMask & NSEventModifierFlagCommand) ? NSControlStateValueOn : NSControlStateValueOff];
+    [editModifiersOption_ setState:(modMask & NSEventModifierFlagOption) ? NSControlStateValueOn : NSControlStateValueOff];
+    [editModifiersShift_ setState:(modMask & NSEventModifierFlagShift) ? NSControlStateValueOn : NSControlStateValueOff];
+    [editModifiersControl_ setState:(modMask & NSEventModifierFlagControl) ? NSControlStateValueOn : NSControlStateValueOff];
     [editAction_ selectItemWithTitle:localizedAction];
     BOOL isButton = !key || [PointerPrefsController keyIsButton:key];
     if (isButton) {
@@ -920,6 +1032,11 @@ typedef enum {
         [editClickType_ selectItem:nil];
     }
     origKey_ = key;
+    if (key) {
+        version_ = [PointerPrefsController useCompatibilityEscapingForKey:key] ? 0 : 1;
+    } else {
+        version_ = 1;
+    }
     [self buttonOrGestureChanged:nil];
     [ok_ setEnabled:[self okShouldBeEnabled]];
 }
@@ -957,10 +1074,10 @@ typedef enum {
         [editAction_ selectItemWithTitle:[PointerPrefsController localizedActionForDict:action]];
 
         int modflags = [PointerPrefsController modifiersForKey:key];
-        [editModifiersCommand_ setState:(modflags & NSEventModifierFlagCommand) ? NSOnState : NSOffState];
-        [editModifiersOption_ setState:(modflags & NSEventModifierFlagOption) ? NSOnState : NSOffState];
-        [editModifiersShift_ setState:(modflags & NSEventModifierFlagShift) ? NSOnState : NSOffState];
-        [editModifiersControl_ setState:(modflags & NSEventModifierFlagControl) ? NSOnState : NSOffState];
+        [editModifiersCommand_ setState:(modflags & NSEventModifierFlagCommand) ? NSControlStateValueOn : NSControlStateValueOff];
+        [editModifiersOption_ setState:(modflags & NSEventModifierFlagOption) ? NSControlStateValueOn : NSControlStateValueOff];
+        [editModifiersShift_ setState:(modflags & NSEventModifierFlagShift) ? NSControlStateValueOn : NSControlStateValueOff];
+        [editModifiersControl_ setState:(modflags & NSEventModifierFlagControl) ? NSControlStateValueOn : NSControlStateValueOff];
     }
     editButtonLabel_.labelEnabled = self.hasSelection;
     editModifiersLabel_.labelEnabled = self.hasSelection;
@@ -995,6 +1112,7 @@ typedef enum {
     NSString *theAction = [PointerPrefsController actionWithLocalizedName:[[editAction_ selectedItem] title]];
     NSMutableDictionary *newValue = [NSMutableDictionary dictionaryWithObject:theAction
                                                                        forKey:kActionKey];
+    newValue[kVersionKey] = @(version_);
     if (![editArgumentField_ isHidden]) {
         [newValue setObject:[editArgumentField_ stringValue]
                      forKey:kArgumentKey];
@@ -1016,19 +1134,21 @@ typedef enum {
             [newValue setObject:[_pasteSpecialViewController stringEncodedSettings] ?: @""
                          forKey:kArgumentKey];
         }
+    } else if (!_menuItemPopupView.isHidden) {
+        newValue[kArgumentKey] = [NSString stringWithFormat:@"%@\n%@", _menuItemPopupView.selectedIdentifier, _menuItemPopupView.selectedTitle];
     }
     NSString *newKey;
     int modMask = 0;
-    if ([editModifiersCommand_ state] == NSOnState) {
+    if ([editModifiersCommand_ state] == NSControlStateValueOn) {
         modMask |= NSEventModifierFlagCommand;
     }
-    if ([editModifiersOption_ state] == NSOnState) {
+    if ([editModifiersOption_ state] == NSControlStateValueOn) {
         modMask |= NSEventModifierFlagOption;
     }
-    if ([editModifiersShift_ state] == NSOnState) {
+    if ([editModifiersShift_ state] == NSControlStateValueOn) {
         modMask |= NSEventModifierFlagShift;
     }
-    if ([editModifiersControl_ state] == NSOnState) {
+    if ([editModifiersControl_ state] == NSControlStateValueOn) {
         modMask |= NSEventModifierFlagControl;
     }
     if ([editButton_ selectedTag] >= kMinGestureTag) {
@@ -1197,5 +1317,3 @@ typedef enum {
 }
 
 @end
-
-

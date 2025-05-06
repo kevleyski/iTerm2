@@ -16,13 +16,17 @@ Protocol to be observed by all style delegate objects.  These objects handle the
 @protocol PSMTabStyle <NSObject>
 
 @property(nonatomic, weak) PSMTabBarControl *tabBar;
+@property(nonatomic, readonly) NSAppearance *accessoryAppearance NS_AVAILABLE_MAC(10_14);
+@property(nonatomic, readonly) CGFloat edgeDragHeight;
+@property(nonatomic, readonly) BOOL supportsMultiLineLabels;
 
 // identity
 - (NSString *)name;
 
 // control specific parameters
 - (float)leftMarginForTabBarControl;
-- (float)rightMarginForTabBarControl;
+- (float)rightMarginForTabBarControlWithOverflow:(BOOL)withOverflow
+                                    addTabButton:(BOOL)withAddTabButton;
 - (float)topMarginForTabBarControl;
 
 // add tab button
@@ -41,12 +45,17 @@ Protocol to be observed by all style delegate objects.  These objects handle the
 
 // cell values
 - (NSAttributedString *)attributedObjectCountValueForTabCell:(PSMTabBarCell *)cell;
-- (NSAttributedString *)attributedStringValueForTabCell:(PSMTabBarCell *)cell;
+- (PSMCachedTitleInputs *)cachedTitleInputsForTabCell:(PSMTabBarCell *)cell;
+- (PSMCachedTitleInputs *)cachedSubtitleInputsForTabCell:(PSMTabBarCell *)cell;
 
 // drawing
 - (void)drawTabCell:(PSMTabBarCell *)cell highlightAmount:(CGFloat)highlightAmount;
 - (void)drawBackgroundInRect:(NSRect)rect color:(NSColor*)color horizontal:(BOOL)horizontal;
-- (void)drawTabBar:(PSMTabBarControl *)bar inRect:(NSRect)rect clipRect:(NSRect)clipRect horizontal:(BOOL)horizontal;
+- (void)drawTabBar:(PSMTabBarControl *)bar
+            inRect:(NSRect)rect
+          clipRect:(NSRect)clipRect
+        horizontal:(BOOL)horizontal
+      withOverflow:(BOOL)withOverflow;
 
 - (NSColor *)accessoryFillColor;
 - (NSColor *)accessoryStrokeColor;

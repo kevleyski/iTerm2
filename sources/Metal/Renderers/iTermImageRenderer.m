@@ -8,6 +8,7 @@
 #import "iTermImageRenderer.h"
 
 #import "iTermImageInfo.h"
+#import "iTermSharedImageStore.h"
 #import "iTermTexture.h"
 #import "NSArray+iTerm.h"
 #import "NSImage+iTerm.h"
@@ -76,13 +77,25 @@ static NSString *const iTermImageRendererTextureMetadataKeyImageMissing = @"iTer
             error:NULL];
 }
 
+- (void)removeTexturesExceptForColorSpace:(NSColorSpace *)colorSpaceTokeep {
+    NSMutableArray *keys = [NSMutableArray array];
+    NSString *csName = colorSpaceTokeep.localizedName;
+    for (NSDictionary *key in _textures) {
+        if (![key[@"cs"] isEqual:csName]) {
+            [keys addObject:key];
+        }
+    }
+    [_textures removeObjectsForKeys:keys];
+}
 
 - (void)addRun:(iTermMetalImageRun *)imageRun {
+    // Remove any textures for this run but different color spaces.
+    [self removeTexturesExceptForColorSpace:self.configuration.colorSpace];
     if (!_runs) {
         _runs = [NSMutableArray array];
     }
     [_runs addObject:imageRun];
-    id key = [self keyForRun:imageRun];
+    id key = [self keyForRun:imageRun colorSpace:self.configuration.colorSpace];
     id<MTLTexture> texture = _textures[key];
 
     // Check if the image got loaded asynchronously. This happens when decoding an image takes a while.
@@ -102,10 +115,9 @@ static NSString *const iTermImageRendererTextureMetadataKeyImageMissing = @"iTer
     [_counts addObject:key];
 }
 
-- (id)keyForRun:(iTermMetalImageRun *)run {
-    NSUInteger temp = run.code;
-    int frame = ([run.imageInfo frameForTimestamp:_timestamp] & 0xffff);
-    return @(temp << 16 | frame);
+- (id)keyForRun:(iTermMetalImageRun *)run colorSpace:(NSColorSpace *)colorSpace {
+    const int frame = ([run.imageInfo frameForTimestamp:_timestamp] & 0xffff);
+    return @{ @"code": @(run.code), @"frame": @(frame), @"cs": colorSpace.localizedName };
 }
 
 - (id<MTLTexture>)newTextureForImageRun:(iTermMetalImageRun *)run {
@@ -113,9 +125,10 @@ static NSString *const iTermImageRendererTextureMetadataKeyImageMissing = @"iTer
     const CGFloat scale = self.configuration.scale;
     cellSize.width /= scale;
     cellSize.height /= scale;
-    NSImage *image = [run.imageInfo imageWithCellSize:cellSize timestamp:_timestamp];
+    NSImage *image = [run.imageInfo imageWithCellSize:cellSize timestamp:_timestamp scale:scale];
     BOOL missing = NO;
     if (!image) {
+        DLog(@"Failed to get image. Use placeholder");
         if (!run.imageInfo) {
             image = [NSImage imageOfSize:CGSizeMake(1, 1) color:[NSColor brownColor]];
         } else {
@@ -125,12 +138,18 @@ static NSString *const iTermImageRendererTextureMetadataKeyImageMissing = @"iTer
     }
     if (run.imageInfo) {
         if (missing) {
+            DLog(@"record missing");
             [_missingImageUniqueIdentifiers addObject:run.imageInfo.uniqueIdentifier];
         } else {
+            DLog(@"record found");
             [_foundImageUniqueIdentifiers addObject:run.imageInfo.uniqueIdentifier];
         }
     }
-    id<MTLTexture> texture = [_cellRenderer textureFromImage:image context:self.poolContext];
+    NSImage *flipped = [image it_verticallyFlippedImage];
+    DLog(@"Make texture from %@ (original) -> %@ (flipped)", image, flipped);
+    id<MTLTexture> texture = [_cellRenderer textureFromImage:[iTermImageWrapper withImage:flipped]
+                                                     context:self.poolContext
+                                                  colorSpace:self.configuration.colorSpace];
     if (missing) {
         [iTermTexture setMetadataObject:@YES forKey:iTermImageRendererTextureMetadataKeyImageMissing onTexture:texture];
     }
@@ -139,25 +158,29 @@ static NSString *const iTermImageRendererTextureMetadataKeyImageMissing = @"iTer
 
 - (void)enumerateDraws:(void (^)(NSNumber *, id<MTLBuffer>, id<MTLTexture>))block {
     const CGSize cellSize = self.cellConfiguration.cellSize;
-    const CGPoint offset = CGPointMake(self.margins.left, self.margins.top);
+    const CGPoint offset = CGPointMake(self.margins.left, self.margins.bottom);
     const CGFloat height = self.configuration.viewportSize.y;
-    const CGFloat bottom = self.margins.top;
+    const CGFloat scale = self.configuration.scale;
 
     [_runs enumerateObjectsUsingBlock:^(iTermMetalImageRun * _Nonnull run, NSUInteger idx, BOOL * _Nonnull stop) {
-        id key = [self keyForRun:run];
+        id key = [self keyForRun:run colorSpace:self.configuration.colorSpace];
         id<MTLTexture> texture = self->_textures[key];
         const CGSize textureSize = CGSizeMake(texture.width, texture.height);
         NSSize chunkSize = NSMakeSize(textureSize.width / run.imageInfo.size.width,
                                       textureSize.height / run.imageInfo.size.height);
         const CGRect textureFrame = NSMakeRect((chunkSize.width * run.startingCoordInImage.x) / textureSize.width,
-                                               (textureSize.height - cellSize.height - chunkSize.height * run.startingCoordInImage.y) / textureSize.height,
+                                               (textureSize.height - chunkSize.height * (run.startingCoordInImage.y + 1)) / textureSize.height,
                                                (chunkSize.width * run.length) / textureSize.width,
                                                (chunkSize.height) / textureSize.height);
 
-        id<MTLBuffer> vertexBuffer = [self->_cellRenderer newQuadWithFrame:CGRectMake(run.startingCoordOnScreen.x * cellSize.width + offset.x,
-                                                                                      bottom + height - (run.startingCoordOnScreen.y * cellSize.height + offset.y + cellSize.height),
-                                                                                      run.length * cellSize.width,
-                                                                                      cellSize.height)
+        // This is done to match the point-based calculation in the legacy renderer.
+        const CGFloat spacing = round((self.cellConfiguration.cellSizeWithoutSpacing.height - cellSize.height) / (2.0 * scale)) * scale;
+        const CGRect destinationFrame = CGRectMake(run.startingCoordOnScreen.x * cellSize.width + offset.x,
+                                                   height - (run.startingCoordOnScreen.y + 1) * cellSize.height - offset.y - spacing,
+                                                   run.length * cellSize.width,
+                                                   cellSize.height);
+
+        id<MTLBuffer> vertexBuffer = [self->_cellRenderer newQuadWithFrame:destinationFrame
                                                               textureFrame:textureFrame
                                                                poolContext:self.poolContext];
 

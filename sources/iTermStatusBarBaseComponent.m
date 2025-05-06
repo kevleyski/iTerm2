@@ -31,6 +31,10 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
     // NOTE: If mutable state is added update copyWithZone:
 }
 
++ (BOOL)supportsSecureCoding {
+    return YES;
+}
+
 - (instancetype)initWithClass:(Class)theClass {
     self = [super init];
     if (self) {
@@ -54,7 +58,7 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
 
 - (id<iTermStatusBarComponent>)newComponentWithKnobs:(NSDictionary *)knobs
                                      layoutAlgorithm:(iTermStatusBarLayoutAlgorithmSetting)layoutAlgorithm
-                                               scope:(iTermVariableScope *)scope {
+                                               scope:(nullable iTermVariableScope *)scope {
     iTermStatusBarAdvancedConfiguration *advancedConfiguration = [[iTermStatusBarAdvancedConfiguration alloc] init];
     advancedConfiguration.layoutAlgorithm = layoutAlgorithm;
     return [[_class alloc] initWithConfiguration:@{iTermStatusBarComponentConfigurationKeyKnobValues: knobs,
@@ -115,8 +119,19 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
             NSStringFromClass([self class]), self, @(self.statusBarComponentPriority)];
 }
 
-- (NSString *)statusBarComponentIdentifier {
+- (void)statusBarComponentUpdateColors {
+}
+
+- (BOOL)statusBarComponentIsInternal {
+    return NO;
+}
+
++ (NSString *)statusBarComponentIdentifier {
     return [NSString stringWithFormat:@"com.iterm2.%@", NSStringFromClass(self.class)];
+}
+
+- (NSString *)statusBarComponentIdentifier {
+    return [self.class statusBarComponentIdentifier];
 }
 
 - (nullable NSImage *)statusBarComponentIcon {
@@ -151,12 +166,20 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
     return [self.configuration isEqual:otherBase.configuration];
 }
 
+- (BOOL)isEqualToComponentIgnoringConfiguration:(id<iTermStatusBarComponent>)component {
+    return component.class == self.class;
+}
+
 - (nullable NSColor *)statusBarTextColor {
     return nil;
 }
 
 - (NSColor *)statusBarBackgroundColor {
     return _advancedConfiguration.backgroundColor;
+}
+
+- (CGFloat)defaultMinimumWidth {
+    return 0;
 }
 
 - (NSArray<iTermStatusBarComponentKnob *> *)minMaxWidthKnobs {
@@ -170,7 +193,7 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
     [[iTermStatusBarComponentKnob alloc] initWithLabelText:@"Minimum Width:"
                                                       type:iTermStatusBarComponentKnobTypeDouble
                                                placeholder:@""
-                                              defaultValue:0
+                                              defaultValue:[@(self.defaultMinimumWidth) stringValue]
                                                        key:iTermStatusBarMinimumWidthKey];
     return @[minWidthKnob, maxWidthKnob];
 }
@@ -178,7 +201,7 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
 - (CGFloat)clampedWidth:(CGFloat)width {
     NSDictionary *knobValues = self.configuration[iTermStatusBarComponentConfigurationKeyKnobValues];
     CGFloat max = [knobValues[iTermStatusBarMaximumWidthKey] ?: @(INFINITY) doubleValue];
-    CGFloat min = [knobValues[iTermStatusBarMinimumWidthKey] ?: @0 doubleValue];
+    CGFloat min = [knobValues[iTermStatusBarMinimumWidthKey] ?: @(self.defaultMinimumWidth) doubleValue];
     return MIN(max,
                MAX(min,
                    width));
@@ -248,10 +271,30 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
 }
 
 - (void)statusBarComponentSetKnobValues:(NSDictionary *)knobValues {
-    _configuration = [_configuration dictionaryBySettingObject:knobValues
-                                                        forKey:iTermStatusBarComponentConfigurationKeyKnobValues];
+    NSMutableSet<NSString *> *keys = [NSMutableSet setWithArray:[knobValues allKeys]];
+    for (NSString *key in _configuration.allKeys) {
+        [keys addObject:key];
+    }
+    NSDictionary *replacement = [_configuration dictionaryBySettingObject:knobValues
+                                                                   forKey:iTermStatusBarComponentConfigurationKeyKnobValues];
+    NSMutableSet<NSString *> *updatedKeys = [NSMutableSet set];
+    NSDictionary *replacementKnobs = replacement[iTermStatusBarComponentConfigurationKeyKnobValues];
+    NSDictionary *originalKnobs = _configuration[iTermStatusBarComponentConfigurationKeyKnobValues];
+    for (NSString *key in keys) {
+        // The color picker tends to slightly perturb values during colorspace conversion so use
+        // a fuzzy comparison for floating point values.
+        if (![NSObject object:originalKnobs[key] isApproximatelyEqualToObject:replacementKnobs[key] epsilon:0.0001]) {
+            [updatedKeys addObject:key];
+        }
+    }
+    if ([_configuration isEqualToDictionary:replacement]) {
+        DLog(@"Configuration remains unchanged.");
+        return;
+    }
+    _configuration = replacement;
     [self statusBarComponentUpdate];
-    [self.delegate statusBarComponentKnobsDidChange:self];
+    [self.delegate statusBarComponentKnobsDidChange:self
+                                        updatedKeys:updatedKeys];
 }
 
 - (NSDictionary *)statusBarComponentKnobValues {
@@ -283,7 +326,16 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
     return MAX(0.01, value.doubleValue);
 }
 
+- (CGFloat)statusBarComponentMaximumWidth {
+    NSNumber *value = self.configuration[iTermStatusBarComponentConfigurationKeyKnobValues][iTermStatusBarMaximumWidthKey] ?: @(INFINITY);
+    return MAX(24, value.doubleValue);
+}
+
 - (nullable NSViewController<iTermFindViewController> *)statusBarComponentSearchViewController {
+    return nil;
+}
+
+- (nullable NSViewController<iTermFilterViewController> *)statusBarComponentFilterViewController {
     return nil;
 }
 
@@ -314,7 +366,7 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
     NSViewController *viewController = [[iTermWebViewWrapperViewController alloc] initWithWebView:webView
                                                                                         backupURL:nil];
     popover.contentViewController = viewController;
-    popover.contentSize = viewController.view.frame.size;
+    popover.contentSize = size;
     NSView *view = self.statusBarComponentView;
     popover.behavior = NSPopoverBehaviorSemitransient;
     popover.delegate = self;
@@ -336,15 +388,20 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
     return NO;
 }
 
+- (BOOL)statusBarComponentIsEmpty {
+    return NO;
+}
+
 - (void)statusBarComponentDidClickWithView:(NSView *)view {
-    // You should have overridden this.
-    assert(NO);
 }
 
 - (void)statusBarComponentMouseDownWithView:(NSView *)view {
-    // You should have overridden this.
-    assert(NO);
 }
+
+- (BOOL)statusBarComponentHandlesMouseDown {
+    return NO;
+}
+
 - (void)statusBarComponentDidMoveToWindow {
 }
 
@@ -384,6 +441,10 @@ const double iTermStatusBarBaseComponentDefaultPriority = 5;
 
 - (void)itermWebViewWillExecuteJavascript:(NSString *)javascript {
     XLog(@"Unexpected javascript execution: %@", javascript);
+}
+
+- (BOOL)itermWebViewShouldAllowInvocation {
+    return YES;
 }
 
 @end

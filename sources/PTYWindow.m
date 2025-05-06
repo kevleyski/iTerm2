@@ -27,17 +27,25 @@
 #import "iTermAdvancedSettingsModel.h"
 #import "iTermApplicationDelegate.h"
 #import "iTermController.h"
+#import "iTermSelectorSwizzler.h"
 #import "iTermWindowOcclusionChangeMonitor.h"
 #import "iTermPreferences.h"
+#import "iTermSessionLauncher.h"
 #import "NSArray+iTerm.h"
 #import "PTYWindow.h"
 #import "objc/runtime.h"
 
 NSString *const kTerminalWindowStateRestorationWindowArrangementKey = @"ptyarrangement";
+NSString *const iTermWindowDocumentedEditedDidChange = @"iTermWindowDocumentedEditedDidChange";
+
 const NSTimeInterval iTermWindowTitleChangeMinimumInterval = 0.1;
 
 @interface NSView (PrivateTitleBarMethods)
 - (NSView *)titlebarContainerView;
+@end
+
+@interface NSObject(PrivateNSTitlebarContainerView)
+- (void)_updateDividerLayerForController:(id)controller animated:(BOOL)animated;
 @end
 
 // Insane hacks inspired by Chrome.
@@ -47,6 +55,10 @@ const NSTimeInterval iTermWindowTitleChangeMinimumInterval = 0.1;
 
 @interface NSWindow (PrivateAPI)
 + (Class)frameViewClassForStyleMask:(NSUInteger)windowStyle;
+- (void)_moveToScreen:(id)sender;
+- (void)_resizeFromWindowManagerWithTargetGeometry:(id)geometry
+                                    springSettings:(id)springSettings
+                                        completion:(id)completion NS_AVAILABLE_MAC(15_0);
 @end
 
 @interface NSFrameView : NSView
@@ -71,12 +83,18 @@ const NSTimeInterval iTermWindowTitleChangeMinimumInterval = 0.1;
 
 // Height of built-in titlebar to create.
 - (CGFloat)_titlebarHeight {
-    if ([self.window.ptyWindow.ptyDelegate ptyWindowFullScreen]) {
-        if ([[[self class] superclass] instancesRespondToSelector:_cmd]) {
-            return [super _titlebarHeight];
-        }
+    switch ([self.window.ptyWindow.ptyDelegate ptyWindowTitleBarFlavor]) {
+        case PTYWindowTitleBarFlavorDefault:
+            if ([[[self class] superclass] instancesRespondToSelector:_cmd]) {
+                return [super _titlebarHeight];
+            }
+            return 1;
+        case PTYWindowTitleBarFlavorOnePoint:
+            return 1;
+        case PTYWindowTitleBarFlavorZeroPoints:
+            return 0;
     }
-    return 1;
+    assert(NO);
 }
 
 @end

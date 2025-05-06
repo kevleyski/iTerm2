@@ -25,20 +25,23 @@ NS_ASSUME_NONNULL_BEGIN
 // set of variables except one (that of the most local scope) must have a name.
 // Variables are searched for one matching the name. You could get and set variables through
 // this object. If you want to get called back when a value changes, use iTermVariableReference.
-@interface iTermVariableScope : NSObject<NSCopying>
+@interface iTermVariableScope : NSObject<NSCopying, iTermVariableVendor>
+
 @property (nonatomic, readonly) NSDictionary<NSString *, NSString *> *dictionaryWithStringValues;
 @property (nonatomic) BOOL neverReturnNil;
+@property (nonatomic, readonly) BOOL usePlaceholders;
 @property (nonatomic, readonly) NSArray<iTermTuple<NSString *, iTermVariables *> *> *frames;
 
 - (iTermVariableRecordingScope *)recordingCopy;
 
 - (void)addVariables:(iTermVariables *)variables toScopeNamed:(nullable NSString *)scopeName;
+- (void)removeFrameWithName:(NSString *)name;
 - (id)valueForVariableName:(NSString *)name;
 - (id)valueForPath:(NSString *)firstName, ... NS_REQUIRES_NIL_TERMINATION;
 
 - (NSString *)stringValueForVariableName:(NSString *)name;
 // Values of NSNull get unset
-- (BOOL)setValuesFromDictionary:(NSDictionary<NSString *, id> *)dict;
+- (void)setValuesFromDictionary:(NSDictionary<NSString *, id> *)dict;
 
 // nil or NSNull value means unset it.
 // Returns whether it was set. If the value is unchanged, it does not get set.
@@ -61,6 +64,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (iTermVariableDesignator *)designatorForPath:(NSString *)path;
 
+- (iTermVariableScope *)variableScopeByAddingBackreferences:(NSArray<NSString *> *)backreferences
+                                                      owner:(id<iTermObject>)owner;
+- (BOOL)userWritableContainerExistsForPath:(NSString *)path;
+
 @end
 
 // A scope that remembers which variables were referred to.
@@ -70,6 +77,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithScope:(iTermVariableScope *)scope NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
+@end
+
+// A scope that causes parsed expressions to record variable references rather than expand them to
+// values.
+@interface iTermVariablePlaceholderScope : iTermVariableScope
 @end
 
 NS_ASSUME_NONNULL_END

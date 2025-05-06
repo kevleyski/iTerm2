@@ -31,7 +31,8 @@
             [self class], self, NSStringFromRect(self.frame), @(self.isHidden), @(self.alphaValue)];
 }
 
-- (void)drawRect:(NSRect)dirtyRect {
+- (void)drawRect:(NSRect)insaneRect {
+    const NSRect dirtyRect = NSIntersectionRect(insaneRect, self.bounds);
     [_color setFill];
     NSRectFill(dirtyRect);
     [super drawRect:dirtyRect];
@@ -62,7 +63,7 @@
 - (instancetype)initWithFrame:(NSRect)frame color:(NSColor *)color {
     self = [self initWithFrame:frame];
     if (self) {
-        _color = [color retain];
+        self.color = [color retain];
     }
     return self;
 }
@@ -97,6 +98,16 @@
     [_color autorelease];
     _color = [color retain];
     self.layer.backgroundColor = [color CGColor];
+}
+
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    self.layer.backgroundColor = [_color CGColor];
+}
+
+- (void)updateLayer {
+    [super updateLayer];
+    self.layer.backgroundColor = [_color CGColor];
 }
 
 - (BOOL)isFlipped {

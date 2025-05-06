@@ -32,7 +32,7 @@
 - (NSString *)description {
   static int indent;
   indent += 2;
-  NSString *result = [NSString stringWithFormat:@"<%@: %p key=%@ data=%@\n%@left=%@\n%@right=%@>",
+  NSString *result = [NSString stringWithFormat:@"<%@: %p key=%@ data=%@\n%@left=%p\n%@right=%p>",
                       self.class, self, self.key, self.data, [self spaces:indent], self.left, [self spaces:indent], self.right];
   indent -= 2;
   return result;
@@ -68,6 +68,67 @@
 	if (left) [left printWithIndent:(indent+1)];
 }
 
+- (NSString *)stringWithIndent:(int)indent
+                 dataFormatter:(NSString *(^NS_NOESCAPE)(NSString *, id data))dataFormatter {
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+
+    if (right) {
+        NSString *s = [right stringWithIndent:(indent+1) dataFormatter:dataFormatter];
+        if (s.length) {
+            [parts addObject:s];
+        }
+    }
+
+    NSMutableString *pre = [[NSMutableString alloc] init];
+    for (int i=0; i<indent; i++) {
+        [pre appendString:@"   "];
+    }
+    [parts addObject:[NSString stringWithFormat:@"%@%@- (%i)\n%@", pre, key, level, dataFormatter([pre stringByAppendingString:@" |-"], data)]];
+    [pre release];
+
+    if (left) {
+        NSString *s = [left stringWithIndent:(indent+1) dataFormatter:dataFormatter];
+        if (s.length) {
+            [parts addObject:s];
+        }
+    }
+    return [parts componentsJoinedByString:@"\n"];
+}
+
+#if DEBUG
+- (void)setLeft:(AATreeNode *)newValue {
+    @synchronized (self) {
+        if ((newValue || self.right) && newValue == self.right) {
+            NSLog(@"Setting left equal to right");
+        }
+        [left autorelease];
+        left = [newValue retain];
+    }
+}
+
+- (AATreeNode *)left {
+    @synchronized (self) {
+        return left;
+    }
+}
+
+- (void)setRight:(AATreeNode *)newValue {
+    @synchronized (self) {
+        if ((newValue || self.left) && newValue == self.left) {
+            NSLog(@"Setting right equal to left");
+        }
+
+        [right autorelease];
+        right = [newValue retain];
+    }
+}
+
+- (AATreeNode *)right {
+    @synchronized (self) {
+        return right;
+    }
+}
+#endif
 
 - (void) dealloc
 {

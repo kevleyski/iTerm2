@@ -8,10 +8,12 @@
 #import "HighlightTrigger.h"
 #import "NSColor+iTerm.h"
 #import "NSDictionary+iTerm.h"
-#import "PTYSession.h"
-#import "PTYTab.h"
-#import "PseudoTerminal.h"
-#import "VT100Screen.h"
+#import "NSImage+iTerm.h"
+#import "ScreenChar.h"
+
+NSString * const kHighlightForegroundColor = @"kHighlightForegroundColor";
+NSString * const kHighlightBackgroundColor = @"kHighlightBackgroundColor";
+
 
 // Preserve these values - they are the tags and are saved in preferences.
 enum {
@@ -57,11 +59,16 @@ enum {
 
 };
 
-@implementation HighlightTrigger
+@implementation HighlightTrigger {
+    NSDictionary *_cachedColors;
+}
 
-+ (NSString *)title
-{
++ (NSString *)title {
     return @"Highlight Text…";
+}
+
+- (NSString *)description {
+    return [NSString stringWithFormat:@"Highlight text %@ over %@", self.textColor.humanReadableDescription ?: @"(no color)", self.backgroundColor.humanReadableDescription ?: @"(no color))"];
 }
 
 - (NSString *)triggerOptionalParameterPlaceholderWithInterpolation:(BOOL)interpolation {
@@ -81,8 +88,17 @@ enum {
     return YES;
 }
 
-- (NSDictionary *)menuItemsForPoupupButton
-{
+- (BOOL)isIdempotent {
+    return YES;
+}
+
+- (void)sanitize {
+    NSDictionary *colors = [self colorsPreservingColorSpace:YES];
+    self.textColor = colors[kHighlightForegroundColor];
+    self.backgroundColor = colors[kHighlightBackgroundColor];
+}
+
+- (NSDictionary *)menuItemsForPoupupButton {
     return [NSDictionary dictionaryWithObjectsAndKeys:
             @"Yellow on Black", [NSNumber numberWithInt:(int)kYellowOnBlackHighlight],
             @"Black on Yellow", [NSNumber numberWithInt:(int)kBlackOnYellowHighlight],
@@ -173,6 +189,10 @@ enum {
     return [NSArray arrayWithObjects:fgbg, fg, bg, nil];
 }
 
+- (BOOL)instantTriggerCanFireMultipleTimesPerLine {
+    return YES;
+}
+
 - (NSInteger)indexForObject:(id)object {
     int i = 0;
     BOOL isFirst = YES;
@@ -210,18 +230,15 @@ enum {
 }
 
 - (NSDictionary *)dictionaryWithForegroundColor:(NSColor *)foreground
-                                backgroundColor:(NSColor *)background
-{
+                                backgroundColor:(NSColor *)background {
     return [NSDictionary dictionaryWithObjectsAndKeys:foreground, kHighlightForegroundColor, background, kHighlightBackgroundColor, nil];
 }
 
-- (NSDictionary *)dictionaryWithForegroundColor:(NSColor *)foreground
-{
+- (NSDictionary *)dictionaryWithForegroundColor:(NSColor *)foreground {
     return [NSDictionary dictionaryWithObjectsAndKeys:foreground, kHighlightForegroundColor, nil];
 }
 
-- (NSDictionary *)dictionaryWithBackgroundColor:(NSColor *)background
-{
+- (NSDictionary *)dictionaryWithBackgroundColor:(NSColor *)background {
     return [NSDictionary dictionaryWithObjectsAndKeys:background, kHighlightBackgroundColor, nil];
 }
 
@@ -231,38 +248,43 @@ enum {
 
 - (NSString *)stringForTextColor:(NSColor *)textColor backgroundColor:(NSColor *)backgroundColor {
     return [NSString stringWithFormat:@"{%@,%@}",
-            textColor.stringValue ?: @"",
-            backgroundColor.stringValue ?: @""];
+            textColor.hexStringPreservingColorSpace ?: @"",
+            backgroundColor.hexStringPreservingColorSpace ?: @""];
 }
 
 - (NSColor *)textColor {
-    NSDictionary *colors = [self colors];
+    NSDictionary *colors = [self colorsPreservingColorSpace:NO];
     return colors[kHighlightForegroundColor];
 }
 
 - (NSColor *)backgroundColor {
-    NSDictionary *colors = [self colors];
+    NSDictionary *colors = [self colorsPreservingColorSpace:NO];
     return colors[kHighlightBackgroundColor];
 }
 
 - (void)setTextColor:(NSColor *)textColor {
     [super setTextColor:textColor];
-    NSMutableArray *temp = [[[self stringsForColors] mutableCopy] autorelease];
-    temp[0] = textColor ? textColor.stringValue: @"";
+    NSMutableArray *temp = [[self stringsForColors] mutableCopy];
+    temp[0] = textColor ? textColor.hexStringPreservingColorSpace: @"";
     self.param = [NSString stringWithFormat:@"{%@,%@}", temp[0], temp[1]];
 }
 
 - (void)setBackgroundColor:(NSColor *)backgroundColor {
     [super setBackgroundColor:backgroundColor];
-    NSMutableArray *temp = [[[self stringsForColors] mutableCopy] autorelease];
-    temp[1] = backgroundColor ? backgroundColor.stringValue: @"";
+    NSMutableArray *temp = [[self stringsForColors] mutableCopy];
+    temp[1] = backgroundColor ? backgroundColor.hexStringPreservingColorSpace: @"";
     self.param = [NSString stringWithFormat:@"{%@,%@}", temp[0], temp[1]];
 }
 
+- (void)setParam:(id)param {
+    _cachedColors = nil;
+    [super setParam:param];
+}
+
 // Returns a string of the form {text components,background components} from self.param.
-- (NSArray *)stringsForColors {
+- (NSArray<NSString *> *)stringsForColors {
     if (self.param == nil) {
-        return @[ [[NSColor whiteColor] stringValue], [[NSColor redColor] stringValue] ];
+        return @[ [[NSColor whiteColor] hexString], [[NSColor redColor] hexString] ];
     }
     if ([self.param isKindOfClass:[NSString class]] &&
         [self.param hasPrefix:@"{"] && [self.param hasSuffix:@"}"]) {
@@ -280,22 +302,30 @@ enum {
         NSDictionary *dict = [self colorDictionaryForInteger:numberParam.intValue];
         NSColor *text = dict[kHighlightForegroundColor];
         NSColor *background = dict[kHighlightBackgroundColor];
-        return @[ text ? text.stringValue : @"",
-                  background ? background.stringValue : @"" ];
+        return @[ text ? text.hexString : @"",
+                  background ? background.hexString : @"" ];
     }
 
     return @[ @"", @"" ];
 }
 
 // Returns a dictionary with text and background color from the self.param string.
-- (NSDictionary *)colors {
+- (NSDictionary<NSString *, NSColor *> *)colorsPreservingColorSpace:(BOOL)preserveColorSpace {
+    if (_cachedColors) {
+        return _cachedColors;
+    }
     NSArray *parts = [self stringsForColors];
-    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSColor *> *dict = [NSMutableDictionary dictionary];
     NSColor *textColor = nil;
     NSColor *backgroundColor = nil;
     if (parts.count == 2) {
-        textColor = [NSColor colorWithString:parts[0]];
-        backgroundColor = [NSColor colorWithString:parts[1]];
+        if (preserveColorSpace) {
+            textColor = [NSColor colorPreservingColorspaceFromString:parts[0]];
+            backgroundColor = [NSColor colorPreservingColorspaceFromString:parts[1]];
+        } else {
+            textColor = [NSColor colorWithString:parts[0]];
+            backgroundColor = [NSColor colorWithString:parts[1]];
+        }
     }
     if (textColor) {
         dict[kHighlightForegroundColor] = textColor;
@@ -303,6 +333,7 @@ enum {
     if (backgroundColor) {
         dict[kHighlightBackgroundColor] = backgroundColor;
     }
+    _cachedColors = [dict copy];
     return dict;
 }
 
@@ -419,20 +450,51 @@ enum {
     return nil;
 }
 
-- (BOOL)performActionWithCapturedStrings:(NSString *const *)capturedStrings
+- (BOOL)performActionWithCapturedStrings:(NSArray<NSString *> *)stringArray
                           capturedRanges:(const NSRange *)capturedRanges
-                            captureCount:(NSInteger)captureCount
-                               inSession:(PTYSession *)aSession
+                               inSession:(id<iTermTriggerSession>)aSession
                                 onString:(iTermStringLine *)stringLine
                     atAbsoluteLineNumber:(long long)lineNumber
                         useInterpolation:(BOOL)useInterpolation
                                     stop:(BOOL *)stop {
     NSRange rangeInString = capturedRanges[0];
     NSRange rangeInScreenChars = [stringLine rangeOfScreenCharsForRangeInString:rangeInString];
-    [[aSession screen] highlightTextInRange:rangeInScreenChars
-                  basedAtAbsoluteLineNumber:lineNumber
-                                     colors:[self colors]];
+
+    [aSession triggerSession:self
+        highlightTextInRange:rangeInScreenChars
+                absoluteLine:lineNumber
+                      colors:[self colorsPreservingColorSpace:NO]];
     return YES;
+}
+
+- (NSAttributedString *)paramAttributedString {
+    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] init];
+
+    [result appendAttributedString:[[NSAttributedString alloc] initWithString:@"Text: "]];
+
+    NSTextAttachment *textColorAttachment = [[NSTextAttachment alloc] init];
+    textColorAttachment.image = [self imageForColor:self.textColor];
+    NSAttributedString *textAttachmentString = [NSAttributedString attributedStringWithAttachment:textColorAttachment];
+    NSMutableAttributedString *mutableTextAttachmentString = [textAttachmentString mutableCopy];
+    // Lower the image by adjusting the baseline offset.
+    [mutableTextAttachmentString addAttribute:NSBaselineOffsetAttributeName value:@(-2) range:NSMakeRange(0, mutableTextAttachmentString.length)];
+    [result appendAttributedString:mutableTextAttachmentString];
+
+    [result appendAttributedString:[[NSAttributedString alloc] initWithString:@" Background: "]];
+
+    NSTextAttachment *backgroundColorAttachment = [[NSTextAttachment alloc] init];
+    backgroundColorAttachment.image = [self imageForColor:self.backgroundColor];
+    NSAttributedString *backgroundAttachmentString = [NSAttributedString attributedStringWithAttachment:backgroundColorAttachment];
+    NSMutableAttributedString *mutableBackgroundAttachmentString = [backgroundAttachmentString mutableCopy];
+    // Lower the image by adjusting the baseline offset.
+    [mutableBackgroundAttachmentString addAttribute:NSBaselineOffsetAttributeName value:@(-2) range:NSMakeRange(0, mutableBackgroundAttachmentString.length)];
+    [result appendAttributedString:mutableBackgroundAttachmentString];
+
+    return result;
+}
+
+- (NSImage *)imageForColor:(NSColor *)color {
+    return [NSImage it_imageForColorSwatch:color size:NSMakeSize(22, 14)];
 }
 
 @end

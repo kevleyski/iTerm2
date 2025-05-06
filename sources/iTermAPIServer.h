@@ -17,15 +17,20 @@ extern NSString *const iTermAPIServerConnectionAccepted;
 extern NSString *const iTermAPIServerConnectionClosed;
 
 @protocol iTermAPIServerDelegate<NSObject>
-- (NSDictionary *)apiServerAuthorizeProcess:(pid_t)pid preauthorized:(BOOL)preauthorized reason:(out NSString **)reason displayName:(out NSString **)displayName;
+- (BOOL)apiServerAuthorizeProcesses:(NSArray<NSNumber *> *)pids
+                      preauthorized:(BOOL)preauthorized
+                      disableAuthUI:(BOOL)disableAuthUI
+                       advisoryName:(NSString *)advisoryName
+                             reason:(out NSString **)reason
+                        displayName:(out NSString **)displayName;
 - (void)apiServerGetBuffer:(ITMGetBufferRequest *)request handler:(void (^)(ITMGetBufferResponse *))handler;
 - (void)apiServerGetPrompt:(ITMGetPromptRequest *)request handler:(void (^)(ITMGetPromptResponse *))handler;
+- (void)apiServerListPrompts:(ITMListPromptsRequest *)request handler:(void (^)(ITMListPromptsResponse *))handler;
 - (void)apiServerNotification:(ITMNotificationRequest *)request
                 connectionKey:(NSString *)connectionKey
                       handler:(void (^)(ITMNotificationResponse *))handler;
 - (void)apiServerDidCloseConnectionWithKey:(NSString *)connectionKey;
 - (void)apiServerRegisterTool:(ITMRegisterToolRequest *)request
-                 peerIdentity:(NSDictionary *)peerIdentity
                       handler:(void (^)(ITMRegisterToolResponse *))handler;
 - (void)apiServerSetProfileProperty:(ITMSetProfilePropertyRequest *)request
                             handler:(void (^)(ITMSetProfilePropertyResponse *))handler;
@@ -89,6 +94,9 @@ extern NSString *const iTermAPIServerConnectionClosed;
 @interface iTermAPIServer : NSObject
 
 @property (nonatomic, weak) id<iTermAPIServerDelegate> delegate;
+
+// Key to the websocket connection. Valid only during delegate callbacks.
+@property (nonatomic, weak, readonly) id currentKey;
 
 - (void)postAPINotification:(ITMNotification *)notification toConnectionKey:(NSString *)connectionKey;
 - (NSString *)websocketKeyForConnectionKey:(NSString *)connectionKey;

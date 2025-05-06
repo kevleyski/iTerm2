@@ -21,51 +21,48 @@ typedef struct {
 } iTermCPUTicks;
 
 
-@interface iTermCPUUtilization()<iTermPublisherDelegate>
-@end
-
-@implementation iTermCPUUtilization {
-    iTermCPUTicks _last;
+@implementation iTermLocalCPUUtilizationPublisher {
     NSTimer *_timer;
-    iTermPublisher<NSNumber *> *_publisher;
+    iTermCPUTicks _last;
 }
 
 + (instancetype)sharedInstance {
+    static iTermLocalCPUUtilizationPublisher *instance;
     static dispatch_once_t onceToken;
-    static id instance;
     dispatch_once(&onceToken, ^{
-        instance = [[self alloc] init];
+        instance = [[iTermLocalCPUUtilizationPublisher alloc] initWithCapacity:120];
     });
     return instance;
 }
 
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        _cadence = 1;
-        _publisher = [[iTermPublisher alloc] init];
-        _publisher.delegate = self;
+- (void)addSubscriber:(id)subscriber block:(void (^)(id _Nonnull))block {
+    [super addSubscriber:subscriber block:block];
+    [self updateTimer];
+}
+
+- (void)removeSubscriber:(id)subscriber {
+    [super removeSubscriber:subscriber];
+    [self updateTimer];
+}
+
+- (void)updateTimer {
+    if (!self.hasAnySubscribers) {
+        [_timer invalidate];
+        _timer = nil;
+        return;
     }
-    return self;
-}
-
-- (void)addSubscriber:(id)subscriber block:(iTermCPUUtilizationObserver)block {
-    [_publisher addSubscriber:subscriber block:^(NSNumber * _Nonnull payload) {
-        block(payload.doubleValue);
-    }];
-}
-
-#pragma mark - Private
-
-- (double)utilizationInDelta:(iTermCPUTicks)delta {
-    if (_last.total == 0) {
-        return 0;
-    } else {
-        return 1.0 - delta.idle / delta.total;
+    if (_timer) {
+        return;
     }
+
+    _timer = [NSTimer scheduledTimerWithTimeInterval:1
+                                              target:self
+                                            selector:@selector(timerDidFire:)
+                                            userInfo:nil
+                                             repeats:YES];
 }
 
-- (void)update {
+- (void)timerDidFire:(NSTimer *)timer {
     iTermCPUTicks current = [self sample];
     iTermCPUTicks delta = current;
     delta.idle -= _last.idle;
@@ -73,7 +70,18 @@ typedef struct {
     _last = current;
 
     double value = [self utilizationInDelta:delta];
-    [_publisher publish:@(value)];
+    if (value != value) {
+        return;
+    }
+    [self publish:@(value)];
+}
+
+- (double)utilizationInDelta:(iTermCPUTicks)delta {
+    if (_last.total == 0) {
+        return 0;
+    } else {
+        return 1.0 - delta.idle / delta.total;
+    }
 }
 
 - (iTermCPUTicks)sample {
@@ -95,18 +103,106 @@ typedef struct {
     return result;
 }
 
-#pragma mark - iTermPublisherDelegate
+@end
 
-- (void)publisherDidChangeNumberOfSubscribers:(iTermPublisher *)publisher {
-    if (!_publisher.hasAnySubscribers) {
-        [_timer invalidate];
-        _timer = nil;
-    } else if (!_timer) {
-        _timer = [NSTimer scheduledTimerWithTimeInterval:self.cadence
-                                                  target:self
-                                                selector:@selector(update)
-                                                userInfo:nil
-                                                 repeats:YES];
+#pragma mark -
+
+@interface iTermCPUUtilization()
+@property (nonatomic, copy) NSString *sessionID;
+@end
+
+
+// The design:
+//
+// Source publisher:                  iTermCPUUtilization:  Router:            Consumer:
+// One per data source                One per session       One per session    One per data sink
+//
+// [Local publisher singleton] -----> [timer fires] -----> router ----------> consumer
+//                              \                                  `--------> consumer
+//                               `--> [timer fires] -----> router ----------> consumer
+//                                                                 `--------> consumer
+// [example1.com publisher] --------> [timer fires] -----> router ----------> consumer
+//                                                                 `--------> consumer
+// [example2.com publisher] --------> [timer fires] -----> router ----------> consumer
+//                                                                 `--------> consumer
+@implementation iTermCPUUtilization {
+    NSTimer *_timer;
+    iTermPublisher<NSNumber *> *_publisher;
+    iTermPublisher<NSNumber *> *_router;
+}
+
++ (NSMutableDictionary<NSString *, iTermCPUUtilization *> *)sessionInstances {
+    static NSMutableDictionary<NSString *, iTermCPUUtilization *> *gSessionInstances;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        gSessionInstances = [NSMutableDictionary dictionary];
+    });
+    return gSessionInstances;
+}
+
++ (instancetype)instanceForSessionID:(NSString *)sessionID {
+    iTermCPUUtilization *instance = self.sessionInstances[sessionID];
+    if (instance) {
+        return instance;
+    }
+    instance = [[iTermCPUUtilization alloc] initWithPublisher:[iTermLocalCPUUtilizationPublisher sharedInstance]];
+    [self setInstance:instance forSessionID:sessionID];
+    return instance;
+}
+
++ (void)setInstance:(iTermCPUUtilization *)instance forSessionID:(NSString *)sessionID {
+    instance.sessionID = sessionID;
+    if (instance) {
+        self.sessionInstances[sessionID] = instance;
+    } else {
+        [self.sessionInstances removeObjectForKey:sessionID];
     }
 }
+
+- (instancetype)initWithPublisher:(iTermPublisher<NSNumber *> *)publisher {
+    self = [super init];
+    if (self) {
+        _router = [[iTermPublisher alloc] initWithCapacity:publisher.capacity];
+        [self setPublisher:publisher];
+    }
+    return self;
+}
+
+- (instancetype)init {
+    return [self initWithPublisher:[iTermLocalCPUUtilizationPublisher sharedInstance]];
+}
+
+- (void)setPublisher:(iTermPublisher<NSNumber *> *)publisher {
+    if (publisher == _publisher) {
+        return;
+    }
+    [_publisher removeSubscriber:self];
+    __weak __typeof(self) weakSelf = self;
+    _publisher = publisher;
+    [publisher addSubscriber:self block:^(NSNumber * _Nonnull payload) {
+        [weakSelf republish:payload];
+    }];
+}
+
+// publisher -> router
+- (void)republish:(NSNumber *)payload {
+    [_router publish:payload];
+}
+
+- (void)addSubscriber:(id)subscriber block:(iTermCPUUtilizationObserver)block {
+    [_router addSubscriber:subscriber block:^(NSNumber * _Nonnull payload) {
+        block(payload.doubleValue);
+    }];
+    NSNumber *last = _publisher.historicalValues.lastObject;
+    if (last != nil) {
+        block(last.doubleValue);
+    }
+}
+
+#pragma mark - Private
+
+- (NSArray<NSNumber *> *)samples {
+    return _publisher.historicalValues;
+}
+
 @end

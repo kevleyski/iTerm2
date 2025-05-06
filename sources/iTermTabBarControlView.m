@@ -12,8 +12,9 @@
 #import "DebugLogging.h"
 #import "NSObject+iTerm.h"
 #import "NSView+iTerm.h"
+#import "NSWindow+iTerm.h"
 
-@interface NSView (Private)
+@interface NSView (Private2)
 - (NSRect)_opaqueRectForWindowMoveWhenInTitlebar;
 @end
 
@@ -35,22 +36,19 @@ typedef NS_ENUM(NSInteger, iTermTabBarFlashState) {
 - (instancetype)initWithFrame:(NSRect)frameRect {
     self = [super initWithFrame:frameRect];
     if (self) {
-        [self setTabsHaveCloseButtons:![iTermAdvancedSettingsModel eliminateCloseButtons]];
+        [self setTabsHaveCloseButtons:[iTermPreferences boolForKey:kPreferenceKeyTabsHaveCloseButton]];
         self.minimumTabDragDistance = [iTermAdvancedSettingsModel minimumTabDragDistance];
         // This used to depend on job but it's too difficult to do now that different sessions might
         // have different title formats.
         self.ignoreTrailingParentheticalsForSmartTruncation = YES;
         self.height = [iTermAdvancedSettingsModel defaultTabBarHeight];
+        self.showAddTabButton = ![iTermAdvancedSettingsModel removeAddTabButton];
+        self.selectsTabsOnMouseDown = [iTermAdvancedSettingsModel selectsTabsOnMouseDown];
     }
     return self;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    if (@available(macOS 10.14, *)) { } else {
-        [[NSColor windowBackgroundColor] set];
-        NSRectFill(dirtyRect);
-    }
-
     [super drawRect:dirtyRect];
 }
 
@@ -91,7 +89,7 @@ typedef NS_ENUM(NSInteger, iTermTabBarFlashState) {
 }
 
 - (void)setAlphaValue:(CGFloat)alphaValue animated:(BOOL)animated {
-    if ([self.superview isKindOfClass:[NSVisualEffectView class]]) {
+    if ([self.superview conformsToProtocol:@protocol(iTermTabBarControlViewContainer)]) {
         if (animated) {
             self.superview.animator.alphaValue = alphaValue;
         } else {
@@ -110,8 +108,9 @@ typedef NS_ENUM(NSInteger, iTermTabBarFlashState) {
 
 - (void)setHidden:(BOOL)hidden {
     if (!hidden || [self.itermTabBarDelegate iTermTabBarShouldHideBacking]) {
-        if ([self.superview isKindOfClass:[NSVisualEffectView class]]) {
-            self.superview.hidden = hidden;
+        if ([self.superview conformsToProtocol:@protocol(iTermTabBarControlViewContainer)]) {
+            id<iTermTabBarControlViewContainer> container = (id<iTermTabBarControlViewContainer>)self.superview;
+            [container tabBarControlViewWillHide:hidden];
         }
     }
     [super setHidden:hidden];
@@ -234,6 +233,11 @@ typedef NS_ENUM(NSInteger, iTermTabBarFlashState) {
     }
 }
 
+- (void)setOrientation:(PSMTabBarOrientation)orientation {
+    [super setOrientation:orientation];
+    self.showAddTabButton = ![iTermAdvancedSettingsModel removeAddTabButton] && (orientation == PSMTabBarHorizontalOrientation);
+}
+
 #pragma mark - Private
 
 - (void)setFlashState:(iTermTabBarFlashState)flashState {
@@ -269,40 +273,31 @@ typedef NS_ENUM(NSInteger, iTermTabBarFlashState) {
                              hitView == self &&
                              ![self.itermTabBarDelegate iTermTabBarWindowIsFullScreen]);
     if (handleDrag) {
-        [self trackClickForWindowMove:event];
+        [self.window orderFrontRegardless];
+        [self.window performWindowDragWithEvent:event];
         return;
     }
     
     [super mouseDown:event];
 }
 
-- (void)trackClickForWindowMove:(NSEvent*)event {
-    NSWindow *window = self.window;
-    NSPoint origin = [window frame].origin;
-    NSPoint lastPointInScreenCoords = [NSEvent mouseLocation];
-    const NSEventMask eventMask = (NSEventMaskLeftMouseDown |
-                                   NSEventMaskLeftMouseDragged |
-                                   NSEventMaskLeftMouseUp);
-    event = [NSApp nextEventMatchingMask:eventMask
-                               untilDate:[NSDate distantFuture]
-                                  inMode:NSEventTrackingRunLoopMode
-                                 dequeue:YES];
-    while (event && event.type != NSEventTypeLeftMouseUp) {
-        @autoreleasepool {
-            NSPoint currentPointInScreenCoords = [NSEvent mouseLocation];
-            
-            origin.x += currentPointInScreenCoords.x - lastPointInScreenCoords.x;
-            origin.y += currentPointInScreenCoords.y - lastPointInScreenCoords.y;
-            lastPointInScreenCoords = currentPointInScreenCoords;
-            
-            [window setFrameOrigin:origin];
-            
-            event = [NSApp nextEventMatchingMask:eventMask
-                                       untilDate:[NSDate distantFuture]
-                                          inMode:NSEventTrackingRunLoopMode
-                                         dequeue:YES];
-        }
+- (BOOL)clickedInCell:(NSEvent *)event {
+    const NSPoint clickPoint = [self convertPoint:event.locationInWindow
+                                         fromView:nil];
+    NSRect cellFrame;
+    PSMTabBarCell *const cell = [self cellForPoint:clickPoint
+                                         cellFrame:&cellFrame];
+    return cell != nil;
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    if (event.clickCount == 2 &&
+        [self.itermTabBarDelegate iTermTabBarCanDragWindow] &&
+        ![self clickedInCell:event]) {
+        [self.window it_titleBarDoubleClick];
+        return;
     }
+    [super mouseUp:event];
 }
 
 @end

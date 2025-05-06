@@ -1,10 +1,13 @@
 """Provides interfaces for getting and changing preferences (excluding
 per-profile preferences; see the profile submodule for that)"""
 import enum
-import iterm2.rpc
 import json
 import typing
 
+import iterm2.rpc
+
+
+# pylint: disable=line-too-long
 class PreferenceKey(enum.Enum):
     """Keys identifying particular preference settings."""
     OPEN_PROFILES_WINDOW_AT_START = "OpenBookmark"  #: Open the profiles window at startup?  Mutually exclusive with OPEN_DEFAULT_ARRANGEMENT_AT_START and RESTORE_ONLY_HOTKEY_AT_START.  Takes a boolean.
@@ -35,7 +38,8 @@ class PreferenceKey(enum.Enum):
     USE_METAL = "UseMetal"  #: Use the GPU renderer?  Takes a boolean.
     DISABLE_METAL_WHEN_UNPLUGGED = "disableMetalWhenUnplugged"  #: Disable the GPU renderer when not connected to power?  Takes a boolean.
     PREFER_INTEGRATED_GPU = "preferIntegratedGPU"  #: Prefer the integrated GPU over discrete, if available?  Takes a boolean.
-    METAL_MAXIMIZE_THROUGHPUT = "metalMaximizeThroughput"  #: Maximize throughput for GPU renderer, vs framerate?  Takes a boolean.
+    METAL_MAXIMIZE_THROUGHPUT = "metalMaximizeThroughput"  #: Deprecated. Use MAXIMIZE_THROUGHPUT (which is identical besides the name) instead.
+    MAXIMIZE_THROUGHPUT = "metalMaximizeThroughput"  #: Maximize throughput vs framerate?  Takes a boolean.
     THEME = "TabStyleWithAutomaticOption"  #: Theme.  Takes an integer.  0 = Light, 1 = Dark, 2 = Light high contrast, 3 = Dark high contrast, 4 = Automatic (10.14+), 5 = Minimal (10.14+).
     TAP_BAR_POSTIION = "TabViewType"  #: Where the tab bar should be placed.  Takes an integer.  0=Top, 1=Bottom, 2=Left.
     HIDE_TAB_BAR_WHEN_ONLY_ONE_TAB = "HideTab"  #: Hide tab bar when there is only one tab?  Takes a boolean.
@@ -91,24 +95,48 @@ class PreferenceKey(enum.Enum):
     PASTE_TAB_TO_STRING_TAB_STOP_SIZE = "PasteTabToStringTabStopSize"  #: When converting tabs to spaces, how many spaces to use?  Takes a nonnegative integer.
     SHOW_FULL_SCREEN_TAB_BAR = "ShowFullScreenTabBar"  #: Show tab bar in full screen?  Takes a boolean.
     DEFAULT_TOOLBELT_WIDTH = "Default Toolbelt Width"  #: Width of toolbelt by default.  Takes a nonnegative integer.
-    SIZE_CHANGES_AFFECT_PROFILE = "Size Changes Affect Profile"  #: Does changing text size with cmd-+ and cmd-- affect only the session or also its profile?
+    SIZE_CHANGES_AFFECT_PROFILE = "Size Changes Affect Profile"  #: DEPRECATED - Use TEXT_SIZE_CHANGES_AFFECT_PROFILE intead.
     STATUS_BAR_POSITION = "StatusBarPosition"  #: Where does the status bar go? Takes an integer. 0=top, 1=bottom.
     PRESERVE_WINDOW_SIZE_WHEN_TAB_BAR_VISIBILITY_CHANGES = "PreserveWindowSizeWhenTabBarVisibilityChanges"  #: Keep window size the same when tabbar shows/hides? Takes a boolean.
     PER_PANE_BACKGROUND_IMAGE = "PerPaneBackgroundImage"  #: Should each split pane have a separate bg image, or one for the whole window? Takes a boolean.
     PER_PANE_STATUS_BAR = "SeparateStatusBarsPerPane"  #: Should each split pane have a separate status bar, or just one for the whole window? Takes a boolean.
     EMULATE_US_KEYBOARD = "UseVirtualKeyCodesForDetectingDigits"  #: Emulate US keyboard for the purposes of switching tabs/panes/windows by keyboard? Takes a boolean.
     TEXT_SIZE_CHANGES_AFFECT_PROFILE = "Size Changes Affect Profile"  #: Does increasing/decreasing text size update the backing profile? Takes a boolean.
+    ACTIONS = "Actions"  #: Array of dictionaries defining actions.
+    HTML_TAB_TITLES = "HTMLTabTitles"  #: Support basic HTML tags in tab titles
+    DISABLE_TRANSPARENCY_FOR_KEY_WINDOW = "DisableTransparencyForKeyWindow"  #: Force key window to be opaque?
+
+# pylint: enable=line-too-long
 
 
-
-async def async_get_preference(connection, key: PreferenceKey) -> typing.Union[None, typing.Any]:
+async def async_get_preference(
+        connection, key: PreferenceKey) -> typing.Union[None, typing.Any]:
     """
     Gets a preference by key.
 
     :param key: The preference key, from the `PreferenceKey` enum.
-    :returns: An object with the preferences value, or `None` if unset and no default exists.
+    :returns: An object with the preferences value, or `None` if unset and no
+        default exists.
     """
     proto = await iterm2.rpc.async_get_preference(connection, key.value)
     j = proto.preferences_response.results[0].get_preference_result.json_value
     return json.loads(j)
 
+async def async_set_preference(
+        connection, key: typing.Union[PreferenceKey, str], value: typing.Union[None, typing.Any]) -> None:
+    """
+    Set a preference by key.
+
+    :param key: The preference key, either from the `PreferenceKey` enum or a
+        string. Note that older versions of the API expect a `str` here. You
+        may want to use the `PreferenceKey`'s `value` for backward
+        compatibility.
+    :param value: An object with the preference value, or `None` to unset.
+    """
+    key_value = key.value if isinstance(key, PreferenceKey) else key
+    proto = await iterm2.rpc.async_set_preference(connection, key_value, json.dumps(value))
+    status = proto.preferences_response.results[0].set_preference_result.status
+    if status == iterm2.api_pb2.PreferencesResponse.Result.SetPreferenceResult.Status.Value("OK"):
+        return
+    raise iterm2.rpc.RPCException(
+        iterm2.api_pb2.PreferencesResponse.Result.SetPreferenceResult.Status.Name(status))

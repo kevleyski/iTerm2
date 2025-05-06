@@ -7,21 +7,42 @@
 //
 
 #import "iTermPreferencesBaseViewController.h"
+
+#import "DebugLogging.h"
 #import "iTermPreferences.h"
+#import "iTermSlider.h"
 #import "NSColor+iTerm.h"
 #import "NSDictionary+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSStringITerm.h"
 #import "NSTextField+iTerm.h"
+#import "NSView+iTerm.h"
 #import "PreferencePanel.h"
 
 #import <ColorPicker/ColorPicker.h>
 
-static NSString *const kPreferenceDidChangeFromOtherPanel = @"kPreferenceDidChangeFromOtherPanel";
+@interface NSStepper(Prefs)
+- (int)separatorTolerantIntValue;
+@end
+
+@implementation NSStepper(Prefs)
+- (int)separatorTolerantIntValue {
+    return [self intValue];
+}
+@end
+
+@interface iTermPreferencesInnerTabContainerView : NSView
+@end
+
+@implementation iTermPreferencesInnerTabContainerView
+@end
+
+NSString *const kPreferenceDidChangeFromOtherPanel = @"kPreferenceDidChangeFromOtherPanel";
 
 // key for userInfo dictionary of kPreferenceDidChangeFromOtherPanel notification having
 // key of changed preference.
 NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
+NSString *const iTermPreferencesDidToggleIndicateNonDefaultValues = @"iTermPreferencesDidToggleIndicateNonDefaultValues";
 
 @interface iTermPreferencesBaseViewController()
 // If set to YES, then controls won't be updated with values from backing store when it changes.
@@ -29,12 +50,16 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
 @end
 
 @implementation iTermPreferencesBaseViewController {
-    // Maps NSControl* -> PreferenceInfo*.
-    NSMapTable *_keyMap;
+    NSMapTable<NSControl *, PreferenceInfo *> *_keyMap;
     // Set of all defined keys (KEY_XXX).
     NSMutableSet *_keys;
+    NSMutableSet *_keysWithSyntheticGetters;
+    NSMutableSet *_keysWithSyntheticSetters;
 
+    NSMutableArray<iTermPreferencesSearchDocument *> *_docs;
     NSRect _desiredFrame;
+
+    NSPointerArray *_otherSearchableViews;
 }
 
 - (instancetype)initWithNibName:(NSString *)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil {
@@ -44,6 +69,15 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
                                             valueOptions:NSPointerFunctionsStrongMemory
                                                 capacity:16];
         _keys = [[NSMutableSet alloc] init];
+        _keysWithSyntheticGetters = [NSMutableSet set];
+        _keysWithSyntheticSetters = [NSMutableSet set];
+        _docs = [NSMutableArray array];
+        _otherSearchableViews = [NSPointerArray weakObjectsPointerArray];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(didToggleIndicateNonDefaultValues:)
+                                                     name:iTermPreferencesDidToggleIndicateNonDefaultValues
+                                                   object:nil];
+
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(preferenceDidChangeFromOtherPanel:)
                                                      name:kPreferenceDidChangeFromOtherPanel
@@ -79,67 +113,143 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
     }];
 }
 
+- (id)syntheticObjectForKey:(NSString *)key {
+    PreferenceInfo *info = [self infoForKey:key];
+    return info.syntheticGetter();
+}
+
+- (void)setSyntheticValue:(id)value forKey:(NSString *)key {
+    PreferenceInfo *info = [self infoForKey:key];
+    DLog(@"setSyntheticValue:%@ forKey:%@, info=%@", value, key, info);
+    return info.syntheticSetter(value);
+}
+
+- (BOOL)keyHasSyntheticGetter:(NSString *)key {
+    return [_keysWithSyntheticGetters containsObject:key];
+}
+
+- (BOOL)keyHasSyntheticSetter:(NSString *)key {
+    return [_keysWithSyntheticSetters containsObject:key];
+}
+
 - (BOOL)boolForKey:(NSString *)key {
+    if ([_keysWithSyntheticGetters containsObject:key]) {
+        return [[self syntheticObjectForKey:key] boolValue];
+    }
     return [iTermPreferences boolForKey:key];
 }
 
 - (void)setBool:(BOOL)value forKey:(NSString *)key {
+    if ([_keysWithSyntheticSetters containsObject:key]) {
+        [self setSyntheticValue:@(value) forKey:key];
+        return;
+    }
     [iTermPreferences setBool:value forKey:key];
 }
 
 - (int)intForKey:(NSString *)key {
+    if ([_keysWithSyntheticGetters containsObject:key]) {
+        return [[self syntheticObjectForKey:key] intValue];
+    }
     return [iTermPreferences intForKey:key];
 }
 
 - (void)setInt:(int)value forKey:(NSString *)key {
+    if ([_keysWithSyntheticSetters containsObject:key]) {
+        [self setSyntheticValue:@(value) forKey:key];
+        return;
+    }
     [iTermPreferences setInt:value forKey:key];
 }
 
 - (NSInteger)integerForKey:(NSString *)key {
+    if ([_keysWithSyntheticGetters containsObject:key]) {
+        return [[self syntheticObjectForKey:key] integerValue];
+    }
     return [iTermPreferences integerForKey:key];
 }
 
 - (void)setInteger:(NSInteger)value forKey:(NSString *)key {
+    if ([_keysWithSyntheticSetters containsObject:key]) {
+        [self setSyntheticValue:@(value) forKey:key];
+        return;
+    }
     [iTermPreferences setInteger:value forKey:key];
 }
 
 - (NSUInteger)unsignedIntegerForKey:(NSString *)key {
+    if ([_keysWithSyntheticGetters containsObject:key]) {
+        return [[self syntheticObjectForKey:key] unsignedIntegerValue];
+    }
     return [iTermPreferences unsignedIntegerForKey:key];
 }
 
 - (void)setUnsignedInteger:(NSUInteger)value forKey:(NSString *)key {
+    if ([_keysWithSyntheticSetters containsObject:key]) {
+        [self setSyntheticValue:@(value) forKey:key];
+        return;
+    }
     [iTermPreferences setUnsignedInteger:value forKey:key];
 }
 
 - (double)floatForKey:(NSString *)key {
+    if ([_keysWithSyntheticGetters containsObject:key]) {
+        return [[self syntheticObjectForKey:key] doubleValue];
+    }
     return [iTermPreferences floatForKey:key];
 }
 
 - (void)setFloat:(double)value forKey:(NSString *)key {
+    if ([_keysWithSyntheticSetters containsObject:key]) {
+        [self setSyntheticValue:@(value) forKey:key];
+        return;
+    }
     [iTermPreferences setFloat:value forKey:key];
 }
 
 - (double)doubleForKey:(NSString *)key {
+    if ([_keysWithSyntheticGetters containsObject:key]) {
+        return [[self syntheticObjectForKey:key] doubleValue];
+    }
     return [iTermPreferences doubleForKey:key];
 }
 
 - (void)setDouble:(double)value forKey:(NSString *)key {
+    if ([_keysWithSyntheticSetters containsObject:key]) {
+        [self setSyntheticValue:@(value) forKey:key];
+        return;
+    }
     [iTermPreferences setDouble:value forKey:key];
 }
 
 - (NSString *)stringForKey:(NSString *)key {
+    if ([_keysWithSyntheticGetters containsObject:key]) {
+        return [self syntheticObjectForKey:key];
+    }
     return [iTermPreferences stringForKey:key];
 }
 
 - (void)setString:(NSString *)value forKey:(NSString *)key {
+    if ([_keysWithSyntheticSetters containsObject:key]) {
+        [self setSyntheticValue:value forKey:key];
+        return;
+    }
+    DLog(@"calling [iTermPreferences setString:%@ forKey:%@]", value, key);
     [iTermPreferences setString:value forKey:key];
 }
 
 - (NSObject *)objectForKey:(NSString *)key {
+    if ([_keysWithSyntheticGetters containsObject:key]) {
+        return [self syntheticObjectForKey:key];
+    }
     return [iTermPreferences objectForKey:key];
 }
 
 - (void)setObject:(NSObject *)object forKey:(NSString *)key {
+    if ([_keysWithSyntheticSetters containsObject:key]) {
+        [self setSyntheticValue:object forKey:key];
+        return;
+    }
     [iTermPreferences setObject:object forKey:key];
 }
 
@@ -151,6 +261,13 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
     return [iTermPreferences defaultValueForKey:key isCompatibleWithType:type];
 }
 
+- (BOOL)valueOfKeyEqualsDefaultValue:(NSString *)key {
+    // I use nonzero epsilon because otherwise colors don't compare equal when they ought to.
+    return [NSObject object:[iTermPreferences defaultObjectForKey:key]
+    isNullablyEqualToObject:[self objectForKey:key]
+                    epsilon:0.001];
+}
+
 - (BOOL)shouldUpdateOtherPanels {
     return YES;
 }
@@ -160,21 +277,25 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
 - (IBAction)settingChanged:(id)sender {
     PreferenceInfo *info = [self infoForControl:sender];
     assert(info);
+    DLog(@"settingChanged:%@", info.key);
 
     if (info.willChange) {
+        DLog(@"willChange()");
         info.willChange();
     }
 
     if (info.customSettingChangedHandler) {
+        DLog(@"customSettingChangedHandler()");
         info.customSettingChangedHandler(sender);
     } else {
+        DLog(@"type=%@", @(info.type));
         switch (info.type) {
             case kPreferenceInfoTypeCheckbox:
-                [self setBool:([sender state] == NSOnState) forKey:info.key];
+                [self setBool:([sender state] == NSControlStateValueOn) forKey:info.key];
                 break;
 
             case kPreferenceInfoTypeInvertedCheckbox:
-                [self setBool:([sender state] == NSOffState) forKey:info.key];
+                [self setBool:([sender state] == NSControlStateValueOff) forKey:info.key];
                 break;
 
             case kPreferenceInfoTypeIntegerTextField:
@@ -183,6 +304,7 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
                 if (!info.deferUpdate) {
                     [self setInt:intValue forKey:info.key];
                 }
+                info.associatedStepper.integerValue = intValue;
                 break;
 
             case kPreferenceInfoTypeDoubleTextField: {
@@ -208,6 +330,7 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
                 break;
 
             case kPreferenceInfoTypeStringTextField:
+            case kPreferenceInfoTypePasswordTextField:
                 [self setString:[sender stringValue] forKey:info.key];
                 break;
 
@@ -221,6 +344,10 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
 
             case kPreferenceInfoTypePopup:
                 [self setInt:[sender selectedTag] forKey:info.key];
+                break;
+
+            case kPreferenceInfoTypeStringPopup:
+                [self setObject:[[sender selectedItem] representedObject] forKey:info.key];
                 break;
 
             case kPreferenceInfoTypeUnsignedIntegerPopup:
@@ -251,25 +378,110 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
                                                             object:self
                                                           userInfo:@{ kPreferenceDidChangeFromOtherPanelKeyUserInfoKey: info.key }];
     }
-
+    [self updateNonDefaultIndicatorVisibleForInfo:info];
 }
 
 - (PreferenceInfo *)defineControl:(NSControl *)control
                               key:(NSString *)key
+                      displayName:(NSString *)displayName
                              type:(PreferenceInfoType)type {
     return [self defineControl:control
                            key:key
+                   relatedView:nil
+                   displayName:displayName
                           type:type
                 settingChanged:NULL
-                        update:NULL];
+                        update:NULL
+                    searchable:YES];
 }
 
 - (PreferenceInfo *)defineControl:(NSControl *)control
                               key:(NSString *)key
+                      relatedView:(NSView *)relatedView
+                             type:(PreferenceInfoType)type {
+    return [self defineControl:control
+                           key:key
+                   relatedView:relatedView
+                   displayName:nil
+                          type:type
+                settingChanged:NULL
+                        update:NULL
+                    searchable:YES];
+}
+
+- (PreferenceInfo *)defineControl:(NSControl *)control
+                              key:(NSString *)key
+                      displayName:(NSString *)displayName
                              type:(PreferenceInfoType)type
                    settingChanged:(void (^)(id))settingChanged
                            update:(BOOL (^)(void))update {
-    assert(![_keyMap objectForKey:key]);
+    return [self defineControl:control
+                           key:key
+                   relatedView:nil
+                   displayName:displayName
+                          type:type
+                settingChanged:settingChanged
+                        update:update
+                    searchable:YES];
+}
+
+- (PreferenceInfo *)defineControl:(NSControl *)control
+                              key:(NSString *)key
+                      relatedView:(NSView *)relatedView
+                             type:(PreferenceInfoType)type
+                   settingChanged:(void (^)(id))settingChanged
+                           update:(BOOL (^)(void))update {
+    return [self defineControl:control
+                           key:key
+                   relatedView:relatedView
+                   displayName:nil
+                          type:type
+                settingChanged:settingChanged
+                        update:update
+                    searchable:YES];
+}
+
+- (PreferenceInfo *)defineUnsearchableControl:(NSControl *)control key:(NSString *)key type:(PreferenceInfoType)type {
+    return [self defineControl:control
+                           key:key
+                   relatedView:nil
+                   displayName:nil
+                          type:type
+                settingChanged:nil
+                        update:nil
+                    searchable:NO];
+}
+
+- (void)addViewToSearchIndex:(NSView *)view
+                 displayName:(NSString *)displayName
+                     phrases:(NSArray<NSString *> *)phrases
+                         key:(NSString *)key {
+    NSString *nonnilKey = key ?: [[NSUUID UUID] UUIDString];
+    if (displayName) {
+        iTermPreferencesSearchDocument *doc = [iTermPreferencesSearchDocument documentWithDisplayName:displayName
+                                                                                           identifier:nonnilKey
+                                                                                       keywordPhrases:phrases];
+        doc.ownerIdentifier = self.documentOwnerIdentifier;
+        [_docs addObject:doc];
+    } else {
+        NSLog(@"Warning: no display name for %@", key);
+    }
+    if (!key || [key hasPrefix:@"NoUserDefault"]) {
+        assert(!view.accessibilityIdentifier);
+        view.accessibilityIdentifier = nonnilKey;
+        [_otherSearchableViews addPointer:(__bridge void *)view];
+    }
+}
+
+- (PreferenceInfo *)defineControl:(NSControl *)control
+                              key:(NSString *)key
+                      relatedView:(NSView *)relatedView
+                      displayName:(NSString *)forceDisplayName
+                             type:(PreferenceInfoType)type
+                   settingChanged:(void (^)(id))settingChanged
+                           update:(BOOL (^)(void))update
+                       searchable:(BOOL)searchable {
+    assert(![_keyMap objectForKey:(id)key]);
     assert(key);
     assert(control);
     assert([self keyHasDefaultValue:key]);
@@ -278,16 +490,154 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
         assert(type != kPreferenceInfoTypeMatrix);  // Matrix type requires both.
         assert(type != kPreferenceInfoTypeRadioButton);  // This is just a modernized matrix
     }
+
+    return [self unsafeDefineControl:control
+                                 key:key
+                         relatedView:relatedView
+                         displayName:forceDisplayName
+                                type:type
+                      settingChanged:settingChanged
+                              update:update
+                          searchable:searchable];
+}
+
+- (PreferenceInfo *)unsafeDefineControl:(NSControl *)control
+                                    key:(NSString *)key
+                            relatedView:(NSView *)relatedView
+                            displayName:(NSString *)forceDisplayName
+                                   type:(PreferenceInfoType)type
+                         settingChanged:(void (^)(id))settingChanged
+                                 update:(BOOL (^)(void))update
+                             searchable:(BOOL)searchable {
     PreferenceInfo *info = [PreferenceInfo infoForPreferenceWithKey:key
                                                                type:type
                                                             control:control];
+    info.relatedView = relatedView;
     info.customSettingChangedHandler = settingChanged;
     info.onUpdate = update;
     [_keyMap setObject:info forKey:control];
     [_keys addObject:key];
+
+    if (searchable) {
+        NSMutableArray<NSString *> *phrases = [NSMutableArray array];
+        NSString *inferredDisplayName = [self displayNameForControl:control
+                                                        relatedView:relatedView
+                                                               type:type
+                                                            phrases:phrases];
+        NSString *displayName = forceDisplayName ?: inferredDisplayName;
+        [self addViewToSearchIndex:control
+                       displayName:displayName
+                           phrases:phrases
+                               key:key];
+    }
+
     [self updateValueForInfo:info];
 
     return info;
+}
+
+- (void)setControl:(NSControl *)control inPreference:(PreferenceInfo *)info {
+    [_keyMap removeObjectForKey:info.control];
+    info.control = control;
+    [_keyMap setObject:info forKey:control];
+}
+
+- (NSString *)displayNameForControl:(NSControl *)control
+                        relatedView:(NSView *)relatedView
+                               type:(PreferenceInfoType)type
+                            phrases:(NSMutableArray<NSString *> *)phrases {
+    NSString *displayName = nil;
+    if (control.toolTip) {
+        [phrases addObject:control.toolTip];
+    }
+    NSPopUpButton *popup = [NSPopUpButton castFrom:control];
+    if (popup) {
+        if (popup.title) {
+            displayName = popup.title;
+            [phrases addObject:popup.title];
+        }
+        for (NSMenuItem *item in popup.menu.itemArray) {
+            [phrases addObject:item.title];
+        }
+    }
+    NSMatrix *matrix = [NSMatrix castFrom:control];
+    if (matrix) {
+        for (NSInteger y = 0; y < matrix.numberOfRows; y++) {
+            for (NSInteger x = 0; x < matrix.numberOfColumns; x++) {
+                NSCell *cell = [matrix cellAtRow:y column:x];
+                NSString *title = [cell title];
+                if (title) {
+                    [phrases addObject:title];
+                }
+            }
+        }
+    }
+    NSButton *button = [NSButton castFrom:control];
+    if (button) {
+        NSString *title = button.title;
+        if (title) {
+            displayName = title;
+            [phrases addObject:title];
+        }
+    }
+    NSSlider *slider = [NSSlider castFrom:control];
+    if (slider) {
+        [phrases addObject:@"slider"];
+    }
+    CPKColorWell *colorWell = [CPKColorWell castFrom:control];
+    if (colorWell) {
+        [phrases addObject:@"color"];
+    }
+    NSTextField *textField = [NSTextField castFrom:control];
+    if (textField) {
+        if (textField.placeholderString) {
+            [phrases addObject:textField.placeholderString];
+        }
+    }
+    switch (type) {
+        case kPreferenceInfoTypePopup:
+        case kPreferenceInfoTypeStringPopup:
+        case kPreferenceInfoTypeMatrix:
+        case kPreferenceInfoTypeSlider:
+        case kPreferenceInfoTypeInvertedCheckbox:
+        case kPreferenceInfoTypeCheckbox:
+        case kPreferenceInfoTypeColorWell:
+        case kPreferenceInfoTypeTokenField:
+        case kPreferenceInfoTypeDoubleTextField:
+        case kPreferenceInfoTypeStringTextField:
+        case kPreferenceInfoTypeIntegerTextField:
+        case kPreferenceInfoTypeUnsignedIntegerPopup:
+        case kPreferenceInfoTypeUnsignedIntegerTextField:
+        case kPreferenceInfoTypePasswordTextField:
+            break;
+
+        case kPreferenceInfoTypeRadioButton: {
+            for (NSView *subview in control.subviews) {
+                NSButton *button = [NSButton castFrom:subview];
+                if (!button) {
+                    continue;
+                }
+                NSString *title = button.title;
+                if (title) {
+                    [phrases addObject:title];
+                }
+            }
+            break;
+        }
+    }
+    NSTextField *relatedTextField = [NSTextField castFrom:relatedView];
+    NSString *relatedPhrase = relatedTextField.stringValue;
+    if (!relatedPhrase) {
+        relatedPhrase = [NSButton castFrom:relatedView].title;
+    }
+    if (relatedPhrase) {
+        relatedPhrase = [relatedPhrase stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@": "]];
+        [phrases addObject:relatedPhrase];
+        displayName = relatedPhrase;
+    }
+    displayName = [displayName stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@": "]];
+
+    return displayName;
 }
 
 - (void)updateValueForInfo:(PreferenceInfo *)info {
@@ -296,6 +646,7 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
     }
     if (info.onUpdate) {
         if (info.onUpdate()) {
+            [self updateNonDefaultIndicatorVisibleForInfo:info];
             return;
         }
     }
@@ -303,14 +654,14 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
         case kPreferenceInfoTypeCheckbox: {
             assert([info.control isKindOfClass:[NSButton class]]);
             NSButton *button = (NSButton *)info.control;
-            button.state = [self boolForKey:info.key] ? NSOnState : NSOffState;
+            button.state = [self boolForKey:info.key] ? NSControlStateValueOn : NSControlStateValueOff;
             break;
         }
 
         case kPreferenceInfoTypeInvertedCheckbox: {
             assert([info.control isKindOfClass:[NSButton class]]);
             NSButton *button = (NSButton *)info.control;
-            button.state = [self boolForKey:info.key] ? NSOffState : NSOnState;
+            button.state = [self boolForKey:info.key] ? NSControlStateValueOff : NSControlStateValueOn;
             break;
         }
 
@@ -334,6 +685,7 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
             break;
         }
 
+        case kPreferenceInfoTypePasswordTextField:
         case kPreferenceInfoTypeStringTextField: {
             assert([info.control isKindOfClass:[NSTextField class]]);
             NSTextField *field = (NSTextField *)info.control;
@@ -344,7 +696,7 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
         case kPreferenceInfoTypeTokenField: {
             assert([info.control isKindOfClass:[NSTokenField class]]);
             NSTokenField *field = (NSTokenField *)info.control;
-            NSObject *object = [self objectForKey:info.key];;
+            NSObject *object = [self objectForKey:info.key];
             assert(!object || [object conformsToProtocol:@protocol(NSCopying)]);
             field.objectValue = (id<NSCopying>)object;
             break;
@@ -354,6 +706,19 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
             assert([info.control isKindOfClass:[NSPopUpButton class]]);
             NSPopUpButton *popup = (NSPopUpButton *)info.control;
             [popup selectItemWithTag:[self intForKey:info.key]];
+            break;
+        }
+
+        case kPreferenceInfoTypeStringPopup: {
+            assert([info.control isKindOfClass:[NSPopUpButton class]]);
+            NSPopUpButton *popup = (NSPopUpButton *)info.control;
+            id obj = [self objectForKey:info.key];
+            if (obj) {
+                const NSInteger i = [popup indexOfItemWithRepresentedObject:[self objectForKey:info.key]];
+                if (i != NSNotFound) {
+                    [popup selectItemAtIndex:i];
+                }
+            }
             break;
         }
 
@@ -394,6 +759,16 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
     if (info.observer) {
         info.observer();
     }
+    [self updateNonDefaultIndicatorVisibleForInfo:info];
+}
+
+- (void)updateNonDefaultIndicatorVisibleForInfo:(PreferenceInfo *)info {
+    const BOOL hasDefaultValue = info.hasDefaultValue != nil ? info.hasDefaultValue() : [self valueOfKeyEqualsDefaultValue:info.key];
+    NSView *view = [NSView castFrom:info.control];
+    if ([view.superview isKindOfClass:[iTermSlider class]]) {
+        view = view.superview;
+    }
+    view.it_showNonDefaultIndicator = [iTermPreferences boolForKey:kPreferenceKeyIndicateNonDefaultValues] && !hasDefaultValue;
 }
 
 - (void)updateEnabledState {
@@ -415,18 +790,50 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
     return info;
 }
 
+- (void)associateStepper:(NSStepper *)stepper withPreference:(PreferenceInfo *)info {
+    stepper.integerValue = [self integerForKey:info.key];
+    info.associatedStepper = stepper;
+    [_keyMap setObject:info forKey:stepper];
+}
+
 - (void)postRefreshNotification {
     [[NSNotificationCenter defaultCenter] postNotificationName:kRefreshTerminalNotification
                                                         object:nil
                                                       userInfo:nil];
 }
 
-- (NSArray *)keysForBulkCopy {
+- (NSArray<NSString *> *)keysForBulkCopy {
     return [_keys allObjects];
 }
 
 - (void)windowWillClose {
     // Documented as doing nothing.
+}
+
+- (void)willDeselectTab {
+    // Documented as doing nothing.
+}
+
+- (void)commitControls {
+    for (id control in _keyMap) {
+        PreferenceInfo *info = [_keyMap objectForKey:control];
+        if (!info) {
+            continue;
+        }
+        NSString *key = info.key;
+        BOOL needsUpdate = NO;
+        if (info.syntheticGetter) {
+            [_keysWithSyntheticGetters addObject:key];
+            needsUpdate = YES;
+        }
+        if (info.syntheticSetter) {
+            [_keysWithSyntheticSetters addObject:key];
+            needsUpdate = YES;
+        }
+        if (needsUpdate) {
+            [self updateValueForInfo:info];
+        }
+    }
 }
 
 #pragma mark - Private
@@ -445,7 +852,9 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
                 case kPreferenceInfoTypeUnsignedIntegerTextField:
                 case kPreferenceInfoTypeDoubleTextField:
                 case kPreferenceInfoTypeStringTextField:
+                case kPreferenceInfoTypePasswordTextField:
                 case kPreferenceInfoTypePopup:
+                case kPreferenceInfoTypeStringPopup:
                 case kPreferenceInfoTypeUnsignedIntegerPopup:
                 case kPreferenceInfoTypeSlider:
                 case kPreferenceInfoTypeTokenField:
@@ -513,6 +922,7 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
 - (void)controlTextDidChange:(NSNotification *)aNotification {
     id control = [aNotification object];
     PreferenceInfo *info = [_keyMap objectForKey:control];
+    DLog(@"Control text did change for control %@, info.key=%@", control, info.key);
     if (info) {
         [self settingChanged:control];
     }
@@ -531,8 +941,10 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
             case kPreferenceInfoTypeMatrix:
             case kPreferenceInfoTypeRadioButton:
             case kPreferenceInfoTypePopup:
+            case kPreferenceInfoTypeStringPopup:
             case kPreferenceInfoTypeSlider:
             case kPreferenceInfoTypeStringTextField:
+            case kPreferenceInfoTypePasswordTextField:
             case kPreferenceInfoTypeTokenField:
             case kPreferenceInfoTypeUnsignedIntegerPopup:
             case kPreferenceInfoTypeUnsignedIntegerTextField:
@@ -556,6 +968,22 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
 }
 
 #pragma mark - Notifications
+
+- (void)didToggleIndicateNonDefaultValues:(NSNotification *)notification {
+    [self updateNonDefaultIndicators];
+}
+
+- (void)updateNonDefaultIndicators {
+    for (NSControl *key in _keyMap.keyEnumerator) {
+        if (!key) {
+            continue;
+        }
+        PreferenceInfo *info = [_keyMap objectForKey:key];
+        if (info) {
+            [self updateValueForInfo:info];
+        }
+    }
+}
 
 - (void)preferenceDidChangeFromOtherPanel:(NSNotification *)notification {
     NSString *key = notification.userInfo[kPreferenceDidChangeFromOtherPanelKeyUserInfoKey];
@@ -626,11 +1054,15 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
 }
 
 - (void)resizeWindowForView:(NSView *)theView tabView:(NSTabView *)tabView animated:(BOOL)animated {
-    const CGFloat kTabViewMinWidth = self.minimumWidth;
+    const CGFloat minimumWidthForOuterTabView = 644;  // Reserve space for general, appearance, profiles, etc. buttons
+    const CGFloat kTabViewMinWidth = MAX(minimumWidthForOuterTabView, self.minimumWidth);
     const CGFloat inset = NSWidth(tabView.bounds) - NSWidth(theView.superview.bounds);
+    const CGFloat bottomMargin = 36;
     CGSize tabViewSize = NSMakeSize(MAX(kTabViewMinWidth, theView.bounds.size.width) + inset,
-                                    theView.bounds.size.height + 50);
+                                    theView.bounds.size.height + bottomMargin);
     NSRect frame = [self windowFrameForTabViewSize:tabViewSize tabView:tabView];
+    frame.size.width = MAX(self.preferencePanel.preferencePanelMinimumWidth ?: iTermPreferencePanelGetWindowMinimumWidth(NO),
+                           frame.size.width);
     if (NSEqualRects(_desiredFrame, frame)) {
         return;
     }
@@ -659,6 +1091,56 @@ NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey = @"key";
 - (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)tabViewItem {
     assert(self.tabView);
     [self resizeWindowForTabViewItem:tabViewItem animated:YES];
+}
+
+#pragma mark - iTermSearchableViewController
+
+- (NSString *)documentOwnerIdentifier {
+    return NSStringFromClass(self.class);
+}
+
+- (NSArray<iTermPreferencesSearchDocument *> *)searchableViewControllerDocuments {
+    return _docs;
+}
+
+- (BOOL)revealControl:(NSControl *)control {
+    // Is there an inner tab container view?
+    for (NSTabViewItem *item in self.tabView.tabViewItems) {
+        NSView *view = item.view;
+        if ([view containsDescendant:control]) {
+            if (self.tabView.selectedTabViewItem != item) {
+                [self.tabView selectTabViewItem:item];
+                return YES;
+            } else {
+                return NO;
+            }
+        }
+    }
+    return NO;
+}
+
+- (NSView *)searchableViewControllerRevealItemForDocument:(iTermPreferencesSearchDocument *)document
+                                                 forQuery:(NSString *)query
+                                            willChangeTab:(BOOL *)willChangeTab {
+    *willChangeTab = NO;
+    NSString *key = document.identifier;
+    for (NSControl *control in _keyMap) {
+        if ([control isKindOfClass:[NSStepper class]]) {
+            continue;
+        }
+        PreferenceInfo *info = [_keyMap objectForKey:control];
+        if ([key isEqualToString:info.key]) {
+            *willChangeTab = [self revealControl:control];
+            return control;
+        }
+    }
+    for (NSControl *control in _otherSearchableViews) {
+        if ([control.accessibilityIdentifier isEqualToString:document.identifier]) {
+            *willChangeTab = [self revealControl:control];
+            return control;
+        }
+    }
+    return nil;
 }
 
 @end

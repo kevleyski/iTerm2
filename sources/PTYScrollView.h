@@ -29,19 +29,31 @@
 
 #import <Cocoa/Cocoa.h>
 
+typedef NS_ENUM(NSUInteger, PTYScrollerState) {
+    PTYScrollerStateOverlayHidden,
+    PTYScrollerStateOverlayVisibleNarrow,
+    PTYScrollerStateOverlayVisibleWide,
+    PTYScrollerStateLegacy
+};
+
 @protocol PTYScrollerDelegate<NSObject>
 - (void)userScrollDidChange:(BOOL)userScroll;
 - (NSScrollView *)ptyScrollerScrollView NS_AVAILABLE_MAC(10_14);
+- (void)ptyScrollerDidTransitionToState:(PTYScrollerState)state;
+- (void)ptyScrollerFrameDidChange;
 @end
 
 @interface PTYScroller : NSScroller
 
 @property(nonatomic, assign) id<PTYScrollerDelegate> ptyScrollerDelegate;
 @property(nonatomic, assign) BOOL userScroll;
+@property(nonatomic, readonly) PTYScrollerState ptyScrollerState;
 
 @end
 
 @interface PTYScrollView : NSScrollView
+
++ (BOOL)shouldDismember NS_AVAILABLE_MAC(10_14);
 
 // More specific type for the base class's method.
 - (PTYScroller *)ptyVerticalScroller;
@@ -54,5 +66,62 @@
 // that from the total and return the number of rows to scroll by. The result will always be an
 // integer.
 - (CGFloat)accumulateVerticalScrollFromEvent:(NSEvent *)theEvent;
+
+// These overrides a gross hack for putting extra content inside the scrollview next to terminal
+// contents. The "rightExtra" value should arguably be folded into cSize/fSize, but then the type
+// system wouldn't be able to help me find all the places where we add extra size to the right-hand
+// side of a scrolleriew (such as we already do for legacy scrollers), which happens to be exactly
+// what is needed for timestamps adjacent to content.
++ (NSSize)frameSizeForContentSize:(NSSize)cSize
+          horizontalScrollerClass:(Class)horizontalScrollerClass
+            verticalScrollerClass:(Class)verticalScrollerClass
+                       borderType:(NSBorderType)type
+                      controlSize:(NSControlSize)controlSize
+                    scrollerStyle:(NSScrollerStyle)scrollerStyle NS_UNAVAILABLE;
+
++ (NSSize)frameSizeForContentSize:(NSSize)cSize
+            hasHorizontalScroller:(BOOL)hFlag
+              hasVerticalScroller:(BOOL)vFlag
+                       borderType:(NSBorderType)type NS_UNAVAILABLE;
+
++ (NSSize)frameSizeForContentSize:(NSSize)cSize
+          horizontalScrollerClass:(Class)horizontalScrollerClass
+            verticalScrollerClass:(Class)verticalScrollerClass
+                       borderType:(NSBorderType)type
+                      controlSize:(NSControlSize)controlSize
+                    scrollerStyle:(NSScrollerStyle)scrollerStyle
+                       rightExtra:(CGFloat)rightExtra;
+
++ (NSSize)frameSizeForContentSize:(NSSize)cSize
+            hasHorizontalScroller:(BOOL)hFlag
+              hasVerticalScroller:(BOOL)vFlag
+                       borderType:(NSBorderType)type
+                       rightExtra:(CGFloat)rightExtra;
+
++ (NSSize)contentSizeForFrameSize:(NSSize)fSize
+          horizontalScrollerClass:(Class)horizontalScrollerClass
+            verticalScrollerClass:(Class)verticalScrollerClass
+                       borderType:(NSBorderType)type
+                      controlSize:(NSControlSize)controlSize
+                    scrollerStyle:(NSScrollerStyle)scrollerStyle NS_UNAVAILABLE;
+
++ (NSSize)contentSizeForFrameSize:(NSSize)fSize
+            hasHorizontalScroller:(BOOL)hFlag
+              hasVerticalScroller:(BOOL)vFlag
+                       borderType:(NSBorderType)type NS_UNAVAILABLE;
+
++ (NSSize)contentSizeForFrameSize:(NSSize)fSize
+          horizontalScrollerClass:(Class)horizontalScrollerClass
+            verticalScrollerClass:(Class)verticalScrollerClass
+                       borderType:(NSBorderType)type
+                      controlSize:(NSControlSize)controlSize
+                    scrollerStyle:(NSScrollerStyle)scrollerStyle
+                       rightExtra:(CGFloat)rightExtra;
+
++ (NSSize)contentSizeForFrameSize:(NSSize)fSize
+            hasHorizontalScroller:(BOOL)hFlag
+              hasVerticalScroller:(BOOL)vFlag
+                       borderType:(NSBorderType)type
+                       rightExtra:(CGFloat)rightExtra;
 
 @end

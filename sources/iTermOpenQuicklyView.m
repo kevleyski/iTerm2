@@ -9,15 +9,6 @@
 #import "iTermOpenQuicklyView.h"
 #import "NSView+iTerm.h"
 
-@interface iTermVibrantVisualEffectView : NSVisualEffectView
-@end
-
-@implementation iTermVibrantVisualEffectView
-- (BOOL)allowsVibrancy {
-    return YES;
-}
-@end
-
 @implementation iTermOpenQuicklyView {
     NSVisualEffectView *_visualEffectView;
     NSView *_container;
@@ -40,12 +31,12 @@
     _container = [[NSView alloc] initWithFrame:self.bounds];
     [self insertSubview:_container atIndex:0];
 
-    _visualEffectView = [[iTermVibrantVisualEffectView alloc] initWithFrame:self.bounds];
+    _visualEffectView = [[NSVisualEffectView alloc] initWithFrame:self.bounds];
     _visualEffectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    if (@available(macOS 10.14, *)) {
-        _visualEffectView.material = NSVisualEffectMaterialSheet;
-    } else {
+    if (@available(macOS 10.16, *)) {
         _visualEffectView.material = NSVisualEffectMaterialMenu;
+    } else {
+        _visualEffectView.material = NSVisualEffectMaterialSheet;
     }
     _visualEffectView.state = NSVisualEffectStateActive;
     [_container addSubview:_visualEffectView];

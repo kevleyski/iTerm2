@@ -1,6 +1,7 @@
 #include "iTermFileDescriptorClient.h"
 #include "iTermFileDescriptorSocketPath.h"
 #include "iTermFileDescriptorServer.h"
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -48,9 +49,9 @@ static ssize_t ReceiveMessageAndFileDescriptor(int fd,
                 FDLog(LOG_DEBUG, "Calling select to get a file descriptor...");
                 int fds[2] = { fd, deadMansPipeReadEnd };
                 int readable[2];
-                iTermSelect(fds, 2, readable);
+                iTermSelect(fds, 2, readable, 0);
                 if (readable[1]) {
-                    FDLog(LOG_DEBUG, "Server was dead before recevmsg. Did the shell terminate immediately?");
+                    FDLog(LOG_DEBUG, "Server was dead before recvmsg. Did the shell terminate immediately?");
                     return -1;
                 }
                 FDLog(LOG_DEBUG, "assuming socket is readable");
@@ -104,7 +105,11 @@ int iTermFileDescriptorClientConnect(const char *path) {
 
         struct sockaddr_un remote;
         remote.sun_family = AF_UNIX;
-        strcpy(remote.sun_path, path);
+        if (strlen(path) + 1 >= sizeof(remote.sun_path)) {
+            assert(0);
+            exit(1);
+        }
+        strlcpy(remote.sun_path, path, sizeof(remote.sun_path));
         int len = strlen(remote.sun_path) + sizeof(remote.sun_family) + 1;
         FDLog(LOG_DEBUG, "Calling fcntl() 1");
         flags = fcntl(socketFd, F_GETFL, 0);
@@ -136,7 +141,8 @@ int iTermFileDescriptorClientConnect(const char *path) {
 }
 
 static int FileDescriptorClientConnectPid(pid_t pid) {
-    char path[PATH_MAX + 1];
+    struct sockaddr_un sun;
+    char path[sizeof(sun.sun_path)];
     iTermFileDescriptorSocketPath(path, sizeof(path), pid);
 
     FDLog(LOG_DEBUG, "Connect to path %s\n", path);

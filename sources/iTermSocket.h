@@ -8,17 +8,22 @@
 
 #import <Foundation/Foundation.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
 @class iTermSocketAddress;
 
 // A humane interface for Berkeley sockets.
 @interface iTermSocket : NSObject
 @property (nonatomic, readonly) int fd;
 
-+ (instancetype)tcpIPV4Socket;
++ (instancetype _Nullable)unixDomainSocket;
 
 - (void)setReuseAddr:(BOOL)reuse;
 - (BOOL)bindToAddress:(iTermSocketAddress *)address;
-- (BOOL)listenWithBacklog:(int)backlog accept:(void (^)(int, iTermSocketAddress *))acceptBlock;
+// If nonnil, the number is the effective user ID of the connecting process.
+- (BOOL)listenWithBacklog:(int)backlog accept:(void (^)(int, iTermSocketAddress * _Nullable, NSNumber *))acceptBlock;
 - (void)close;
 
 @end
+
+NS_ASSUME_NONNULL_END

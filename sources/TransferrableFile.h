@@ -25,9 +25,10 @@ typedef NS_ENUM(NSInteger, TransferrableFileStatus) {
 @property(atomic, assign) BOOL openWhenFinished;
 @property(atomic, assign) TransferrableFileStatus status;
 @property(atomic, assign) NSUInteger bytesTransferred;
-@property(atomic, assign) int fileSize;  // -1 if unknown
+@property(atomic, assign) NSInteger fileSize;  // -1 if unknown
 @property(atomic, retain) TransferrableFile *successor;
 @property(atomic, assign) BOOL hasPredecessor;
+@property(atomic, assign) BOOL isZipOfFolder;
 
 + (void)lockFileName:(NSString *)name;
 + (void)unlockFileName:(NSString *)name;
@@ -48,12 +49,15 @@ typedef NS_ENUM(NSInteger, TransferrableFileStatus) {
 - (NSString *)destination;
 - (NSTimeInterval)timeOfLastStatusChange;
 - (BOOL)isDownloading;
+- (void)didFailWithError:(NSString *)error;
 
 #pragma mark - Utility
 
 - (NSString *)finalDestinationForPath:(NSString *)baseName
                  destinationDirectory:(NSString *)destinationDirectory;
 - (NSString *)downloadsDirectory;
+- (BOOL)quarantine:(NSString *)path sourceURL:(NSURL *)sourceURL;
+- (void)failedToRemoveUnquarantinedFileAt:(NSString *)path;
 
 @end
 

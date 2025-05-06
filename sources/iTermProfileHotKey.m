@@ -6,19 +6,34 @@
 #import "iTermApplication.h"
 #import "iTermCarbonHotKeyController.h"
 #import "iTermController.h"
+#import "iTermMenuBarObserver.h"
+#import "iTermNotificationController.h"
 #import "iTermPreferences.h"
+#import "iTermPresentationController.h"
 #import "iTermProfilePreferences.h"
+#import "iTermSecureKeyboardEntryController.h"
+#import "iTermSessionLauncher.h"
+#import "iTermWindowHacks.h"
 #import "NSArray+iTerm.h"
 #import "NSScreen+iTerm.h"
+#import "NSWorkspace+iTerm.h"
 #import "PseudoTerminal.h"
 #import "SolidColorView.h"
 #import <QuartzCore/QuartzCore.h>
+
+static char iTermProfileHotkeyObserveAppWindowsKey;
 
 typedef NS_ENUM(NSUInteger, iTermAnimationDirection) {
     kAnimationDirectionDown,
     kAnimationDirectionRight,
     kAnimationDirectionLeft,
     kAnimationDirectionUp
+};
+
+typedef NS_ENUM(NSUInteger, iTermHotkeyRollOutStage) {
+    iTermHotkeyRollOutStageNone,
+    iTermHotkeyRollOutStageAnimating,
+    iTermHotkeyRollOutStageWaiting
 };
 
 static iTermAnimationDirection iTermAnimationDirectionOpposite(iTermAnimationDirection direction) {
@@ -39,7 +54,7 @@ static NSString *const kArrangement = @"Arrangement";
 
 @interface iTermProfileHotKey()
 @property(nonatomic, copy) NSString *profileGuid;
-@property(nonatomic, retain) NSDictionary *restorableState;
+@property(nonatomic, retain) NSDictionary *restorableState;  // non-sqlite legacy
 @property(nonatomic, readwrite) BOOL rollingIn;
 @property(nonatomic) BOOL birthingWindow;
 @property(nonatomic, retain) NSWindowController *windowControllerBeingBorn;
@@ -47,6 +62,8 @@ static NSString *const kArrangement = @"Arrangement";
 
 @implementation iTermProfileHotKey {
     BOOL _activationPending;
+    iTermHotkeyRollOutStage _rollOutStage;
+    void (^_cancelAnimation)(void);
 }
 
 - (instancetype)initWithShortcuts:(NSArray<iTermShortcut *> *)shortcuts
@@ -92,6 +109,18 @@ static NSString *const kArrangement = @"Arrangement";
                                                  selector:@selector(updateWindowLevel)
                                                      name:iTermApplicationDidCloseModalWindow
                                                    object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(windowDidBecomeKey:)
+                                                     name:NSWindowDidBecomeKeyNotification
+                                                   object:nil];
+        [[[NSWorkspace sharedWorkspace] notificationCenter] addObserver:self
+                                                               selector:@selector(activeSpaceDidChange:)
+                                                                   name:NSWorkspaceActiveSpaceDidChangeNotification
+                                                                 object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(updateWindowLevel)
+                                                     name:iTermApplicationCharacterAccentMenuVisibilityDidChange
+                                                   object:nil];
     }
     return self;
 }
@@ -118,34 +147,50 @@ static NSString *const kArrangement = @"Arrangement";
     return [[ProfileModel sharedInstance] bookmarkWithGuid:_profileGuid];
 }
 
-- (void)createWindow {
-    [self createWindowWithURL:nil];
+- (void)createWindowWithCompletion:(void (^)(void))completion {
+    [self createWindowWithURL:nil
+                   completion:completion];
 }
 
-- (void)createWindowWithURL:(NSURL *)url {
+- (void)createWindowWithURL:(NSURL *)url completion:(void (^)(void))completion {
     if (self.windowController.weaklyReferencedObject) {
+        if (completion) {
+            completion();
+        }
         return;
     }
 
     DLog(@"Create new window controller for profile hotkey");
     PseudoTerminal *windowController = [self windowControllerFromRestorableState];
-    if (windowController) {
-        if (url) {
-            [[iTermController sharedInstance] launchBookmark:self.profile
-                                                  inTerminal:windowController
-                                                     withURL:url.absoluteString
-                                            hotkeyWindowType:[self hotkeyWindowType]
-                                                     makeKey:YES
-                                                 canActivate:YES
-                                                     command:nil
-                                                       block:nil];
-        }
-    } else {
-        windowController = [self windowControllerFromProfile:[self profile] url:url];
-    }
     [_windowController release];
     _windowController = nil;
-    self.windowController = [windowController weakSelf];
+    if (windowController) {
+        if (url) {
+            [iTermSessionLauncher launchBookmark:self.profile
+                                      inTerminal:windowController
+                                         withURL:url.absoluteString
+                                hotkeyWindowType:[self hotkeyWindowType]
+                                         makeKey:YES
+                                     canActivate:YES
+                              respectTabbingMode:NO
+                                           index:nil
+                                         command:nil
+                                     makeSession:nil
+                                  didMakeSession:nil
+                                      completion:nil];
+        }
+        self.windowController = [windowController weakSelf];
+        completion();
+        return;
+    }
+    [self getWindowControllerFromProfile:[self profile] url:url completion:^(PseudoTerminal *windowController) {
+        if (_windowController.weaklyReferencedObject == nil) {
+            self.windowController = [windowController weakSelf];
+        }
+        if (completion) {
+            completion();
+        }
+    }];
 }
 
 - (void)setWindowController:(PseudoTerminal<iTermWeakReference> *)windowController {
@@ -169,7 +214,54 @@ static NSString *const kArrangement = @"Arrangement";
     }
 }
 
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+    if (!self.floats) {
+        return;
+    }
+    const NSWindowLevel before = _windowController.window.level;
+    [self updateWindowLevel];
+    const NSWindowLevel after = _windowController.window.level;
+    if (before != after && after == NSNormalWindowLevel) {
+        [[NSApp keyWindow] makeKeyAndOrderFront:nil];
+    }
+}
+
+- (void)activeSpaceDidChange:(NSNotification *)notification {
+    DLog(@"activeSpaceDidChangei %@", self.windowController);
+    if (!self.isHotKeyWindowOpen) {
+        DLog(@"Not open");
+        return;
+    }
+    if (self.autoHides) {
+        DLog(@"Autohides");
+        return;
+    }
+    if (self.windowController.spaceSetting != iTermProfileJoinsAllSpaces) {
+        DLog(@"Doesn't join all spaces");
+        return;
+    }
+    if (!self.windowController.window.isKeyWindow) {
+        DLog(@"Not key");
+        return;
+    }
+    // I'm not proud. One spin is enough when switching desktops when both have
+    // apps. When switching from a desktop with nothing to a desktop with
+    // another app, you resign key and get deactivated over two spins. Sigh.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            DLog(@"Two spins after activeSpaceDidChange %@", self.windowController);
+            if (self.windowController.window.isKeyWindow) {
+                DLog(@"Hotkey window still key a spin after changing spaces. Inexplicable.");
+                return;
+            }
+            DLog(@"One spin after changing spaces with open non-autohiding joins-all-spaces key hotkey window that lost key status. Make key.");
+            [self.windowController.window makeKeyAndOrderFront:nil];
+        });
+    });
+}
+
 - (void)updateWindowLevel {
+    DLog(@"updateWindowLevel");
     if (self.floats) {
         _windowController.window.level = self.floatingLevel;
     } else {
@@ -178,12 +270,114 @@ static NSString *const kArrangement = @"Arrangement";
 }
 
 - (NSWindowLevel)floatingLevel {
+    DLog(@"calculate floating level");
     iTermApplication *app = [iTermApplication sharedApplication];
-    if (app.it_characterPanelIsOpen || app.it_modalWindowOpen || app.it_imeOpen) {
+    if (app.it_characterPanelIsOpen || app.it_modalWindowOpen || app.it_imeOpen || [[NSWorkspace sharedWorkspace] it_securityAgentIsActive] || app.it_accentMenuOpen) {
+        DLog(@"Use floating window level. characterPanelIsOpen=%@, modalWindowOpen=%@ imeOpen=%@ accentMenuOpen=%@",
+             @(app.it_characterPanelIsOpen), @(app.it_modalWindowOpen),
+             @(app.it_imeOpen),
+             @(app.it_accentMenuOpen));
         return NSFloatingWindowLevel;
-    } else {
-        return NSStatusWindowLevel;
     }
+    NSWindow *const keyWindow = [NSApp keyWindow];
+    if (keyWindow != nil &&
+        keyWindow != _windowController.window &&
+        ![keyWindow conformsToProtocol:@protocol(PTYWindow)]) {
+        // Originally, this clause did not exist. That could cause alerts not attached to a window
+        // to be obscured by the hotkey window because it was at a higher level than the alert (Issue 6911).
+        // Then it was noticed that floating hotkey windows should obscure other terminal windows
+        // (Issue 11453). The compromise is to use a normal level when the key window is a non-
+        // terminal window.
+        DLog(@"Use normal window level because we are not the key window and the key window is not a terminal window. Key window is %@, my window is %@",
+             keyWindow, _windowController.window);
+        return NSNormalWindowLevel;
+    }
+    DLog(@"Use main menu window level (I am key, no detected panels are open)");
+    NSWindowLevel windowLevelJustBelowNotificiations;
+    if (@available(macOS 10.16, *)) {
+        windowLevelJustBelowNotificiations = NSMainMenuWindowLevel - 2;
+    } else {
+        windowLevelJustBelowNotificiations = 17;
+    }
+    // These are the window levels in play:
+    //
+    // NSStatusWindowLevel (25) -                Floating hotkey panels overlapping a fixed, visible menu bar.
+    // NSMainMenuWindowLevel (24) -              Menu bar, dock. (maybe notification center on macOS < 12? I should check)
+    // 23 -                                      Notification center (macOS 11+)
+    // 22 -                                      (macOS 11+) Hotkey windows under a hidden-but-not-auto-hidden menu bar.
+    // 20 -                                      Character accent menu (at least in macOS 15, and hopefully others)
+    // 18 -                                      Notification center (macOS 10.x)
+    // 17 -                                      (macOS 10.x) Hotkey windows under a hidden-but-not-auto-hidden menu bar.
+    //
+    // NSTornOffMenuWindowLevel (3) -            Just too low, used to use this, but not any more because it's under the dock.
+
+    // A brief history and rationale:
+    //
+    // NSStatusWindowLevel overlaps the menu bar and the dock. This is obviously desirable because
+    // you don't want these things blocking your view. But if you've configured your menu bar to
+    // automatically hide (system prefs > general > automatically hide and show menu bar) then the
+    // menu bar gets overlapped when you show it and that is lame (issue 7924).
+    //
+    // NSTornOffMenuWindowLevel does not overlap the dock, so it is no good. You can't go having
+    // your dock overlapping your fullscreen hotkey window, as that is lame (issue 7963).
+    //
+    // NSMainMenuWindowLevel seems to do what you'd want, but I think it just works by accident.
+    //
+    // It seems the sweet spot is between the dock and main menu levels, of which there are
+    // three (21…23). They are unnamed.
+    //
+    // It is ok to be leveled below the main menu because the window is always positioned under the
+    // menu bar *except* when the menu bar is auto-hidden.
+    //
+    // However, there is an exception for floating panels. iTerm2 does not get activated when you
+    // open a floating panel. That means it does not have the ability to hide the menu bar.
+    // We *want* floating panels to be overlapped by an auto-hiding menu bar, but not by a fixed
+    // menu bar. So use the status window level for them when the menu bar is set to auto-hide.
+    // See issue 7984 for why we want a floating panel hotkey window to overlap the menu bar.
+    //
+    // Mind you, this is all irrelevant if iTerm2's "auto-hide menu bar in non-native full screen"
+    // is turned off. Then the window is just shifted down and the menu bar hangs around.
+    if (self.hotkeyWindowType == iTermHotkeyWindowTypeFloatingPanel) {
+        DLog(@"Is floating");
+        if (![self menuBarAutoHides]) {
+            DLog(@"Menu bar does not auto-hide");
+            if (![[iTermMenuBarObserver sharedInstance] menuBarVisibleOnScreen:_windowController.window.screen]) {
+                // No menu bar currently. Optimistically take that as evidence that it won't suddenly
+                // appear on us overlapping the hotkey window. This is the case when on another app's
+                // full screen window. Do this to avoid overlapping notifications.
+                DLog(@"Go just below notifications because the menu var is not visible");
+                return windowLevelJustBelowNotificiations;
+            }
+            if (!self.windowController.fullScreen) {
+                // Non-fullscreen windows have their frame set below the menu bar so we can let
+                // notifications overlap them.
+                DLog(@"Go just below notifications because, while the menu bar is visible, the window is not fullscreen");
+                return windowLevelJustBelowNotificiations;
+            }
+            // Floating fullscreen panel and fixed menu bar — overlap the menu bar.
+            // Unfortunately, this overlaps notification center since it is at the same level as
+            // the menu bar. If iTerm2 is not active then it can't hide the menu bar by setting
+            // presentation options. To move this below notifications we'd also need to adjust the
+            // window's frame as the menu bar hides and shows (e.g., if iTerm2 is activated then
+            // it gains the ability to hide the menu bar, and the frame would need to change).
+            DLog(@"Use status window level, overlapping the menu bar");
+            return NSStatusWindowLevel;
+        }
+    }
+    // Floating hotkey window that does not join all spaces. This doesn't seem to work well in the
+    // presence of other apps' fullscreen windows, regardless of level.
+    DLog(@"Go just below notifications because it is not a floating window");
+    return windowLevelJustBelowNotificiations;
+}
+
+- (BOOL)menuBarAutoHides {
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"_HIHideMenuBar"]) {
+        return YES;
+    }
+    if (![iTermPreferences boolForKey:kPreferenceKeyHideMenuBarInFullscreen]) {
+        return YES;
+    }
+    return NO;
 }
 
 - (NSPoint)destinationPointForInitialPoint:(NSPoint)point
@@ -219,6 +413,8 @@ static NSString *const kArrangement = @"Arrangement";
         case WINDOW_TYPE_BOTTOM_PARTIAL:
         case WINDOW_TYPE_TRADITIONAL_FULL_SCREEN:  // Framerate drops too much to roll this (2014 5k iMac)
         case WINDOW_TYPE_LION_FULL_SCREEN:
+        case WINDOW_TYPE_MAXIMIZED:
+        case WINDOW_TYPE_COMPACT_MAXIMIZED:
             return [windowController canonicalFrameForScreen:screen];
 
         case WINDOW_TYPE_NORMAL:
@@ -269,6 +465,10 @@ static NSString *const kArrangement = @"Arrangement";
         case WINDOW_TYPE_ACCESSORY:
             return [self frameByMovingFrame:rect fromScreen:self.windowController.window.screen toScreen:screen].origin;
 
+        case WINDOW_TYPE_MAXIMIZED:
+        case WINDOW_TYPE_COMPACT_MAXIMIZED:
+            return screen.visibleFrameIgnoringHiddenDock.origin;
+
         case WINDOW_TYPE_TRADITIONAL_FULL_SCREEN:  // Framerate drops too much to roll this (2014 5k iMac)
             return screen.frame.origin;
 
@@ -312,7 +512,7 @@ static NSString *const kArrangement = @"Arrangement";
                         }];
 }
 
-- (void)rollOutAnimatingInDirection:(iTermAnimationDirection)direction {
+- (void)rollOutAnimatingInDirection:(iTermAnimationDirection)direction causedByKeypress:(BOOL)causedByKeypress {
     _activationPending = NO;
     NSRect source = self.windowController.window.frame;
     NSRect destination = source;
@@ -321,6 +521,7 @@ static NSString *const kArrangement = @"Arrangement";
     if ([self rect:destination intersectsAnyScreenExcept:self.windowController.window.screen]) {
         destination = source;
     }
+    __block BOOL canceled = NO;
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext * _Nonnull context) {
         [context setDuration:[iTermAdvancedSettingsModel hotkeyTermAnimationDuration]];
@@ -329,9 +530,20 @@ static NSString *const kArrangement = @"Arrangement";
         [self.windowController.window.animator setAlphaValue:0];
     }
                         completionHandler:^{
-                            [self didFinishRollingOut];
-                        }];
+        if (canceled) {
+            [self.windowController.window setFrame:source display:YES];
+            [self.windowController.window setAlphaValue:1];
+        } else {
+            [self didFinishRollingOut:causedByKeypress];
+        }
+    }];
 
+    // I tried everything I could think of but I don't believe you can stop an animation once it
+    // has begun. Directly setting the window's frame does nothing. There is no CALayer to mess
+    // with. NSAnimationContext doesn't have private methods that look promising.
+    _cancelAnimation = [^{
+        canceled = YES;
+    } copy];
 }
 
 - (void)moveToPreferredScreen {
@@ -356,18 +568,33 @@ static NSString *const kArrangement = @"Arrangement";
     [NSAnimationContext endGrouping];
 }
 
-- (void)fadeOut {
+- (void)fadeOut:(BOOL)causedByKeypress {
+    __block BOOL canceled = NO;
     [NSAnimationContext beginGrouping];
     [[NSAnimationContext currentContext] setDuration:[iTermAdvancedSettingsModel hotkeyTermAnimationDuration]];
     [[NSAnimationContext currentContext] setCompletionHandler:^{
-        [self didFinishRollingOut];
+        if (canceled) {
+            self.windowController.window.alphaValue = 1;
+        } else {
+            [self didFinishRollingOut:causedByKeypress];
+        }
     }];
     self.windowController.window.animator.alphaValue = 0;
+#if BETA
+    SetPinnedDebugLogMessage([NSString stringWithFormat:@"Fade out hotkey window %p", self],
+                             [[NSThread callStackSymbols] componentsJoinedByString:@"\n"]);
+#endif
     [NSAnimationContext endGrouping];
+
+    __weak __typeof(self) weakSelf = self;
+    _cancelAnimation = [^{
+        weakSelf.windowController.window.alphaValue = 1;
+        canceled = YES;
+    } copy];
 }
 
 - (iTermAnimationDirection)animateInDirectionForWindowType:(iTermWindowType)windowType {
-    switch (windowType) {
+    switch (iTermThemedWindowType(windowType)) {
         case WINDOW_TYPE_TOP:
         case WINDOW_TYPE_TOP_PARTIAL:
             return kAnimationDirectionDown;
@@ -391,6 +618,8 @@ static NSString *const kArrangement = @"Arrangement";
         case WINDOW_TYPE_NORMAL:
         case WINDOW_TYPE_NO_TITLE_BAR:
         case WINDOW_TYPE_COMPACT:
+        case WINDOW_TYPE_MAXIMIZED:
+        case WINDOW_TYPE_COMPACT_MAXIMIZED:
         case WINDOW_TYPE_TRADITIONAL_FULL_SCREEN:  // Framerate drops too much to roll this (2014 5k iMac)
         case WINDOW_TYPE_LION_FULL_SCREEN:
         case WINDOW_TYPE_ACCESSORY:
@@ -408,11 +637,17 @@ static NSString *const kArrangement = @"Arrangement";
         DLog(@"Already rolling in");
         return;
     }
-    if (_rollingOut) {
+    if (self.rollingOut) {
         DLog(@"Rolling out. Cancel roll in");
         return;
     }
     _rollingIn = YES;
+    if (self.windowController.windowType == WINDOW_TYPE_TRADITIONAL_FULL_SCREEN) {
+        // This has to be done before making it key or the dock will be hidden based on the
+        // display it was last on, not the display it will be on. I think it might be safe to
+        // do this for all window types, but I don't want to risk introducing bugs here.
+        [self moveToPreferredScreen];
+    }
     if (self.hotkeyWindowType != iTermHotkeyWindowTypeFloatingPanel) {
         DLog(@"Activate iTerm2 prior to animating hotkey window in");
         _activationPending = YES;
@@ -444,6 +679,8 @@ static NSString *const kArrangement = @"Arrangement";
             case WINDOW_TYPE_NORMAL:
             case WINDOW_TYPE_NO_TITLE_BAR:
             case WINDOW_TYPE_COMPACT:
+            case WINDOW_TYPE_MAXIMIZED:
+            case WINDOW_TYPE_COMPACT_MAXIMIZED:
             case WINDOW_TYPE_TRADITIONAL_FULL_SCREEN:  // Framerate drops too much to roll this (2014 5k iMac)
             case WINDOW_TYPE_ACCESSORY:
                 [self moveToPreferredScreen];
@@ -460,9 +697,14 @@ static NSString *const kArrangement = @"Arrangement";
     }
 }
 
-- (void)rollOut {
+- (BOOL)rollingOut {
+    return _rollOutStage != iTermHotkeyRollOutStageNone;
+}
+
+- (void)rollOut:(BOOL)causedByKeypress {
     DLog(@"Roll out [hide] hotkey window");
-    if (_rollingOut) {
+    DLog(@"\n%@", [NSThread callStackSymbols]);
+    if (self.rollingOut) {
         DLog(@"Already rolling out");
         return;
     }
@@ -473,7 +715,8 @@ static NSString *const kArrangement = @"Arrangement";
         return;
     }
 
-    _rollingOut = YES;
+    _rollOutStage = iTermHotkeyRollOutStageAnimating;
+    _rollOutCancelable = YES;
 
     if ([iTermProfilePreferences boolForKey:KEY_HOTKEY_ANIMATE inProfile:self.profile]) {
         switch (self.windowController.windowType) {
@@ -487,16 +730,18 @@ static NSString *const kArrangement = @"Arrangement";
             case WINDOW_TYPE_BOTTOM_PARTIAL: {
                 iTermAnimationDirection inDirection = [self animateInDirectionForWindowType:self.windowController.windowType];
                 iTermAnimationDirection outDirection = iTermAnimationDirectionOpposite(inDirection);
-                [self rollOutAnimatingInDirection:outDirection];
+                [self rollOutAnimatingInDirection:outDirection causedByKeypress:causedByKeypress];
                 break;
             }
 
             case WINDOW_TYPE_NORMAL:
             case WINDOW_TYPE_NO_TITLE_BAR:
             case WINDOW_TYPE_COMPACT:
+            case WINDOW_TYPE_MAXIMIZED:
+            case WINDOW_TYPE_COMPACT_MAXIMIZED:
             case WINDOW_TYPE_TRADITIONAL_FULL_SCREEN:  // Framerate drops too much to roll this (2014 5k iMac)
             case WINDOW_TYPE_ACCESSORY:
-                [self fadeOut];
+                [self fadeOut:causedByKeypress];
                 break;
 
             case WINDOW_TYPE_LION_FULL_SCREEN:
@@ -504,14 +749,15 @@ static NSString *const kArrangement = @"Arrangement";
         }
     } else {
         self.windowController.window.alphaValue = 0;
-        [self didFinishRollingOut];
+        [self didFinishRollingOut:causedByKeypress];
     }
 }
 
+// Non-sqlite legacy code path
 - (void)saveHotKeyWindowState {
     if (self.windowController.weaklyReferencedObject && self.profileGuid) {
         DLog(@"Saving hotkey window state for %@", self);
-        BOOL includeContents = [iTermAdvancedSettingsModel restoreWindowContents];
+        const BOOL includeContents = [iTermAdvancedSettingsModel restoreWindowContents];
         NSDictionary *arrangement = [self.windowController arrangementExcludingTmuxTabs:YES
                                                                       includingContents:includeContents];
         if (arrangement) {
@@ -526,15 +772,28 @@ static NSString *const kArrangement = @"Arrangement";
     }
 }
 
-- (void)setLegacyState:(NSDictionary *)state {
-    if (self.profileGuid && state) {
-        self.restorableState = @{ kGUID: self.profileGuid,
-                                  kArrangement: state };
-    } else {
-        DLog(@"Not setting legacy state. profileGuid=%@, state=%@", self.profileGuid, state);
+- (BOOL)encodeGraphWithEncoder:(iTermGraphEncoder *)encoder {
+    if (!self.windowController.weaklyReferencedObject || !self.profileGuid) {
+        DLog(@"Not encoding hotkey window state for %@", self);
+        return NO;
     }
+    if (![self.windowController conformsToProtocol:@protocol(iTermGraphCodable)]) {
+        XLog(@"Window controller %@ does not conform to iTermGraphCodable", self.windowController);
+        return NO;
+    }
+    id<iTermGraphCodable> codable = (id<iTermGraphCodable>)self.windowController;
+
+    [encoder encodeString:self.profileGuid forKey:kGUID];
+    [encoder encodeChildWithKey:kArrangement
+                     identifier:@""
+                     generation:iTermGenerationAlwaysEncode
+                          block:^BOOL(iTermGraphEncoder * _Nonnull subencoder) {
+        return [codable encodeGraphWithEncoder:subencoder];
+    }];
+    return YES;
 }
 
+// Non-sqlite legacy code path
 - (BOOL)loadRestorableStateFromArray:(NSArray *)states {
     for (NSDictionary *state in states) {
         if ([state[kGUID] isEqualToString:self.profileGuid]) {
@@ -554,7 +813,7 @@ static NSString *const kArrangement = @"Arrangement";
 }
 
 - (void)hideForScripting {
-    [self hideHotKeyWindowAnimated:YES suppressHideApp:NO otherIsRollingIn:NO];
+    [self hideHotKeyWindowAnimated:YES suppressHideApp:NO otherIsRollingIn:NO causedByKeypress:NO];
 }
 
 - (void)toggleForScripting {
@@ -571,9 +830,18 @@ static NSString *const kArrangement = @"Arrangement";
 
 - (void)cancelRollOut {
     DLog(@"cancelRollOut requested");
-    if (_rollOutCancelable && _rollingOut) {
+    if (_rollOutCancelable && self.rollingOut) {
         DLog(@"Cancelling roll out");
-        _rollingOut = NO;
+        if (_rollOutStage == iTermHotkeyRollOutStageAnimating) {
+            if (_cancelAnimation) {
+                _cancelAnimation();
+                _cancelAnimation = nil;
+            }
+            _rollOutStage = iTermHotkeyRollOutStageNone;
+            _rollOutCancelable = NO;
+            return;
+        }
+        _rollOutStage = iTermHotkeyRollOutStageNone;
         _rollOutCancelable = NO;
         [self orderOut];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -582,7 +850,7 @@ static NSString *const kArrangement = @"Arrangement";
             }
         });
     } else {
-        DLog(@"Cannot cancel. cancelable=%@ rollingOut=%@", @(_rollOutCancelable), @(_rollingOut));
+        DLog(@"Cannot cancel. cancelable=%@ rollingOut=%@", @(_rollOutCancelable), @(self.rollingOut));
     }
 }
 
@@ -590,7 +858,16 @@ static NSString *const kArrangement = @"Arrangement";
 
 - (NSArray<iTermBaseHotKey *> *)hotKeyPressedWithSiblings:(NSArray<iTermBaseHotKey *> *)genericSiblings {
     DLog(@"hotKeypressedWithSiblings called on %@ with siblings %@", self, genericSiblings);
-
+    DLog(@"Secure input=%@", @([[iTermSecureKeyboardEntryController sharedInstance] isEnabled]));
+    if (@available(macOS 12.0, *)) {
+        if ([[iTermSecureKeyboardEntryController sharedInstance] isEnabled] &&
+            ![NSApp isActive]) {
+            DLog(@"Notify");
+            [[iTermNotificationController sharedInstance] notify:@"Hotkeys Unavailable"
+                                                 withDescription:@"Another app has enabled secure keyboard input. That prevents hotkey windows from being shown."];
+            return @[];
+        }
+    }
     genericSiblings = [genericSiblings arrayByAddingObject:self];
 
     NSArray<iTermProfileHotKey *> *siblings = [genericSiblings mapWithBlock:^id(iTermBaseHotKey *anObject) {
@@ -600,11 +877,13 @@ static NSString *const kArrangement = @"Arrangement";
             return nil;
         }
     }];
+    DLog(@"hotkey sibs are %@", siblings);
     // If any sibling is rolling out but we can cancel the rollout, do so. This is after the window
     // has finished animating out but we're in the delay period before activating the app the user
     // was in before pressing the hotkey to reveal the hotkey window.
     for (iTermProfileHotKey *other in siblings) {
         if (other.rollingOut && other.rollOutCancelable) {
+            DLog(@"cancel rollout");
             [other cancelRollOut];
         }
     }
@@ -641,6 +920,7 @@ static NSString *const kArrangement = @"Arrangement";
 }
 
 - (void)handleHotkeyPressWithAllOpen:(BOOL)allSiblingsOpen anyIsKey:(BOOL)anyIsKey {
+    DLog(@"handleHotkeyPressWithAllOpen");
     if (self.windowController.weaklyReferencedObject) {
         DLog(@"already have a hotkey window created");
         if (self.windowController.window.alphaValue == 1) {
@@ -662,7 +942,7 @@ static NSString *const kArrangement = @"Arrangement";
             self.wasAutoHidden = NO;
             if (anyIsKey || ![self switchToVisibleHotKeyWindowIfPossible]) {
                 DLog(@"Hide hotkey window");
-                [self hideHotKeyWindowAnimated:YES suppressHideApp:NO otherIsRollingIn:NO];
+                [self hideHotKeyWindowAnimated:YES suppressHideApp:NO otherIsRollingIn:NO causedByKeypress:YES];
             }
         } else {
             DLog(@"hotkey window not opaque");
@@ -684,6 +964,7 @@ static NSString *const kArrangement = @"Arrangement";
     }
 
     PseudoTerminal *term = [PseudoTerminal terminalWithArrangement:arrangement
+                                                             named:nil
                                           forceOpeningHotKeyWindow:NO];
     if (term) {
         [[iTermController sharedInstance] addTerminalWindow:term];
@@ -704,9 +985,12 @@ static NSString *const kArrangement = @"Arrangement";
     }
 }
 
-- (PseudoTerminal *)windowControllerFromProfile:(Profile *)hotkeyProfile url:(NSURL *)url {
+- (void)getWindowControllerFromProfile:(Profile *)hotkeyProfile
+                                   url:(NSURL *)url
+                            completion:(void (^)(PseudoTerminal *))completion {
     if (!hotkeyProfile) {
-        return nil;
+        completion(nil);
+        return;
     }
     if ([[hotkeyProfile objectForKey:KEY_WINDOW_TYPE] intValue] == WINDOW_TYPE_LION_FULL_SCREEN) {
         // Lion fullscreen doesn't make sense with hotkey windows. Change
@@ -717,47 +1001,70 @@ static NSString *const kArrangement = @"Arrangement";
     }
     [self.delegate hotKeyWillCreateWindow:self];
     self.birthingWindow = YES;
-    PTYSession *session = [[iTermController sharedInstance] launchBookmark:hotkeyProfile
-                                                                inTerminal:nil
-                                                                   withURL:url.absoluteString
-                                                          hotkeyWindowType:[self hotkeyWindowType]
-                                                                   makeKey:YES
-                                                               canActivate:YES
-                                                                   command:nil
-                                                                     block:nil];
-    self.birthingWindow = NO;
+    [iTermSessionLauncher launchBookmark:hotkeyProfile
+                              inTerminal:nil
+                                 withURL:url.absoluteString
+                        hotkeyWindowType:[self hotkeyWindowType]
+                                 makeKey:YES
+                             canActivate:YES
+                      respectTabbingMode:NO
+                                   index:nil
+                                 command:nil
+                             makeSession:nil
+                          didMakeSession:^(PTYSession * _Nonnull session) {
+        self.birthingWindow = NO;
 
-    [self.delegate hotKeyDidCreateWindow:self];
-    PseudoTerminal *result = nil;
-    if (session) {
-        result = [[iTermController sharedInstance] terminalWithSession:session];
+        [self.delegate hotKeyDidCreateWindow:self];
+        PseudoTerminal *result = nil;
+        if (session) {
+            result = [[iTermController sharedInstance] terminalWithSession:session];
+        }
+        self.windowControllerBeingBorn = nil;
+        completion(result);
     }
-    self.windowControllerBeingBorn = nil;
-    return result;
+                              completion:nil];
 }
 
 - (void)rollInFinished {
     DLog(@"Roll-in finished for %@", self);
     _rollingIn = NO;
-    [self.windowController.window makeKeyAndOrderFront:nil];
+    if (self.windowController.window) {
+        [[iTermApplication sharedApplication] it_makeWindowKey:self.windowController.window];
+    }
     [self.windowController.window makeFirstResponder:self.windowController.currentSession.textview];
     [[self.windowController currentTab] recheckBlur];
     self.windowController.window.collectionBehavior = self.windowController.desiredWindowCollectionBehavior;
+    [[iTermPresentationController sharedInstance] update];
 }
 
-- (void)didFinishRollingOut {
+- (void)didFinishRollingOut:(BOOL)causedByKeypress {
     DLog(@"didFinishRollingOut");
     _activationPending = NO;
     DLog(@"Invoke willFinishRollingOutProfileHotKey:");
-    BOOL activatingOtherApp = [self.delegate willFinishRollingOutProfileHotKey:self];
+    BOOL activatingOtherApp = [self.delegate willFinishRollingOutProfileHotKey:self
+                                                              causedByKeypress:causedByKeypress];
     if (activatingOtherApp) {
-        _rollOutCancelable = YES;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (_rollingOut) {
+        if (@available(macOS 14, *)) {
+            // I'm no longer able to reproduce the bad behavior mentioned in the else clause.
+            // In issue 11372 it's noted that the delay prevents you from typing in the previously
+            // active app.
+            if (self.rollingOut) {
+                DLog(@"Order out with secure keyboard entry=%@", @(IsSecureEventInputEnabled()));
                 _rollOutCancelable = NO;
                 [self orderOut];
             }
-        });
+        } else {
+            // Defer rolling out until the previous app is active. See issue 5313
+            DLog(@"Schedule order-out");
+            _rollOutStage = iTermHotkeyRollOutStageWaiting;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (self.rollingOut) {
+                    DLog(@"Order out with secure keyboard entry=%@", @(IsSecureEventInputEnabled()));
+                    _rollOutCancelable = NO;
+                    [self orderOut];
+                }
+            });
+        }
     } else {
         [self orderOut];
     }
@@ -767,11 +1074,11 @@ static NSString *const kArrangement = @"Arrangement";
 - (void)orderOut {
     DLog(@"Call orderOut: on terminal %@", self.windowController);
     [self.windowController.window orderOut:self];
-    DLog(@"Returned from orderOut:. Set _rollingOut=NO");
+    DLog(@"Returned from orderOut:. Set rollOutStage=.none");
 
     // This must be done after orderOut: so autoHideHotKeyWindowsExcept: will know to throw out the
     // previous state.
-    _rollingOut = NO;
+    _rollOutStage = iTermHotkeyRollOutStageNone;
 }
 
 - (BOOL)autoHides {
@@ -835,16 +1142,21 @@ static NSString *const kArrangement = @"Arrangement";
     BOOL result = NO;
     if (!self.windowController.weaklyReferencedObject) {
         DLog(@"Create new hotkey window");
-        [self createWindowWithURL:url];
+        [self createWindowWithURL:url completion:^{
+            [self rollInAnimated:[iTermProfilePreferences boolForKey:KEY_HOTKEY_ANIMATE inProfile:self.profile]];
+        }];
         result = YES;
+    } else {
+        DLog(@"reveal existing hotkey window");
+        [self rollInAnimated:[iTermProfilePreferences boolForKey:KEY_HOTKEY_ANIMATE inProfile:self.profile]];
     }
-    [self rollInAnimated:[iTermProfilePreferences boolForKey:KEY_HOTKEY_ANIMATE inProfile:self.profile]];
     return result;
 }
 
 - (void)hideHotKeyWindowAnimated:(BOOL)animated
                  suppressHideApp:(BOOL)suppressHideApp
-                otherIsRollingIn:(BOOL)otherIsRollingIn {
+                otherIsRollingIn:(BOOL)otherIsRollingIn
+                causedByKeypress:(BOOL)causedByKeypress {
     DLog(@"Hide hotkey window. animated=%@ suppressHideApp=%@", @(animated), @(suppressHideApp));
 
     if (suppressHideApp) {
@@ -858,7 +1170,7 @@ static NSString *const kArrangement = @"Arrangement";
         [self.windowController.window endSheet:sheet];
     }
     self.closedByOtherHotkeyWindowOpening = otherIsRollingIn;
-    [self rollOut];
+    [self rollOut:causedByKeypress];
 }
 
 - (void)windowWillClose {
@@ -894,10 +1206,12 @@ static NSString *const kArrangement = @"Arrangement";
 }
 
 - (void)inputMethodEditorDidOpen:(NSNotification *)notification {
+    DLog(@"inputMethodEditorDidOpen");
     [self updateWindowLevel];
 }
 
 - (void)inputMethodEditorDidClose:(NSNotification *)notification {
+    DLog(@"inputMethodEditorDidClose");
     [self updateWindowLevel];
 }
 

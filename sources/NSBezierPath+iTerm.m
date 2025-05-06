@@ -57,6 +57,14 @@
 }
 
 - (CGPathRef)iterm_CGPath {
+    return [self iterm_cgPathOpen:NO];
+}
+
+- (CGPathRef)iterm_openCGPath {
+    return [self iterm_cgPathOpen:YES];
+}
+
+- (CGPathRef)iterm_cgPathOpen:(BOOL)open {
     if (self.elementCount == 0) {
         return NULL;
     }
@@ -87,12 +95,18 @@
 
             case NSClosePathBezierPathElement:
                 closed = YES;
-                CGPathCloseSubpath(path);
+                if (!open) {
+                    CGPathCloseSubpath(path);
+                }
+                break;
+            case NSBezierPathElementQuadraticCurveTo:
+                closed = NO;
+                CGPathAddQuadCurveToPoint(path, NULL, associatedPoints[0].x, associatedPoints[0].y, associatedPoints[1].x, associatedPoints[1].y);
                 break;
         }
     }
 
-    if (!closed) {
+    if (!closed && !open) {
         CGPathCloseSubpath(path);
     }
 

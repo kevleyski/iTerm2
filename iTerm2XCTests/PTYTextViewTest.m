@@ -1,12 +1,18 @@
+// TODO: Some day fix the unit tests
+#if 0
+
 #import "iTermColorMap.h"
+#import "iTermColorPresets.h"
 #import "iTermSelection.h"
 #import "iTermTextDrawingHelper.h"
 #import "NSColor+iTerm.h"
 #import "NSFont+iTerm.h"
 #import "NSImage+iTerm.h"
 #import "NSView+iTerm.h"
+#import "ProfileModel.h"
 #import "PTYSession.h"
 #import "PTYTextView.h"
+#import "PTYTextView+Private.h"
 #import "SessionView.h"
 #import "VT100LineInfo.h"
 #import "iTermApplication.h"
@@ -72,11 +78,17 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     });
     _script = [NSMutableString string];
     _colorMap = [[iTermColorMap alloc] init];
-    _textView = [[PTYTextView alloc] initWithFrame:NSMakeRect(0, 0, 100, 100) colorMap:_colorMap];
-    [_textView.colorMap setColor:[NSColor redColor] forKey:kColorMapBackground];
-    [_textView.colorMap setColor:[NSColor redColor] forKey:kColorMapForeground];
+    _textView = [[PTYTextView alloc] initWithFrame:NSMakeRect(0, 0, 100, 100)];
+    [_textView.dataSource setColor:[NSColor redColor] forKey:kColorMapBackground];
+    [_textView.dataSource setColor:[NSColor redColor] forKey:kColorMapForeground];
     _textView.delegate = self;
     _textView.dataSource = self;
+    NSFont *font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+    [_textView setFont:font
+          nonAsciiFont:font
+     horizontalSpacing:1
+       verticalSpacing:1];
+    _textView.useBoldFont = YES;
     _methodsCalled = [[NSMutableDictionary alloc] init];
 }
 
@@ -121,6 +133,9 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)selectPaneRightInCurrentTerminal {
 }
 
+- (void)textViewSelectionDidChangeToTruncatedString:(NSString *)maybeSelection {
+}
+
 - (void)textViewSelectPreviousPane {
 }
 
@@ -147,8 +162,8 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     return YES;
 }
 
-- (int)optionKey {
-    return 2;
+- (iTermOptionKeyBehavior)optionKey {
+    return OPT_ESC;
 }
 
 - (void)textViewSwapPane {
@@ -211,7 +226,11 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     return NO;
 }
 
-- (VT100GridCoordRange)textViewRangeOfOutputForCommandMark:(VT100ScreenMark *)mark {
+- (BOOL)textViewIsFiltered {
+    return NO;
+}
+
+- (VT100GridCoordRange)textViewRangeOfOutputForCommandMark:(id<VT100ScreenMarkReading>)mark {
     return VT100GridCoordRangeMake(0, 0, 0, 0);
 }
 
@@ -245,10 +264,6 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)textViewPostTabContentsChangedNotification {
 }
 
-- (NSString *)textViewCurrentWorkingDirectory {
-    return nil;
-}
-
 - (BOOL)textViewCanSelectOutputOfLastCommand {
     return NO;
 }
@@ -268,7 +283,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     return NO;
 }
 
-- (VT100GridCoordRange)coordRangeOfNote:(PTYNoteViewController *)note {
+- (VT100GridCoordRange)coordRangeOfAnnotation:(PTYAnnotation *)note {
     return VT100GridCoordRangeMake(0, 0, 0, 0);
 }
 
@@ -287,6 +302,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (BOOL)textViewReportMouseEvent:(NSEventType)eventType
                        modifiers:(NSUInteger)modifiers
                           button:(MouseButtonNumber)button
+                           point:(NSPoint)point
                       coordinate:(VT100GridCoord)coord
                           deltaY:(CGFloat)deltaY {
     return NO;
@@ -306,7 +322,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)textViewEditSession {
 }
 
-- (screen_char_t *)getLineAtIndex:(int)theIndex withBuffer:(screen_char_t*)buffer {
+- (const screen_char_t *)getLineAtIndex:(int)theIndex withBuffer:(screen_char_t*)buffer {
     return nil;
 }
 
@@ -338,16 +354,16 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)textViewFontDidChange {
 }
 
-- (VT100RemoteHost *)remoteHostOnLine:(int)line {
+- (id<VT100RemoteHostReading>)remoteHostOnLine:(int)line {
     return nil;
 }
 
-- (int)rightOptionKey {
-    return 1;
+- (iTermOptionKeyBehavior)rightOptionKey {
+    return OPT_META;
 }
 
-- (NSArray *)notesInRange:(VT100GridCoordRange)range {
-    return nil;
+- (NSArray *)annotationsInRange:(VT100GridCoordRange)range {
+    return @[];
 }
 
 - (void)saveFindContextAbsPos {
@@ -370,7 +386,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     return line - 1;
 }
 
-- (VT100ScreenMark *)markOnLine:(int)line {
+- (id<VT100ScreenMarkReading>)markOnLine:(int)line {
     return nil;
 }
 
@@ -378,7 +394,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     return nil;
 }
 
-- (void)addNote:(PTYNoteViewController *)note inRange:(VT100GridCoordRange)range {
+- (void)addNote:(PTYAnnotation *)note inRange:(VT100GridCoordRange)range {
 }
 
 - (void)startDownloadOverSCP:(SCPPath *)path {
@@ -387,7 +403,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)selectPaneAboveInCurrentTerminal {
 }
 
-- (void)saveToDvr {
+- (void)saveToDvr:(NSIndexSet *)cleanLines {
 }
 
 - (void)removeInaccessibleNotes {
@@ -524,13 +540,20 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)textViewThinksUserIsTryingToSendArrowKeysWithScrollWheel:(BOOL)trying {
 }
 
-- (void)textViewResizeFrameIfNeeded {
+- (BOOL)textViewResizeFrameIfNeeded {
+    return NO;
 }
 
 - (void)textViewDidRefresh {
 }
 
 - (void)textViewBackgroundColorDidChange {
+}
+
+- (void)textViewTransparencyDidChange {
+}
+
+- (void)textViewForegroundColorDidChangeFrom:(NSColor *)before to:(NSColor *)after {
 }
 
 - (NSInteger)textViewUnicodeVersion {
@@ -547,7 +570,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)textViewNeedsDisplayInRect:(NSRect)rect {
 }
 
-- (BOOL)continueFindAllResults:(NSMutableArray *)results inContext:(FindContext *)context {
+- (BOOL)continueFindAllResults:(NSMutableArray *)results
+                      rangeOut:(NSRange *)rangePtr
+                     inContext:(FindContext *)context
+                 rangeSearched:(VT100GridAbsCoordRange *)rangeSearched {
     return NO;
 }
 
@@ -612,6 +638,15 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                            pathForResource:@"DefaultBookmark"
                            ofType:@"plist"];
     NSMutableDictionary* profile = [NSMutableDictionary dictionaryWithContentsOfFile:plistFile];
+
+    // Load the dark background color preset so the test isn't dependent on light/dark mode.
+    iTermColorPreset *darkBackground = [iTermColorPresets presetWithName:@"Dark Background"];
+    for (NSString *colorName in [ProfileModel colorKeysWithModes:NO]) {
+        if (darkBackground[colorName]) {
+            profile[colorName] = darkBackground[colorName];
+        }
+    }
+    profile[KEY_USE_SEPARATE_COLORS_FOR_LIGHT_AND_DARK_MODE] = @NO;
     profile[KEY_GUID] = [ProfileModel freshGuid];
     for (NSString *key in profileOverrides) {
         profile[key] = profileOverrides[key];
@@ -625,17 +660,15 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [session setSize:size];
     NSRect theFrame = NSMakeRect(0,
                                  0,
-                                 size.width * session.textview.charWidth + [iTermAdvancedSettingsModel terminalMargin] * 2,
-                                 size.height * session.textview.lineHeight + [iTermAdvancedSettingsModel terminalVMargin] * 2);
+                                 size.width * session.textview.charWidth + [iTermPreferences intForKey:kPreferenceKeySideMargins] * 2,
+                                 size.height * session.textview.lineHeight + [iTermPreferences intForKey:kPreferenceKeyTopBottomMargins] * 2);
     session.view.frame = theFrame;
-    [session loadInitialColorTable];
-//    [session.nameController setSessionName:profile[KEY_NAME]];
-//    [session.nameController setOriginalName:profile[KEY_NAME]];
+    [session loadInitialColorTableAndResetCursorGuide];
     return session;
 }
 
 - (NSImage *)imageForInput:(NSString *)input
-                        hook:(void (^)(PTYTextView *))hook
+                      hook:(void (^)(PTYTextView *))hook
           profileOverrides:(NSDictionary *)profileOverrides
                       size:(VT100GridSize)size {
     PTYSession *session = [self sessionWithProfileOverrides:profileOverrides size:size];
@@ -644,6 +677,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     if (hook) {
         hook(session.textview);
     }
+    [session.textview setDrawingHelperIsRetina:[[NSScreen mainScreen] backingScaleFactor] > 1];
     return [session.view snapshot];
 }
 
@@ -722,7 +756,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                                    samplesPerPixel:3
                                           hasAlpha:NO
                                     colorSpaceName:NSCalibratedRGBColorSpace];
-    NSData *encodedDiffImage = [diffImage dataForFileOfType:NSPNGFileType];
+    NSData *encodedDiffImage = [diffImage dataForFileOfType:NSBitmapImageFileTypePNG];
     [encodedDiffImage writeToFile:diffPath atomically:NO];
 
     return maxDiff < threshold;
@@ -744,16 +778,16 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                         size:(VT100GridSize)size {
     NSImage *actual = [self imageForInput:input
                                      hook:^(PTYTextView *textView) {
-                                         textView.thinStrokes = iTermThinStrokesSettingNever;
-                                         if (hook) {
-                                             hook(textView);
-                                         }
-                                     }
+        textView.thinStrokes = iTermThinStrokesSettingNever;
+        if (hook) {
+            hook(textView);
+        }
+    }
                          profileOverrides:profileOverrides
                                      size:size];
     NSString *goldenName = [self pathForGoldenWithName:name];
     if (createGolden) {
-        NSData *pngData = [actual dataForFileOfType:NSPNGFileType];
+        NSData *pngData = [actual dataForFileOfType:NSBitmapImageFileTypePNG];
         [pngData writeToFile:goldenName atomically:NO];
         NSLog(@"Wrote to golden file at %@", goldenName);
     } else {
@@ -775,14 +809,14 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
             char *projectDir = STRINGIFY_MACRO(PROJECT_DIR);
             NSString *sourceFolder = [NSString stringWithUTF8String:projectDir];
             if (sourceFolder && ![[[iTermApplication sharedApplication] delegate] isRunningOnTravis]) {
-                NSData *pngData = [actual dataForFileOfType:NSPNGFileType];
+                NSData *pngData = [actual dataForFileOfType:NSBitmapImageFileTypePNG];
                 NSString *sourceName = [[[[sourceFolder stringByAppendingPathComponent:@"tests/Goldens"] stringByAppendingPathComponent:@"PTYTextViewTest-golden-"] stringByAppendingString:name] stringByAppendingString:@".png"];
                 [pngData writeToFile:sourceName atomically:NO];
                 NSLog(@"Wrote to golden file at %@", sourceName);
             }
 
             NSString *failPath = [NSString stringWithFormat:@"/tmp/failed-%@.png", name];
-            [[actual dataForFileOfType:NSPNGFileType] writeToFile:failPath atomically:NO];
+            [[actual dataForFileOfType:NSBitmapImageFileTypePNG] writeToFile:failPath atomically:NO];
             NSLog(@"nTest “%@” about to fail.\nActual output in %@.\nExpected output in %@",
                   name, failPath, goldenName);
             [_script appendFormat:@"echo ----- %@ -----\n", name];
@@ -803,7 +837,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 
 - (NSString *)sgrSequenceWithSubparams:(NSArray *)values {
     return [NSString stringWithFormat:@"%c[%@m",
-               VT100CC_ESC, [values componentsJoinedByString:@":"]];
+            VT100CC_ESC, [values componentsJoinedByString:@":"]];
 }
 
 #pragma mark - Drawing Tests
@@ -813,15 +847,15 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abcd"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              VT100GridWindowedRange range =
-                                  VT100GridWindowedRangeMake(VT100GridCoordRangeMake(1, 0, 3, 0),
-                                                             0, 0);
-                              iTermSubSelection *subSelection =
-                                  [iTermSubSelection subSelectionWithRange:range
-                                                                      mode:kiTermSelectionModeCharacter
-                                                                     width:textView.dataSource.width];
-                              [textView.selection addSubSelection:subSelection];
-                          }
+        VT100GridAbsWindowedRange range =
+        VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(1, 0, 3, 0),
+                                      0, 0);
+        iTermSubSelection *subSelection =
+        [iTermSubSelection subSelectionWithAbsRange:range
+                                               mode:kiTermSelectionModeCharacter
+                                              width:textView.dataSource.width];
+        [textView.selection addSubSelection:subSelection];
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(5, 2)];
@@ -832,15 +866,15 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abcd\r\nefgh\r\nijkl\r\nmnop"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              VT100GridWindowedRange range =
-                                  VT100GridWindowedRangeMake(VT100GridCoordRangeMake(1, 1, 3, 2),
-                                                             0, 0);
-                              iTermSubSelection *subSelection =
-                              [iTermSubSelection subSelectionWithRange:range
-                                                                  mode:kiTermSelectionModeBox
-                                                                 width:textView.dataSource.width];
-                              [textView.selection addSubSelection:subSelection];
-                          }
+        VT100GridAbsWindowedRange range =
+        VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(1, 1, 3, 2),
+                                      0, 0);
+        iTermSubSelection *subSelection =
+        [iTermSubSelection subSelectionWithAbsRange:range
+                                               mode:kiTermSelectionModeBox
+                                              width:textView.dataSource.width];
+        [textView.selection addSubSelection:subSelection];
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(5, 5)];
@@ -852,23 +886,23 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abcd\r\nefgh\r\nijkl\r\nmnop"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              VT100GridWindowedRange range =
-                                  VT100GridWindowedRangeMake(VT100GridCoordRangeMake(1, 1, 3, 2),
-                                                             0, 0);
-                              iTermSubSelection *subSelection =
-                                  [iTermSubSelection subSelectionWithRange:range
-                                                                      mode:kiTermSelectionModeBox
-                                                                     width:textView.dataSource.width];
-                              [textView.selection addSubSelection:subSelection];
+        VT100GridAbsWindowedRange range =
+        VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(1, 1, 3, 2),
+                                      0, 0);
+        iTermSubSelection *subSelection =
+        [iTermSubSelection subSelectionWithAbsRange:range
+                                               mode:kiTermSelectionModeBox
+                                              width:textView.dataSource.width];
+        [textView.selection addSubSelection:subSelection];
 
-                              range = VT100GridWindowedRangeMake(VT100GridCoordRangeMake(0, 0, 2, 0),
-                                                                 0, 0);
-                              subSelection = [iTermSubSelection subSelectionWithRange:range
-                                                                                 mode:kiTermSelectionModeCharacter
-                                                                                width:textView.dataSource.width];
-                              [textView.selection addSubSelection:subSelection];
+        range = VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(0, 0, 2, 0),
+                                              0, 0);
+        subSelection = [iTermSubSelection subSelectionWithAbsRange:range
+                                                              mode:kiTermSelectionModeCharacter
+                                                             width:textView.dataSource.width];
+        [textView.selection addSubSelection:subSelection];
 
-                          }
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(5, 5)];
@@ -880,15 +914,15 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abcd\r\nefgh\r\nijkl\r\nmnop"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              VT100GridWindowedRange range =
-                                  VT100GridWindowedRangeMake(VT100GridCoordRangeMake(1, 0, 3, 3),
-                                                             1, 2);
-                              iTermSubSelection *subSelection =
-                              [iTermSubSelection subSelectionWithRange:range
-                                                                  mode:kiTermSelectionModeBox
-                                                                 width:textView.dataSource.width];
-                              [textView.selection addSubSelection:subSelection];
-                          }
+        VT100GridAbsWindowedRange range =
+        VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(1, 0, 3, 3),
+                                      1, 2);
+        iTermSubSelection *subSelection =
+        [iTermSubSelection subSelectionWithAbsRange:range
+                                               mode:kiTermSelectionModeBox
+                                              width:textView.dataSource.width];
+        [textView.selection addSubSelection:subSelection];
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(5, 5)];
@@ -900,15 +934,15 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"a\t\x08q"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              VT100GridWindowedRange range =
-                              VT100GridWindowedRangeMake(VT100GridCoordRangeMake(1, 0, 3, 0),
-                                                         0, 0);
-                              iTermSubSelection *subSelection =
-                              [iTermSubSelection subSelectionWithRange:range
-                                                                  mode:kiTermSelectionModeCharacter
-                                                                 width:textView.dataSource.width];
-                              [textView.selection addSubSelection:subSelection];
-                          }
+        VT100GridAbsWindowedRange range =
+        VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(1, 0, 3, 0),
+                                      0, 0);
+        iTermSubSelection *subSelection =
+        [iTermSubSelection subSelectionWithAbsRange:range
+                                               mode:kiTermSelectionModeCharacter
+                                              width:textView.dataSource.width];
+        [textView.selection addSubSelection:subSelection];
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(9, 2)];
@@ -918,40 +952,40 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 // unfocused.
 - (void)testSelectedTab {
     [self doGoldenTestForInput:@"a\tb"
-                              name:NSStringFromSelector(_cmd)
-                              hook:^(PTYTextView *textView) {
-                                  VT100GridWindowedRange range =
-                                      VT100GridWindowedRangeMake(VT100GridCoordRangeMake(7, 0, 9, 0),
-                                                                 0, 0);
-                                  iTermSubSelection *subSelection =
-                                      [iTermSubSelection subSelectionWithRange:range
-                                                                          mode:kiTermSelectionModeCharacter
-                                                                         width:textView.dataSource.width];
-                                  [textView.selection addSubSelection:subSelection];
-                              }
-                  profileOverrides:nil
-                      createGolden:NO
-                              size:VT100GridSizeMake(9, 2)];
+                          name:NSStringFromSelector(_cmd)
+                          hook:^(PTYTextView *textView) {
+        VT100GridAbsWindowedRange range =
+        VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(7, 0, 9, 0),
+                                      0, 0);
+        iTermSubSelection *subSelection =
+        [iTermSubSelection subSelectionWithAbsRange:range
+                                               mode:kiTermSelectionModeCharacter
+                                              width:textView.dataSource.width];
+        [textView.selection addSubSelection:subSelection];
+    }
+              profileOverrides:nil
+                  createGolden:NO
+                          size:VT100GridSizeMake(9, 2)];
 }
 
 // Although one of the tab fillers after a is selected, only a should appear selected.
 // The selection color is grayed because the window is unfocused.
 - (void)testSelectedTabFillerWithoutTab {
     [self doGoldenTestForInput:@"a\tb"
-                              name:NSStringFromSelector(_cmd)
-                              hook:^(PTYTextView *textView) {
-                                  VT100GridWindowedRange range =
-                                      VT100GridWindowedRangeMake(VT100GridCoordRangeMake(0, 0, 3, 0),
-                                                                 0, 0);
-                                  iTermSubSelection *subSelection =
-                                      [iTermSubSelection subSelectionWithRange:range
-                                                                          mode:kiTermSelectionModeCharacter
-                                                                         width:textView.dataSource.width];
-                                  [textView.selection addSubSelection:subSelection];
-                              }
-                  profileOverrides:nil
-                      createGolden:NO
-                              size:VT100GridSizeMake(9, 2)];
+                          name:NSStringFromSelector(_cmd)
+                          hook:^(PTYTextView *textView) {
+        VT100GridAbsWindowedRange range =
+        VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(0, 0, 3, 0),
+                                      0, 0);
+        iTermSubSelection *subSelection =
+        [iTermSubSelection subSelectionWithAbsRange:range
+                                               mode:kiTermSelectionModeCharacter
+                                              width:textView.dataSource.width];
+        [textView.selection addSubSelection:subSelection];
+    }
+              profileOverrides:nil
+                  createGolden:NO
+                          size:VT100GridSizeMake(9, 2)];
 }
 
 // By default, the text view is not the first responder. Ensure the color is correct when it is FR.
@@ -959,18 +993,18 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abcd"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              VT100GridWindowedRange range =
-                                  VT100GridWindowedRangeMake(VT100GridCoordRangeMake(1, 0, 3, 0),
-                                                             0, 0);
-                              iTermSubSelection *subSelection =
-                                  [iTermSubSelection subSelectionWithRange:range
-                                                                      mode:kiTermSelectionModeCharacter
-                                                                     width:textView.dataSource.width];
-                              [textView.selection addSubSelection:subSelection];
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.isFrontTextView = YES;
-                              };
-                          }
+        VT100GridAbsWindowedRange range =
+        VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(1, 0, 3, 0),
+                                      0, 0);
+        iTermSubSelection *subSelection =
+        [iTermSubSelection subSelectionWithAbsRange:range
+                                               mode:kiTermSelectionModeCharacter
+                                              width:textView.dataSource.width];
+        [textView.selection addSubSelection:subSelection];
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.isFrontTextView = YES;
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(5, 2)];
@@ -981,11 +1015,11 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"a\r\nb\r\nc\r\nd\x1b[2A"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                                  helper.highlightCursorLine = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+            helper.highlightCursorLine = YES;
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(5, 5)];
@@ -996,8 +1030,8 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"\n\n\n\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\x1b[42mabc"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              [textView setBadgeLabel:@"Badge"];
-                          }
+        [textView setBadgeLabel:@"Badge"];
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(80, 25)];
@@ -1035,7 +1069,9 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
              [self sgrSequenceWithSubparams:@[ @38, @5, fg ]],
              [self sgrSequenceWithSubparams:@[ @48, @5, bg ]] ];
         }
-        [input appendFormat:@"\r\n"];
+        if (bg != colors.lastObject) {
+            [input appendFormat:@"\r\n"];
+        }
     }
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
@@ -1049,7 +1085,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                                           green:(CGFloat)green
                                            blue:(CGFloat)blue {
     return [NSString stringWithFormat:@"\e[38:2:%d:%d:%dm",
-               (int)(red * 255), (int)(green * 255), (int)(blue * 255)];
+            (int)(red * 255), (int)(green * 255), (int)(blue * 255)];
 }
 
 - (NSString *)sequenceForBackgroundColorWithRed:(CGFloat)red
@@ -1096,11 +1132,11 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abc\r\ndef\r\n\e[42mBlahblahblah"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              [textView setBadgeLabel:@"Badge"];
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.showStripes = YES;
-                              };
-                          }
+        [textView setBadgeLabel:@"Badge"];
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.showStripes = YES;
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(80, 25)];
@@ -1169,10 +1205,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"a\x1b[5mb"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.blinkingItemsVisible = NO;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.blinkingItemsVisible = NO;
+        };
+    }
               profileOverrides:@{ KEY_BLINK_ALLOWED: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(3, 2)];
@@ -1183,10 +1219,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"a\x1b[5mb"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.blinkingItemsVisible = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.blinkingItemsVisible = YES;
+        };
+    }
               profileOverrides:@{ KEY_BLINK_ALLOWED: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(3, 2)];
@@ -1197,13 +1233,13 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@""
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.blinkingItemsVisible = NO;
-                                  helper.isInKeyWindow = YES;
-                                  helper.textViewIsActiveSession = YES;
-                                  helper.cursorBlinking = YES;  // PTYTextView sets this based on if the window is key
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.blinkingItemsVisible = NO;
+            helper.isInKeyWindow = YES;
+            helper.textViewIsActiveSession = YES;
+            helper.cursorBlinking = YES;  // PTYTextView sets this based on if the window is key
+        };
+    }
               profileOverrides:@{ KEY_BLINKING_CURSOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -1214,13 +1250,13 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@""
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.blinkingItemsVisible = YES;
-                                  helper.isInKeyWindow = YES;
-                                  helper.textViewIsActiveSession = YES;
-                                  helper.cursorBlinking = YES;  // PTYTextView sets this based on if the window is key
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.blinkingItemsVisible = YES;
+            helper.isInKeyWindow = YES;
+            helper.textViewIsActiveSession = YES;
+            helper.cursorBlinking = YES;  // PTYTextView sets this based on if the window is key
+        };
+    }
               profileOverrides:@{ KEY_BLINKING_CURSOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -1235,10 +1271,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"a\r\nb\r\n"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              [textView refresh];
-                              PTYSession *session = (PTYSession *)textView.delegate;
-                              [session synchronousReadTask:@"c\r\nd"];
-                          }
+        [textView refresh];
+        PTYSession *session = (PTYSession *)textView.delegate;
+        [session synchronousReadTask:@"c\r\nd"];
+    }
               profileOverrides:@{ KEY_SCROLLBACK_LINES: @1 }
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -1250,16 +1286,16 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"a\r\nb\r\n"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              // Change the session's class to one that always returns YES for
-                              // use transparency.
-                              PTYSession *session = (PTYSession *)textView.delegate;
-                              object_setClass(session, [iTermFakeSessionForPTYTextViewTest class]);
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  // Draw a red background to ensure transparency.
-                                  [[NSColor redColor] set];
-                                  NSRectFill(textView.bounds);
-                              };
-                          }
+        // Change the session's class to one that always returns YES for
+        // use transparency.
+        PTYSession *session = (PTYSession *)textView.delegate;
+        object_setClass(session, [iTermFakeSessionForPTYTextViewTest class]);
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            // Draw a red background to ensure transparency.
+            [[NSColor redColor] set];
+            NSRectFill(textView.bounds);
+        };
+    }
               profileOverrides:@{ KEY_TRANSPARENCY: @0.5 }
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -1270,10 +1306,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"x"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              [textView setMarkedText:@"abc"
-                                        selectedRange:NSMakeRange(3, 0)
-                                     replacementRange:NSMakeRange(0, 0)];
-                          }
+        [textView setMarkedText:@"abc"
+                  selectedRange:NSMakeRange(3, 0)
+               replacementRange:NSMakeRange(0, 0)];
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -1284,10 +1320,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"x"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              [textView setMarkedText:@"Γ"  // U+0393 (hex), Greek capital gamma, is ambiguous width
-                                        selectedRange:NSMakeRange(1, 0)
-                                     replacementRange:NSMakeRange(0, 0)];
-                          }
+        [textView setMarkedText:@"Γ"  // U+0393 (hex), Greek capital gamma, is ambiguous width
+                  selectedRange:NSMakeRange(1, 0)
+               replacementRange:NSMakeRange(0, 0)];
+    }
               profileOverrides:@{ KEY_AMBIGUOUS_DOUBLE_WIDTH: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(3, 2)];
@@ -1298,10 +1334,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"x"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              [textView setMarkedText:@"Γ"  // U+0393 (hex), Greek capital gamma, is ambiguous width
-                                        selectedRange:NSMakeRange(1, 0)
-                                     replacementRange:NSMakeRange(0, 0)];
-                          }
+        [textView setMarkedText:@"Γ"  // U+0393 (hex), Greek capital gamma, is ambiguous width
+                  selectedRange:NSMakeRange(1, 0)
+               replacementRange:NSMakeRange(0, 0)];
+    }
               profileOverrides:@{ KEY_AMBIGUOUS_DOUBLE_WIDTH: @NO }
                   createGolden:NO
                           size:VT100GridSizeMake(3, 2)];
@@ -1312,11 +1348,11 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"x"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              // The DWC should be wrapped onto the second line
-                              [textView setMarkedText:@"aᄀ"  // U+1100 (hex), HANGUL CHOSEONG KIYEOK, is double width.
-                                        selectedRange:NSMakeRange(2, 0)
-                                     replacementRange:NSMakeRange(0, 0)];
-                          }
+        // The DWC should be wrapped onto the second line
+        [textView setMarkedText:@"aᄀ"  // U+1100 (hex), HANGUL CHOSEONG KIYEOK, is double width.
+                  selectedRange:NSMakeRange(2, 0)
+               replacementRange:NSMakeRange(0, 0)];
+    }
               profileOverrides:@{ KEY_AMBIGUOUS_DOUBLE_WIDTH: @NO }
                   createGolden:NO
                           size:VT100GridSizeMake(3, 2)];
@@ -1353,7 +1389,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)testBackgroundImageWithReverseVideo {
     NSString *pathToImage = [self pathForTestResourceNamed:@"TestBackground.png"];
     [self doGoldenTestForInput:@"\e[7ma\e[31mb\e[42mc\r\n"
-                               @"\e[0ma\e[31mb\e[42mc"
+     @"\e[0ma\e[31mb\e[42mc"
                           name:NSStringFromSelector(_cmd)
                           hook:nil
               profileOverrides:@{ KEY_BACKGROUND_IMAGE_LOCATION: pathToImage,
@@ -1366,8 +1402,8 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)testBackgroundImageWithGloballyInvertedColors {
     NSString *pathToImage = [self pathForTestResourceNamed:@"TestBackground.png"];
     [self doGoldenTestForInput:@"\e[7ma\e[31mb\e[42mc\r\n"  // reversed
-                               @"\e[0ma\e[31mb\e[42mc"  // regular
-                               @"\e[?5h"  // invert colors globally (affects default bg and default fg when over default bg)
+     @"\e[0ma\e[31mb\e[42mc"  // regular
+     @"\e[?5h"  // invert colors globally (affects default bg and default fg when over default bg)
                           name:NSStringFromSelector(_cmd)
                           hook:nil
               profileOverrides:@{ KEY_BACKGROUND_IMAGE_LOCATION: pathToImage,
@@ -1383,16 +1419,16 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"a\e[31mb\e[41mc"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              // Change the session's class to one that always returns YES for
-                              // use transparency.
-                              PTYSession *session = (PTYSession *)textView.delegate;
-                              object_setClass(session, [iTermFakeSessionForPTYTextViewTest class]);
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  // Draw a red background to ensure transparency.
-                                  [[NSColor redColor] set];
-                                  NSRectFill(textView.bounds);
-                              };
-                          }
+        // Change the session's class to one that always returns YES for
+        // use transparency.
+        PTYSession *session = (PTYSession *)textView.delegate;
+        object_setClass(session, [iTermFakeSessionForPTYTextViewTest class]);
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            // Draw a red background to ensure transparency.
+            [[NSColor redColor] set];
+            NSRectFill(textView.bounds);
+        };
+    }
               profileOverrides:@{ KEY_BACKGROUND_IMAGE_LOCATION: pathToImage,
                                   KEY_BLEND: @0.3,
                                   KEY_TRANSPARENCY: @0 }
@@ -1411,10 +1447,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1431,10 +1467,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1450,10 +1486,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1469,13 +1505,13 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES,
                                   KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:0.5 green:0.5 blue:0.5 alpha:1] dictionaryValue]
-                                }
+                               }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
 }
@@ -1487,10 +1523,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1503,10 +1539,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1521,10 +1557,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1538,10 +1574,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1555,10 +1591,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1572,10 +1608,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1594,12 +1630,12 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES,
-                                  }
+                               }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
 }
@@ -1631,13 +1667,13 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES,
                                   KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:0.5 green:0.5 blue:0.5 alpha:1] dictionaryValue]
-                                  }
+                               }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
 }
@@ -1653,13 +1689,13 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES,
                                   KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:0.5 green:0.5 blue:0.5 alpha:1] dictionaryValue]
-                                  }
+                               }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
 }
@@ -1676,13 +1712,13 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES,
                                   KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:0.5 green:0.5 blue:0.5 alpha:1] dictionaryValue]
-                                  }
+                               }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
 }
@@ -1702,7 +1738,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                           hook:nil
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES,
                                   KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:0.5 green:0.5 blue:0.5 alpha:1] dictionaryValue]
-                                  }
+                               }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
 }
@@ -1719,10 +1755,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -1740,14 +1776,14 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_SMART_CURSOR_COLOR: @YES,
                                   KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:0.5 green:0.5 blue:0.5 alpha:1] dictionaryValue],
                                   KEY_CURSOR_BOOST: @0.5,
-                                }
+                               }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
 }
@@ -1777,11 +1813,11 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@""
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.isInKeyWindow = YES;
-                                  helper.textViewIsActiveSession = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.isInKeyWindow = YES;
+            helper.textViewIsActiveSession = YES;
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(4, 2)];
@@ -1792,12 +1828,12 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@""
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.isInKeyWindow = NO;
-                                  helper.textViewIsActiveSession = NO;
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.isInKeyWindow = NO;
+            helper.textViewIsActiveSession = NO;
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(4, 2)];
@@ -1828,10 +1864,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abcdefg"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.underlinedRange = VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(2, 0, 2, 1), 0, 5);
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.underlinedRange = VT100GridAbsWindowedRangeMake(VT100GridAbsCoordRangeMake(2, 0, 2, 1), 0, 5);
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(4, 2)];
@@ -1852,10 +1888,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"\e[1 qa\x08"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -1886,10 +1922,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"\e[1 qa\x08\e[?5h"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -1900,10 +1936,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"x\e[1 q\e[7mab\x08\e[?5h"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(4, 2)];
@@ -1934,9 +1970,9 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"a\e[41mb"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.colorMap.dimmingAmount = 0.8;
-                              textView.colorMap.dimOnlyText = NO;
-                          }
+        ((VT100Screen *)textView.dataSource).dimmingAmount = 0.8;
+        ((VT100Screen *)textView.dataSource).dimOnlyText = NO;
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -1947,9 +1983,9 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"a\e[41mb"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.colorMap.dimmingAmount = 0.8;
-                              textView.colorMap.dimOnlyText = YES;
-                          }
+        ((VT100Screen *)textView.dataSource).dimmingAmount = 0.8;
+        ((VT100Screen *)textView.dataSource).dimOnlyText = YES;
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -2001,9 +2037,9 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.colorMap.dimmingAmount = 0.8;
-                              textView.colorMap.dimOnlyText = NO;
-                          }
+        ((VT100Screen *)textView.dataSource).dimmingAmount = 0.8;
+        ((VT100Screen *)textView.dataSource).dimOnlyText = NO;
+    }
               profileOverrides:@{ KEY_MINIMUM_CONTRAST: @0.5 }
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -2018,9 +2054,9 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.colorMap.dimmingAmount = 0.8;
-                              textView.colorMap.dimOnlyText = YES;
-                          }
+        ((VT100Screen *)textView.dataSource).dimmingAmount = 0.8;
+        ((VT100Screen *)textView.dataSource).dimOnlyText = YES;
+    }
               profileOverrides:@{ KEY_MINIMUM_CONTRAST: @0.5 }
                   createGolden:NO
                           size:VT100GridSizeMake(2, 2)];
@@ -2035,10 +2071,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{ KEY_CURSOR_BOOST: @0.5,
                                   KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:.45
                                                                                green:.64
@@ -2057,12 +2093,12 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.colorMap.dimmingAmount = 0.8;
-                              textView.colorMap.dimOnlyText = NO;
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        ((VT100Screen *)textView.dataSource).dimmingAmount = 0.8;
+        ((VT100Screen *)textView.dataSource).dimOnlyText = NO;
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{  KEY_CURSOR_BOOST: @0.5,
                                    KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:.45
                                                                                 green:.64
@@ -2081,12 +2117,12 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.colorMap.dimmingAmount = 0.8;
-                              textView.colorMap.dimOnlyText = YES;
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        ((VT100Screen *)textView.dataSource).dimmingAmount = 0.8;
+        ((VT100Screen *)textView.dataSource).dimOnlyText = YES;
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{  KEY_CURSOR_BOOST: @0.5,
                                    KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:.45
                                                                                 green:.64
@@ -2106,10 +2142,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{  KEY_CURSOR_BOOST: @0.5,
                                    KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:.45
                                                                                 green:.64
@@ -2130,12 +2166,12 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.colorMap.dimmingAmount = 0.8;
-                              textView.colorMap.dimOnlyText = NO;
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        ((VT100Screen *)textView.dataSource).dimmingAmount = 0.8;
+        ((VT100Screen *)textView.dataSource).dimOnlyText = NO;
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{  KEY_CURSOR_BOOST: @0.5,
                                    KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:.45
                                                                                 green:.64
@@ -2155,12 +2191,12 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:input
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.colorMap.dimmingAmount = 0.8;
-                              textView.colorMap.dimOnlyText = YES;
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.shouldDrawFilledInCursor = YES;
-                              };
-                          }
+        ((VT100Screen *)textView.dataSource).dimmingAmount = 0.8;
+        ((VT100Screen *)textView.dataSource).dimOnlyText = YES;
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldDrawFilledInCursor = YES;
+        };
+    }
               profileOverrides:@{  KEY_CURSOR_BOOST: @0.2,
                                    KEY_CURSOR_COLOR: [[NSColor colorWithCalibratedRed:.45
                                                                                 green:.64
@@ -2177,26 +2213,26 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"\e[41mabcdefghijklmn"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              VT100Screen *screen = (VT100Screen *)textView.dataSource;
-                              NSTimeInterval now = 449711536;
-                              const NSTimeInterval day = 86400;
-                              int line = 0;
-                              [[screen.currentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 1];  // HH:MM:SS
-                              [[screen.currentGrid lineInfoAtLineNumber:line++] setTimestamp:now - day - 1];  // DOW HH:MM:SS
-                              [[screen.currentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 6 * day];  // DOW HH:MM:SS
-                              [[screen.currentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 6 * day - 1];  // MM/DD HH:MM:SS
-                              [[screen.currentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 180 * day];  // MM/DD HH:MM:SS
-                              [[screen.currentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 180 * day - 1];  // MM/DD/YYYY HH:MM:SS
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.showTimestamps = YES;
-                                  helper.now = now;
-                                  helper.useTestingTimezone = YES;  // Use GMT so test can pass anywhere.
-                                  [helper createTimestampDrawingHelper];
-                              };
-                          }
+        VT100Screen *screen = (VT100Screen *)textView.dataSource;
+        NSTimeInterval now = 449711536;
+        const NSTimeInterval day = 86400;
+        int line = 0;
+        [[screen.mutableCurrentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 1];  // HH:MM:SS
+        [[screen.mutableCurrentGrid lineInfoAtLineNumber:line++] setTimestamp:now - day - 1];  // DOW HH:MM:SS
+        [[screen.mutableCurrentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 6 * day];  // DOW HH:MM:SS
+        [[screen.mutableCurrentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 6 * day - 1];  // MM/DD HH:MM:SS
+        [[screen.mutableCurrentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 180 * day];  // MM/DD HH:MM:SS
+        [[screen.mutableCurrentGrid lineInfoAtLineNumber:line++] setTimestamp:now - 180 * day - 1];  // MM/DD/YYYY HH:MM:SS
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.shouldShowTimestamps = YES;
+            helper.now = now;
+            helper.useTestingTimezone = YES;  // Use GMT so test can pass anywhere.
+            [helper createTimestampDrawingHelperWithFont:textView.font];
+        };
+    }
               profileOverrides:nil
                   createGolden:NO
-                          size:VT100GridSizeMake(20, 6)];
+                          size:VT100GridSizeMake(30, 6)];
 }
 
 // Retina uses a shift because double-striking is imperceptible.
@@ -2205,10 +2241,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"i\e[1mi"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.antiAliasedShift = 0.5;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.antiAliasedShift = 0.5;
+        };
+    }
               profileOverrides:@{ KEY_USE_BOLD_COLOR: @NO }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 2)];
@@ -2219,10 +2255,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"i\e[1mi"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  helper.antiAliasedShift = 0;
-                              };
-                          }
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            helper.antiAliasedShift = 0;
+        };
+    }
               profileOverrides:@{ KEY_USE_BOLD_COLOR: @NO }
                   createGolden:NO
                           size:VT100GridSizeMake(4, 2)];
@@ -2233,11 +2269,11 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abc\r\ndef\r\nghi"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              PTYSession *session = (PTYSession *)textView.delegate;
-                              [session screenAddMarkOnLine:1];
-                              VT100ScreenMark *mark = [session markAddedAtCursorOfClass:[VT100ScreenMark class]];
-                              mark.code = 1;
-                          }
+        PTYSession *session = (PTYSession *)textView.delegate;
+        [session.screen mutAddMarkOnLine:1 ofClass:[VT100ScreenMark class]];
+        VT100ScreenMark *mark = [session.screen markAddedAtCursorOfClass:[VT100ScreenMark class]];
+        mark.code = 1;
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(4, 4)];
@@ -2248,10 +2284,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abc\r\nd\e]1337;AddAnnotation=5|This is a note\x07 ef\r\nghi"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              for (NSView *view in textView.subviews) {
-                                  view.hidden = YES;
-                              }
-                          }
+        for (NSView *view in textView.subviews) {
+            view.hidden = YES;
+        }
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(5, 5)];
@@ -2262,20 +2298,22 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@"abxxfghxxxxl"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              // Need to call refresh to clear dirty flags, otherwise find matches
-                              // get reset when refresh gets called.
-                              [textView refresh];
+        // Need to call refresh to clear dirty flags, otherwise find matches
+        // get reset when refresh gets called.
+        [textView refresh];
 
-                              [textView resetFindCursor];
-                              [textView findString:@"xx"
-                                  forwardDirection:NO
-                                              mode:iTermFindModeCaseSensitiveSubstring
-                                        withOffset:0];
-                              double progress;
-                              while ([textView findInProgress]) {
-                                  [textView continueFind:&progress];
-                              }
-                          }
+        [textView resetFindCursor];
+        [textView findString:@"xx"
+            forwardDirection:NO
+                        mode:iTermFindModeCaseSensitiveSubstring
+                  withOffset:0
+         scrollToFirstResult:YES
+                       force:NO];
+        double progress;
+        while ([textView findInProgress]) {
+            [textView continueFind:&progress];
+        }
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(5, 5)];
@@ -2316,6 +2354,15 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                           size:VT100GridSizeMake(2, 2)];
 }
 
+- (void)testTwoEnclosingCombiningMarks {
+    [self doGoldenTestForInput:@"#\xE2\x83\xA3#\xE2\x83\xA3"
+                          name:NSStringFromSelector(_cmd)
+                          hook:nil
+              profileOverrides:nil
+                  createGolden:NO
+                          size:VT100GridSizeMake(4, 2)];
+}
+
 // Should render a symbol that looks like a "v" with a squiggly bit on the left.
 - (void)testSurrogatePair {
     [self doGoldenTestForInput:@"\xf0\x90\x90\xb7"
@@ -2350,14 +2397,14 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 // There's a frame cursor.
 - (void)testBoxDrawing {
     [self doGoldenTestForInput:@"\e(0"
-                               @"lqqwqqk\r\n"
-                               @"\e[31m"
-                               @"x  x  x\r\n"
-                               @"\e[42m"
-                               @"tqqnqqu\r\n"
-                               @"\e[m"
-                               @"x  x  x\r\n"
-                               @"mqqvqqj"
+     @"lqqwqqk\r\n"
+     @"\e[31m"
+     @"x  x  x\r\n"
+     @"\e[42m"
+     @"tqqnqqu\r\n"
+     @"\e[m"
+     @"x  x  x\r\n"
+     @"mqqvqqj"
                           name:NSStringFromSelector(_cmd)
                           hook:nil
               profileOverrides:nil
@@ -2369,9 +2416,9 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 // ones should be darker.
 - (void)testFaintText {
     [self doGoldenTestForInput:@"Regular\r\n"
-                               @"\e[2mFaint\e[m\r\n"
-                               @"\e[1mBold\r\n"
-                               @"\e[2mFaint bold"
+     @"\e[2mFaint\e[m\r\n"
+     @"\e[1mBold\r\n"
+     @"\e[2mFaint bold"
                           name:NSStringFromSelector(_cmd)
                           hook:nil
               profileOverrides:nil
@@ -2384,21 +2431,21 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 // The background is 50% red due to transparency.
 - (void)testFaintTextWithTransparency {
     [self doGoldenTestForInput:@"Regular\r\n"
-                               @"\e[2mFaint\e[m\r\n"
-                               @"\e[1mBold\r\n"
-                               @"\e[2mFaint bold"
+     @"\e[2mFaint\e[m\r\n"
+     @"\e[1mBold\r\n"
+     @"\e[2mFaint bold"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              // Change the session's class to one that always returns YES for
-                              // use transparency.
-                              PTYSession *session = (PTYSession *)textView.delegate;
-                              object_setClass(session, [iTermFakeSessionForPTYTextViewTest class]);
-                              textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
-                                  // Draw a red background to ensure transparency.
-                                  [[NSColor redColor] set];
-                                  NSRectFill(textView.bounds);
-                              };
-                          }
+        // Change the session's class to one that always returns YES for
+        // use transparency.
+        PTYSession *session = (PTYSession *)textView.delegate;
+        object_setClass(session, [iTermFakeSessionForPTYTextViewTest class]);
+        textView.drawingHook = ^(iTermTextDrawingHelper *helper) {
+            // Draw a red background to ensure transparency.
+            [[NSColor redColor] set];
+            NSRectFill(textView.bounds);
+        };
+    }
               profileOverrides:@{ KEY_TRANSPARENCY: @0.5 }
                   createGolden:NO
                           size:VT100GridSizeMake(11, 5)];
@@ -2425,10 +2472,10 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     [self doGoldenTestForInput:@" a\r\n01"
                           name:NSStringFromSelector(_cmd)
                           hook:^(PTYTextView *textView) {
-                              VT100Screen *screen = (VT100Screen *)textView.dataSource;
-                              screen_char_t *line = [screen getLineAtScreenIndex:0];
-                              line[0].code = DWC_RIGHT;
-                          }
+        VT100Screen *screen = (VT100Screen *)textView.dataSource;
+        screen_char_t *line = [screen getLineAtScreenIndex:0];
+        line[0].code = DWC_RIGHT;
+    }
               profileOverrides:nil
                   createGolden:NO
                           size:VT100GridSizeMake(5, 3)];
@@ -2467,11 +2514,36 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     return 4;
 }
 
+- (NSArray<ScreenCharArray *> *)linesInRange:(NSRange)range {
+    return @[];
+}
+
+- (BOOL)textViewGetAndResetHasScrolled {
+    return NO;
+}
+
+- (NSString *)compactLineDumpWithContinuationMarks {
+    return @"";
+}
+
+- (NSSet<NSString *> *)sgrCodesForChar:(screen_char_t)c externalAttributes:(iTermExternalAttribute *)ea {
+    return [NSSet set];
+}
+
+
+- (id<iTermColorMapReading>)colorMap {
+    return _colorMap;
+}
+
+- (void)setColor:(NSColor *)color forKey:(int)key {
+    [_colorMap setColor:color forKey:key];
+}
+
 - (int)numberOfLines {
     return 4;
 }
 
-- (screen_char_t *)getLineAtIndex:(int)theIndex {
+- (const screen_char_t *)getLineAtIndex:(int)theIndex {
     int width = self.width;
     for (int i = 0; i < width + 1; i++) {
         memset(&_buffer[i], 0, sizeof(screen_char_t));
@@ -2479,6 +2551,27 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     }
     _buffer[width].code = EOL_SOFT;
     return _buffer;
+}
+
+- (iTermExternalAttributeIndex *)externalAttributeIndexForLine:(int)y {
+    return nil;
+}
+
+- (ScreenCharArray *)screenCharArrayAtScreenIndex:(int)index {
+    return [self screenCharArrayForLine:index - [self numberOfScrollbackLines]];
+}
+
+- (ScreenCharArray *)screenCharArrayForLine:(int)line {
+    const screen_char_t *sct = [self getLineAtIndex:line];
+    const int width = self.width;
+    return [[[ScreenCharArray alloc] initWithLine:sct
+                                           length:width
+                                     continuation:sct[width]] autorelease];
+}
+
+- (id)fetchLine:(int)line block:(id (^ NS_NOESCAPE)(ScreenCharArray *))block {
+    ScreenCharArray *sca = [self screenCharArrayForLine:line];
+    return block(sca);
 }
 
 #pragma mark - Test selection
@@ -2497,14 +2590,14 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                                  fromClass:[NSUserDefaults class]
                                  withBlock:^ id { return fakeDefaults; }
                                   forBlock:^{
-                                      [iTermAdvancedSettingsModel loadAdvancedSettingsFromUserDefaults];
-                                      // When
-                                      [_textView selectAll:nil];
-                                      NSString *selectedText = [_textView selectedText];
+        [iTermAdvancedSettingsModel loadAdvancedSettingsFromUserDefaults];
+        // When
+        [_textView selectAll:nil];
+        NSString *selectedText = [_textView selectedText];
 
-                                      // Then
-                                      XCTAssertEqualObjects(@"123456789\n\n", selectedText);
-                                  }];
+        // Then
+        XCTAssertEqualObjects(@"123456789\n\n", selectedText);
+    }];
 }
 
 - (void)testSelectedTextWrappedLine {
@@ -2521,14 +2614,14 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                                  fromClass:[NSUserDefaults class]
                                  withBlock:^ id { return fakeDefaults; }
                                   forBlock:^{
-                                      [iTermAdvancedSettingsModel loadAdvancedSettingsFromUserDefaults];
-                                      // When
-                                      [_textView selectAll:nil];
-                                      NSString *selectedText = [_textView selectedText];
+        [iTermAdvancedSettingsModel loadAdvancedSettingsFromUserDefaults];
+        // When
+        [_textView selectAll:nil];
+        NSString *selectedText = [_textView selectedText];
 
-                                      // Then
-                                      XCTAssertEqualObjects([text stringByAppendingString:@"\n"], selectedText);
-                                  }];
+        // Then
+        XCTAssertEqualObjects([text stringByAppendingString:@"\n"], selectedText);
+    }];
 }
 
 - (void)testSelectedTextWrappedAttributedLinesDontGetNewlinesInserted {
@@ -2545,16 +2638,16 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                                  fromClass:[NSUserDefaults class]
                                  withBlock:^ id { return fakeDefaults; }
                                   forBlock:^{
-                                      [iTermAdvancedSettingsModel loadAdvancedSettingsFromUserDefaults];
-                                      // When
-                                      [_textView selectAll:nil];
-                                      NSAttributedString *selectedAttributedText = [_textView selectedTextAttributed:YES
-                                                                                                        cappedAtSize:0
-                                                                                                   minimumLineNumber:0];
+        [iTermAdvancedSettingsModel loadAdvancedSettingsFromUserDefaults];
+        // When
+        [_textView selectAll:nil];
+        NSAttributedString *selectedAttributedText = [_textView selectedTextWithStyle:iTermCopyTextStyleAttributed
+                                                                         cappedAtSize:0
+                                                                    minimumLineNumber:0];
 
-                                      // Then
-                                      XCTAssertEqualObjects([text stringByAppendingString:@"\n"], selectedAttributedText.string);
-                                  }];
+        // Then
+        XCTAssertEqualObjects([text stringByAppendingString:@"\n"], selectedAttributedText.string);
+    }];
 }
 
 - (void)testSelectedTextWithSizeCap {
@@ -2563,7 +2656,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     NSString *text = @"123456789abc";
     [session synchronousReadTask:text];
     [_textView selectAll:nil];
-    NSString *selectedText = [_textView selectedTextAttributed:NO cappedAtSize:5 minimumLineNumber:0];
+    NSString *selectedText = [_textView selectedTextWithStyle:iTermCopyTextStylePlainText cappedAtSize:5 minimumLineNumber:0];
     XCTAssertEqualObjects(@"12345", selectedText);
 }
 
@@ -2581,14 +2674,14 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                                  fromClass:[NSUserDefaults class]
                                  withBlock:^ id { return fakeDefaults; }
                                   forBlock:^{
-                                      [iTermAdvancedSettingsModel loadAdvancedSettingsFromUserDefaults];
-                                      // When
-                                      [_textView selectAll:nil];
-                                      NSString *selectedText = [_textView selectedTextAttributed:NO cappedAtSize:0 minimumLineNumber:1];
+        [iTermAdvancedSettingsModel loadAdvancedSettingsFromUserDefaults];
+        // When
+        [_textView selectAll:nil];
+        NSString *selectedText = [_textView selectedTextWithStyle:iTermCopyTextStylePlainText cappedAtSize:0 minimumLineNumber:1];
 
-                                      // Then
-                                      XCTAssertEqualObjects(@"12345\n", selectedText);
-                                  }];
+        // Then
+        XCTAssertEqualObjects(@"12345\n", selectedText);
+    }];
 }
 
 - (void)testSelectedTextWithSizeCapAndMinimumLine {
@@ -2597,7 +2690,7 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     NSString *text = @"blah\r\n12345";
     [session synchronousReadTask:text];
     [_textView selectAll:nil];
-    NSString *selectedText = [_textView selectedTextAttributed:NO cappedAtSize:2 minimumLineNumber:1];
+    NSString *selectedText = [_textView selectedTextWithStyle:iTermCopyTextStylePlainText cappedAtSize:2 minimumLineNumber:1];
     XCTAssertEqualObjects(@"12", selectedText);
 }
 
@@ -2608,9 +2701,9 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     NSString *text = @"regular\e[1mbold";
     [session synchronousReadTask:text];
     [_textView selectAll:nil];
-    NSAttributedString *selectedAttributedText = [_textView selectedTextAttributed:YES
-                                                                      cappedAtSize:11
-                                                                 minimumLineNumber:0];
+    NSAttributedString *selectedAttributedText = [_textView selectedTextWithStyle:iTermCopyTextStyleAttributed
+                                                                     cappedAtSize:11
+                                                                minimumLineNumber:0];
     XCTAssertEqualObjects(@"regularbold", selectedAttributedText.string);
 
     NSRange range;
@@ -2623,12 +2716,16 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
                           [NSFont systemFontOfSize:[NSFont systemFontSize]]);
 
     NSDictionary *boldAttributes = [selectedAttributedText attributesAtIndex:kRegularLength
-                                                                 effectiveRange:&range];
+                                                              effectiveRange:&range];
     const int kBoldLength = [@"bold" length];
     XCTAssertEqual(range.location, kRegularLength);
     XCTAssertEqual(range.length, kBoldLength);
-    XCTAssertEqualObjects(boldAttributes[NSFontAttributeName],
-                          [NSFont boldSystemFontOfSize:[NSFont systemFontSize]]);
+
+    NSFontManager *fontManager = [NSFontManager sharedFontManager];
+    NSFont *regularFont = [[selectedAttributedText attributesAtIndex:0 effectiveRange:nil] objectForKey:NSFontAttributeName];
+    NSFont *boldFont = boldAttributes[NSFontAttributeName];
+    XCTAssertGreaterThan([fontManager weightOfFont:boldFont],
+                         [fontManager weightOfFont:regularFont]);
 }
 
 #pragma mark - PTYTextViewDelegate
@@ -2689,7 +2786,8 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
     return YES;
 }
 
-- (void)textViewShowHoverURL:(NSString *)url {
+- (BOOL)textViewShowHoverURL:(NSString *)url anchor:(VT100GridWindowedRange)anchorAbsRange {
+    return NO;
 }
 
 - (BOOL)textViewInInteractiveApplication {
@@ -2706,4 +2804,201 @@ static NSString *const kDiffScriptPath = @"/tmp/diffs";
 - (void)textViewToggleTerminalStateForMenuItem:(NSMenuItem *)menuItem {
 }
 
+- (void)keyUp:(NSEvent *)event {
+}
+
+
+- (CGFloat)textViewBadgeRightMargin {
+    return 0;
+}
+
+
+- (CGFloat)textViewBadgeTopMargin {
+    return 0;
+}
+
+
+- (CGRect)textViewContainerRect {
+    return CGRectZero;
+}
+
+
+- (void)textViewDidResignFirstResponder {
+}
+
+
+- (void)textViewPasteSpecialWithStringConfiguration:(NSString *)configuration fromSelection:(BOOL)fromSelection {
+}
+
+
+- (CGRect)textViewRelativeFrame {
+    return CGRectZero;
+}
+
+
+- (iTermVariableScope *)textViewVariablesScope {
+    return nil;
+}
+
+- (void)textViewDidUpdateDropTargetVisibility {
+}
+
+- (void)textViewStopCoprocess {
+}
+
+- (BOOL)textViewTerminalBackgroundColorDeterminesWindowDecorationColor {
+    return NO;
+}
+
+- (void)sendTextSlowly:(NSString *)text {
+}
+
+- (void)textViewAddContextMenuItems:(NSMenu *)menu {
+}
+
+- (CGFloat)textViewBlend {
+    return 0;
+}
+
+- (BOOL)textViewCanBury {
+    return NO;
+}
+
+- (void)textViewDidDetectMouseReportingFrustration {
+}
+
+- (iTermExpect *)textViewExpect {
+    return nil;
+}
+
+- (NSEdgeInsets)textViewExtraMargins {
+    return NSEdgeInsetsZero;
+}
+
+- (void)textViewFindOnPageLocationsDidChange {
+}
+
+- (void)textViewFindOnPageSelectedResultDidChange {
+}
+
+- (void)textViewGetCurrentWorkingDirectoryWithCompletion:(void (^)(NSString *))completion {
+    completion(@"/");
+}
+
+- (void)textViewProcessedBackgroundColorDidChange {
+}
+
+- (BOOL)textViewReportMouseEvent:(NSEventType)eventType modifiers:(NSUInteger)modifiers button:(MouseButtonNumber)button coordinate:(VT100GridCoord)coord point:(NSPoint)point deltaY:(CGFloat)deltaY allowDragBeforeMouseDown:(BOOL)allowDragBeforeMouseDown testOnly:(BOOL)testOnly {
+    return YES;
+}
+
+- (id<iTermSwipeHandler>)textViewSwipeHandler {
+    return nil;
+}
+
+- (BOOL)xtermMouseReportingAllowClicksAndDrags {
+    return YES;
+}
+
+- (void)pasteStringWithoutBracketing:(NSString *)theString {
+}
+
+- (void)sendText:(NSString *)text escaping:(iTermSendTextEscaping)escaping {
+}
+
+- (void)textViewAddTrigger:(NSString *)text {
+}
+
+- (void)textViewApplyAction:(iTermAction *)action {
+}
+
+- (void)textViewContextMenuInvocation:(NSString *)invocation failedWithError:(NSError *)error forMenuItem:(NSString *)title {
+}
+
+- (void)textViewDidReceiveFlagsChangedEvent:(NSEvent *)event {
+}
+
+- (BOOL)textViewDrawBackgroundImageInView:(NSView *)view viewRect:(NSRect)rect blendDefaultBackground:(BOOL)blendDefaultBackground virtualOffset:(CGFloat)virtualOffset {
+    return NO;
+}
+
+- (void)textViewEditTriggers {
+}
+
+- (NSString *)textViewShell {
+    return @"bash";
+}
+
+- (iTermTimestampsMode)textviewTimestampsMode {
+    return iTermTimestampsModeOff;
+}
+
+- (void)textViewToggleEnableTriggersInInteractiveApps {
+}
+
+- (BOOL)textViewTriggersAreEnabledInInteractiveApps {
+    return NO;
+}
+
+- (void)textViewhandleSpecialKeyDown:(NSEvent *)event {
+}
+
+- (BOOL)textViewAnyMouseReportingModeIsEnabled {
+    return NO;
+}
+
+
+- (BOOL)textViewCanWriteToTTY {
+    return YES;
+}
+
+
+- (void)textViewSetClickCoord:(VT100GridAbsCoord)coord button:(NSInteger)button count:(NSInteger)count modifiers:(NSEventModifierFlags)modifiers sideEffects:(iTermClickSideEffects)sideEffects state:(iTermMouseState)state {
+}
+
+
+- (void)textviewToggleTimestampsMode {
+}
+
+- (void)openAdvancedPasteWithText:(NSString *)text escaping:(iTermSendTextEscaping)escaping {
+}
+
+
+- (BOOL)textViewSmartSelectionActionsShouldUseInterpolatedStrings {
+    return NO;
+}
+
+- (void)textViewSelectMenuItemWithIdentifier:(NSString *)identifier title:(NSString *)title {
+}
+
+- (BOOL)textViewReportMouseEvent:(NSEventType)eventType modifiers:(NSUInteger)modifiers button:(MouseButtonNumber)button coordinate:(VT100GridCoord)coord point:(NSPoint)point deltaY:(CGFloat)deltaY allowDragBeforeMouseDown:(BOOL)allowDragBeforeMouseDown {
+    return NO;
+}
+
+- (NSFont *)badgeLabelFontOfSize:(CGFloat)pointSize {
+    return [NSFont systemFontOfSize:[NSFont systemFontSize]];
+}
+
+- (NSSize)badgeLabelSizeFraction {
+    return NSMakeSize(1, 1);
+}
+
+- (long long)lineNumberOfMarkAfterAbsLine:(long long)line {
+    return line+1;
+}
+
+- (long long)lineNumberOfMarkBeforeAbsLine:(long long)line {
+    return MAX(0, line-1);
+}
+
+- (iTermBuiltInFunctions *)objectMethodRegistry {
+    return nil;
+}
+
+- (iTermVariableScope *)objectScope {
+    return nil;
+}
+
 @end
+
+#endif

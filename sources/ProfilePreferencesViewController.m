@@ -10,11 +10,13 @@
 #import "BulkCopyProfilePreferencesWindowController.h"
 #import "DebugLogging.h"
 #import "ITAddressBookMgr.h"
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermController.h"
+#import "iTermDynamicProfileManager.h"
 #import "iTermFlippedView.h"
-#import "iTermKeyBindingMgr.h"
 #import "iTermProfilePreferences.h"
 #import "iTermProfilePreferencesTabViewWrapperView.h"
+#import "iTermSavePanel.h"
 #import "iTermSizeRememberingView.h"
 #import "iTermVariableScope.h"
 #import "iTermWarning.h"
@@ -23,8 +25,10 @@
 #import "NSDictionary+Profile.h"
 #import "NSJSONSerialization+iTerm.h"
 #import "NSObject+iTerm.h"
+#import "NSView+iTerm.h"
 #import "PreferencePanel.h"
 #import "ProfileListView.h"
+#import "ProfileModelWrapper.h"
 #import "ProfilesAdvancedPreferencesViewController.h"
 #import "ProfilesGeneralPreferencesViewController.h"
 #import "ProfilesColorsPreferencesViewController.h"
@@ -119,6 +123,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
 
     BulkCopyProfilePreferencesWindowController *_bulkCopyController;
     NSRect _desiredFrame;
+    BOOL _needsWarning;
 }
 
 - (instancetype)init {
@@ -147,7 +152,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
 
 #pragma mark - iTermPreferencesBaseViewController
 
-- (void)setPreferencePanel:(NSWindowController *)preferencePanel {
+- (void)setPreferencePanel:(NSWindowController<iTermPreferencePanelSizing> *)preferencePanel {
     for (iTermPreferencesBaseViewController *viewController in [self tabViewControllers]) {
         viewController.preferencePanel = preferencePanel;
     }
@@ -159,6 +164,17 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
 }
 
 #pragma mark - NSViewController
+
+- (NSArray *)tabViewTuples {
+    return @[ @[ _generalTab, _generalViewController.view ],
+              @[ _colorsTab, _colorsViewController.view ],
+              @[ _textTab, _textViewController.view ],
+              @[ _windowTab, _windowViewController.view ],
+              @[ _terminalTab, _terminalViewController.view ],
+              @[ _sessionTab, _sessionViewController.view ],
+              @[ _keysTab, _keysViewController.view ],
+              @[ _advancedTab, _advancedViewController.view ] ];
+}
 
 - (void)awakeFromNib {
     [_profilesListView setUnderlyingDatasource:[_delegate profilePreferencesModel]];
@@ -178,14 +194,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
         [_profilesListView selectRowIndex:0];
     }
 
-    NSArray *tabViewTuples = @[ @[ _generalTab, _generalViewController.view ],
-                                @[ _colorsTab, _colorsViewController.view ],
-                                @[ _textTab, _textViewController.view ],
-                                @[ _windowTab, _windowViewController.view ],
-                                @[ _terminalTab, _terminalViewController.view ],
-                                @[ _sessionTab, _sessionViewController.view ],
-                                @[ _keysTab, _keysViewController.view ],
-                                @[ _advancedTab, _advancedViewController.view ] ];
+    NSArray *tabViewTuples = [self tabViewTuples];
     for (NSArray *tuple in tabViewTuples) {
         NSTabViewItem *tabViewItem = tuple[0];
         NSView *view = tuple[1];
@@ -209,6 +218,10 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
                 [[iTermFlippedView alloc] initWithFrame:view.bounds];
             [flippedView addSubview:view];
             [flippedView flipSubviews];
+
+            NSScroller *verticalScroller = [scrollView verticalScroller];
+            CGFloat scrollbarWidth = NSWidth([verticalScroller frame]);
+            flippedView.frame = NSMakeRect(flippedView.frame.origin.x, flippedView.frame.origin.y, view.frame.size.width - scrollbarWidth, flippedView.frame.size.height);
 
             [scrollView setDocumentView:flippedView];
             [sizeRememberingView addSubview:scrollView];
@@ -249,6 +262,7 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
     _generalTab.view = _generalViewController.view;
     [_windowViewController layoutSubviewsForEditCurrentSessionMode];
     [_sessionViewController layoutSubviewsForEditCurrentSessionMode];
+    [_terminalViewController layoutSubviewsForEditCurrentSessionMode];
     [_advancedViewController layoutSubviewsForEditCurrentSessionMode];
     [_keysViewController layoutSubviewsForEditCurrentSessionMode];
     NSRect newFrame = _tabViewWrapperView.superview.bounds;
@@ -300,6 +314,16 @@ NSString *const kProfileSessionHotkeyDidChange = @"kProfileSessionHotkeyDidChang
     if (!self.view.window.attachedSheet) {
         [_tabView selectTabViewItem:_keysTab];
         [_keysViewController openHotKeyPanel:nil];
+    }
+}
+
+- (void)openToProfileWithGuid:(NSString *)guid {
+    self.scope = nil;
+    [_profilesListView reloadData];
+    if ([[self selectedProfile][KEY_GUID] isEqualToString:guid]) {
+        [self reloadProfileInProfileViewControllers];
+    } else {
+        [self selectGuid:guid];
     }
 }
 
@@ -411,6 +435,16 @@ andEditComponentWithIdentifier:(NSString *)identifier
               _advancedViewController ];
 }
 
+- (BOOL)hasViewController:(NSViewController *)viewController {
+    return [self.tabViewControllers containsObject:viewController];
+}
+
+- (id<iTermSearchableViewController>)viewControllerWithOwnerIdentifier:(NSString *)ownerIdentifier {
+    return [[self tabViewControllers] objectPassingTest:^BOOL(id<iTermSearchableViewController> vc, NSUInteger index, BOOL *stop) {
+        return [vc.documentOwnerIdentifier isEqualToString:ownerIdentifier];
+    }];
+}
+
 - (void)updateSubviewsForProfile:(Profile *)profile {
     ProfileModel *model = [_delegate profilePreferencesModel];
     if ([model numberOfBookmarks] < 2 || !profile) {
@@ -437,7 +471,6 @@ andEditComponentWithIdentifier:(NSString *)identifier
     CGFloat spaceAbove = 0;
     CGFloat spaceBelow = 0;
     CGFloat spaceLeft = 0;
-    CGFloat spaceRight = 0;
 
     // Compute the size of the tab view item.
     CGSize tabViewSize;
@@ -455,8 +488,14 @@ andEditComponentWithIdentifier:(NSString *)identifier
       spaceLeft = NSMaxX(_profilesListView.frame) + kSideMarginBetweenWindowAndTabView;
     }
 
+    // Add space for legacy scroller if needed
+    CGFloat spaceRight = kSideMarginBetweenWindowAndTabView;
+    if ([NSScroller preferredScrollerStyle] == NSScrollerStyleLegacy) {
+        spaceRight += [NSScroller scrollerWidthForControlSize:NSControlSizeRegular
+                                                scrollerStyle:NSScrollerStyleLegacy];
+    }
+
     // Other margins are easy.
-    spaceRight = kSideMarginBetweenWindowAndTabView;
     const CGFloat kDistanceFromContentTopToTabViewItemTop = 36;
     const CGFloat kDistanceFromContentBottomToWindowBottom = 16;
     spaceAbove = kDistanceFromContentTopToTabViewItemTop;
@@ -474,6 +513,8 @@ andEditComponentWithIdentifier:(NSString *)identifier
     NSPoint windowTopLeft = NSMakePoint(NSMinX(window.frame), NSMaxY(window.frame));
     NSRect frame = [window frameRectForContentRect:NSMakeRect(windowTopLeft.x, 0, contentSize.width, contentSize.height)];
     frame.origin.y = windowTopLeft.y - frame.size.height;
+    frame.size.width = MAX([self.preferencePanel preferencePanelMinimumWidth] ?: iTermPreferencePanelGetWindowMinimumWidth(NO),
+                           frame.size.width);
 
     if (NSEqualRects(_desiredFrame, frame)) {
         return;
@@ -512,6 +553,7 @@ andEditComponentWithIdentifier:(NSString *)identifier
     ProfileModel *model = [_delegate profilePreferencesModel];
 
     if (![ITAddressBookMgr canRemoveProfile:profile fromModel:model]) {
+        DLog(@"Beep: failed to remove profile");
         NSBeep();
     } else if ([self confirmProfileDeletion:profile]) {
         NSString *guid = profile[KEY_GUID];
@@ -558,7 +600,7 @@ andEditComponentWithIdentifier:(NSString *)identifier
         [newDict removeObjectForKey:KEY_BONJOUR_SERVICE_ADDRESS];
         newDict[KEY_COMMAND_LINE] = @"";
         newDict[KEY_INITIAL_TEXT] = @"";
-        newDict[KEY_CUSTOM_COMMAND] = @"No";
+        newDict[KEY_CUSTOM_COMMAND] = kProfilePreferenceCommandTypeLoginShellValue;
         newDict[KEY_WORKING_DIRECTORY] = @"";
         newDict[KEY_CUSTOM_DIRECTORY] = @"No";
     }
@@ -601,10 +643,14 @@ andEditComponentWithIdentifier:(NSString *)identifier
                                     window:self.view.window] == kiTermWarningSelection1) {
         return;
     }
+    if (destination.profileIsDynamic) {
+        [self showDynamicProfileWarning];
+    }
 
     NSMutableDictionary* copyOfSource = [sourceProfile mutableCopy];
     [copyOfSource setObject:profileGuid forKey:KEY_GUID];
     [copyOfSource removeObjectForKey:KEY_ORIGINAL_GUID];
+    [copyOfSource removeObjectForKey:KEY_SESSION_HOTKEY];
     [copyOfSource setObject:[destination objectForKey:KEY_NAME] forKey:KEY_NAME];
     [[ProfileModel sharedInstance] setBookmark:copyOfSource withGuid:profileGuid];
 
@@ -647,6 +693,7 @@ andEditComponentWithIdentifier:(NSString *)identifier
 {
     Profile* profile = [self selectedProfile];
     if (!profile) {
+        DLog(@"Beep: no profile selected");
         NSBeep();
         return;
     }
@@ -669,6 +716,7 @@ andEditComponentWithIdentifier:(NSString *)identifier
     Profile *origProfile = [self selectedProfile];
     NSString* guid = origProfile[KEY_GUID];
     if (!guid) {
+        DLog(@"Beep: no selected profile or guid");
         NSBeep();
         return;
     }
@@ -687,12 +735,11 @@ andEditComponentWithIdentifier:(NSString *)identifier
     }
 }
 
-- (IBAction)copyAllProfilesJson:(id)sender {
-    ProfileModel *model = [_delegate profilePreferencesModel];
+- (NSString *)jsonForAllProfilesWithErrorCount:(int *)errorCount {
     NSMutableString *profiles = [@"{\n\"Profiles\": [\n" mutableCopy];
     BOOL first = YES;
     int errors = 0;
-    for (Profile *profile in [model bookmarks]) {
+    for (Profile *profile in _profilesListView.dataSource.profiles) {
         NSError *error = nil;
         NSString *json = [self jsonForProfile:profile error:&error];
         if (json) {
@@ -709,17 +756,8 @@ andEditComponentWithIdentifier:(NSString *)identifier
         }
     }
     [profiles appendString:@"\n]\n}\n"];
-
-    NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-    [pasteboard clearContents];
-    [pasteboard writeObjects:@[ profiles ]];
-
-    if (errors) {
-        NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"Error";
-        alert.informativeText = @"An error occurred. Check Console.app for details.";
-        [alert runModal];
-    }
+    *errorCount = errors;
+    return profiles;
 }
 
 - (IBAction)importJSONProfiles:(id)sender {
@@ -839,25 +877,89 @@ andEditComponentWithIdentifier:(NSString *)identifier
     return YES;
 }
 
-- (IBAction)copyProfileJson:(id)sender {
+- (BOOL)saveString:(NSString *)string toPath:(NSString *)path {
+    NSError *error = nil;
+    [string writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:&error];
+    if (error) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Error";
+        alert.informativeText = [NSString stringWithFormat:@"Couldn't save to %@: %@", path,
+                                 [error localizedDescription]];
+        [alert runModal];
+        return NO;
+    }
+    return YES;
+}
+
+- (IBAction)saveProfileAsJSON:(id)sender {
     NSDictionary* profile = [self selectedProfile];
     if (!profile) {
+        DLog(@"Beep: no profile selected");
         NSBeep();
+        return;
+    }
+
+    __weak __typeof(self) weakSelf = self;
+    [iTermSavePanel asyncShowWithOptions:0
+                              identifier:@"SaveProfile"
+                        initialDirectory:NSHomeDirectory()
+                         defaultFilename:[self.selectedProfile[KEY_NAME] stringByAppendingPathExtension:@"json"] ?: @"UnknownProfile.json"
+                        allowedFileTypes:@[ @"json" ]
+                                  window:self.view.window
+                              completion:^(iTermSavePanel *savePanel) {
+        [weakSelf reallySaveProfile:profile asJSON:savePanel];
+    }];
+}
+
+- (void)reallySaveProfile:(Profile *)profile asJSON:(iTermSavePanel *)savePanel {
+    if (!savePanel.path) {
         return;
     }
     NSError *error = nil;
     NSString *string = [self jsonForProfile:profile error:&error];
-
-    if (string) {
-        NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-        [pasteboard clearContents];
-        [pasteboard writeObjects:@[ string ]];
-    } else {
+    if (!string) {
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"Error";
         alert.informativeText = [NSString stringWithFormat:@"Couldn't convert profile to JSON: %@",
                                  [error localizedDescription]];
         [alert runModal];
+        return;
+    }
+
+    if ([self saveString:string toPath:savePanel.path]) {
+        [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:savePanel.path] ]];
+    }
+}
+
+- (IBAction)saveAllProfilesAsJSON:(id)sender {
+    __weak __typeof(self) weakSelf = self;
+    [iTermSavePanel asyncShowWithOptions:0
+                              identifier:@"SaveProfile"
+                        initialDirectory:NSHomeDirectory()
+                         defaultFilename:@"Profiles.json"
+                        allowedFileTypes:@[ @"json" ]
+                                  window:self.view.window
+                              completion:^(iTermSavePanel *savePanel) {
+        [weakSelf reallySaveAllProfilesAsJSON:savePanel];
+    }];
+}
+
+- (void)reallySaveAllProfilesAsJSON:(iTermSavePanel *)savePanel {
+    if (!savePanel.path) {
+        return;
+    }
+    int errors = 0;
+    NSString *string = [self jsonForAllProfilesWithErrorCount:&errors];
+    if (errors) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Error";
+        alert.informativeText = [NSString stringWithFormat:@"Couldn't convert one or more profiles to JSON. Check Console.app for errors."];
+        [alert runModal];
+        return;
+    }
+
+    if ([self saveString:string toPath:savePanel.path]) {
+        [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:savePanel.path] ]];
     }
 }
 
@@ -875,6 +977,19 @@ andEditComponentWithIdentifier:(NSString *)identifier
 
 #pragma mark - iTermProfilesPreferencesBaseViewControllerDelegate
 
+- (BOOL)profilePreferencesRevealViewController:(iTermProfilePreferencesBaseViewController *)viewController {
+    for (NSArray *tuple in [self tabViewTuples]) {
+        NSTabViewItem *item = tuple[0];
+        NSView *view = tuple[1];
+        if (viewController.view == view) {
+            BOOL changing = item != _tabView.selectedTabViewItem;
+            [_tabView selectTabViewItem:item];
+            return changing;
+        }
+    }
+    return NO;
+}
+
 - (Profile *)profilePreferencesCurrentProfile {
     return [self selectedProfile];
 }
@@ -891,6 +1006,66 @@ andEditComponentWithIdentifier:(NSString *)identifier
 
 - (BOOL)editingTmuxSession {
     return _tmuxSession;
+}
+
+- (void)profilePreferencesViewController:(iTermProfilePreferencesBaseViewController *)viewController
+                    willSetObjectWithKey:(NSString *)key {
+    if (_needsWarning) {
+        return;
+    }
+    _needsWarning = YES;
+    __weak __typeof(self) weakSelf = self;
+    if (viewController.delegate.profilePreferencesCurrentModel == [ProfileModel sessionsInstance]) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf showWarningIfNeeded];
+    });
+}
+
+- (void)showWarningIfNeeded {
+    if (!_needsWarning) {
+        return;
+    }
+    _needsWarning = NO;
+    [self showDynamicProfileWarning];
+}
+
+- (void)showDynamicProfileWarning {
+    Profile *profile = [self selectedProfile];
+    NSString *guid = [NSString castFrom:[profile objectForKey:KEY_GUID]];
+    if (!guid) {
+        return;
+    }
+    NSArray *tagsArray = [NSArray castFrom:[profile objectForKey:KEY_TAGS]];
+    if (![tagsArray containsObject:kProfileDynamicTag]) {
+        return;
+    }
+    if ([iTermProfilePreferences boolForKey:KEY_DYNAMIC_PROFILE_REWRITABLE inProfile:profile]) {
+        return;
+    }
+    NSString *profileName = [profile objectForKey:KEY_NAME] ?: @"(unknown name)";
+    NSString *message = [NSString stringWithFormat:@"The selected profile, “%@”, is a dynamic profile. These are generally only edited by hand.\n\niTerm2 is now able to write changes back to dynamic profiles when they are marked as “rewritable“. Rewriting can cause the order of values to change.", profileName];
+    const iTermWarningSelection selection =
+    [iTermWarning showWarningWithTitle:message
+                               actions:@[ @"Mark as Rewritable", @"Reveal in Finder", @"Cancel" ]
+                             accessory:nil
+                            identifier:@"NoSyncDynamicProfileChangeWillBeLost"
+                           silenceable:kiTermWarningTypeTemporarilySilenceable
+                               heading:@"Changes Will Be Lost"
+                                window:self.view.window];
+    switch (selection) {
+        case kiTermWarningSelection0:
+            [[iTermDynamicProfileManager sharedInstance] markProfileRewritableWithGuid:guid];
+            break;
+        case kiTermWarningSelection1:
+            [[iTermDynamicProfileManager sharedInstance] revealProfileWithGUID:guid];
+            break;
+        case kiTermWarningSelection2:
+            break;
+        default:
+            break;
+    }
 }
 
 #pragma mark - ProfilesGeneralPreferencesViewControllerDelegate
@@ -917,11 +1092,43 @@ andEditComponentWithIdentifier:(NSString *)identifier
     return self.scope;
 }
 
-
 #pragma mark - NSTabViewDelegate
 
 - (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)tabViewItem {
     [self resizeWindowForTabViewItem:tabViewItem animated:YES];
+}
+
+#pragma mark - iTermSearchableViewController
+
+- (NSArray<iTermPreferencesSearchDocument *> *)searchableViewControllerDocuments {
+    return [[[self tabViewControllers] mapWithBlock:^id(id<iTermSearchableViewController> vc) {
+        return [vc searchableViewControllerDocuments];
+    }] flattenedArray];
+}
+
+- (void)revealControl:(NSControl *)control {
+    // Is there an inner tab container view?
+    for (NSTabViewItem *item in self.tabView.tabViewItems) {
+        NSView *view = item.view;
+        if ([view containsDescendant:control]) {
+            [self.tabView selectTabViewItem:item];
+            return;
+        }
+    }
+}
+
+- (NSView *)searchableViewControllerRevealItemForDocument:(iTermPreferencesSearchDocument *)document
+                                                 forQuery:(NSString *)query
+                                            willChangeTab:(BOOL *)willChangeTab {
+    for (id<iTermSearchableViewController> vc in [self tabViewControllers]) {
+        NSView *view = [vc searchableViewControllerRevealItemForDocument:document
+                                                                forQuery:query
+                                                           willChangeTab:willChangeTab];
+        if (view) {
+            return view;
+        }
+    }
+    return nil;
 }
 
 @end

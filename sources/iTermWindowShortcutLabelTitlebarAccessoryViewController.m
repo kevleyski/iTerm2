@@ -21,6 +21,13 @@
                                              selector:@selector(modifiersDidChange:)
                                                  name:kPSMModifierChangedNotification
                                                object:nil];
+    if (@available(macOS 10.16, *)) {
+        NSRect frame = _label.frame;
+        frame.origin.y += 4;
+        frame.size.width -=6;
+        _label.frame = frame;
+        _label.font = [NSFont titleBarFontOfSize:[NSFont systemFontSize]];
+    }
 }
 
 - (void)dealloc {
@@ -33,6 +40,17 @@
     [self updateLabel];
 }
 
+- (void)viewDidLayout {
+    if (@available(macOS 10.16, *)) {
+        // Big sur likes to change the height of this accessory view when the tab bar
+        // is added or removed from being an accessory view. Luckily there's enough
+        // wiggle room to keep it aligned.
+        const CGFloat containerHeight = self.view.frame.size.height;
+        NSRect frame = _label.frame;
+        frame.origin.y = containerHeight - 21;
+        _label.frame = frame;
+    }
+}
 - (void)updateLabel {
     [self view];  // Ensure the label exists.
     BOOL deemphasized;
@@ -68,19 +86,18 @@
     switch ([iTermPreferences intForKey:kPreferenceKeySwitchWindowModifier]) {
         case kPreferenceModifierTagNone:
             return nil;
-            break;
 
         case kPreferencesModifierTagEitherCommand:
             return [NSString stringForModifiersWithMask:NSEventModifierFlagCommand];
-            break;
 
         case kPreferencesModifierTagEitherOption:
             return [NSString stringForModifiersWithMask:NSEventModifierFlagOption];
-            break;
 
         case kPreferencesModifierTagCommandAndOption:
             return [NSString stringForModifiersWithMask:(NSEventModifierFlagCommand | NSEventModifierFlagOption)];
-            break;
+
+        case kPreferencesModifierTagLegacyRightControl:
+            return [NSString stringForModifiersWithMask:NSEventModifierFlagControl];
     }
 
     return @"";
@@ -92,17 +109,13 @@
 }
 
 - (void)updateTextColor {
-    if (@available(macOS 10.14, *)) {
-        NSString *closest = [_label.effectiveAppearance bestMatchFromAppearancesWithNames:@[ NSAppearanceNameDarkAqua, NSAppearanceNameAqua]];
-        _label.textColor = [NSColor windowFrameTextColor];
-        if ([closest isEqualToString:NSAppearanceNameDarkAqua]) {
-            self.view.alphaValue = 0.5;
-        } else {
-            self.view.alphaValue = 1.0;
-        }
-        return;
+    NSString *closest = [_label.effectiveAppearance bestMatchFromAppearancesWithNames:@[ NSAppearanceNameDarkAqua, NSAppearanceNameAqua]];
+    _label.textColor = [NSColor windowFrameTextColor];
+    if ([closest isEqualToString:NSAppearanceNameDarkAqua]) {
+        self.view.alphaValue = 0.5;
+    } else {
+        self.view.alphaValue = 1.0;
     }
-    _label.textColor = _isMain ? [NSColor windowFrameTextColor] : [NSColor colorWithWhite:0.67 alpha:1];
 }
 
 - (void)modifiersDidChange:(NSNotification *)notification {

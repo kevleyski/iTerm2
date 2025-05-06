@@ -8,7 +8,7 @@
 #import "BounceTrigger.h"
 
 // How to bounce. The parameter takes an integer value equal to one of these. This is the tag.
-enum {
+typedef NS_ENUM(int, BounceTriggerParamTag) {
     kBounceTriggerParamTagBounceUntilFocus,
     kBounceTriggerParamTagBounceOnce,
 };
@@ -18,6 +18,10 @@ enum {
 + (NSString *)title
 {
     return @"Bounce Dock Icon";
+}
+
+- (NSString *)description {
+    return [NSString stringWithFormat:@"Bounce dock icon %@", self.bounceType == NSCriticalRequest ? @"until focused" : @"once"];
 }
 
 - (NSString *)paramPlaceholder
@@ -32,6 +36,10 @@ enum {
 
 - (BOOL)paramIsPopupButton
 {
+    return YES;
+}
+
+- (BOOL)isIdempotent {
     return YES;
 }
 
@@ -58,10 +66,20 @@ enum {
     return nil;
 }
 
++ (NSString *)stringForParameter:(BounceTriggerParamTag)parameter {
+    switch (parameter) {
+        case kBounceTriggerParamTagBounceUntilFocus:
+            return @"Bounce Until Activated";
+        case kBounceTriggerParamTagBounceOnce:
+            return @"Bounce Once";
+    }
+    return @"Bounce Until Activated";
+}
+
 - (NSDictionary *)menuItemsForPoupupButton
 {
-    return @{ @(kBounceTriggerParamTagBounceUntilFocus): @"Bounce Until Activated",
-              @(kBounceTriggerParamTagBounceOnce): @"Bounce Once" };
+    return @{ @(kBounceTriggerParamTagBounceUntilFocus): [BounceTrigger stringForParameter:kBounceTriggerParamTagBounceUntilFocus],
+              @(kBounceTriggerParamTagBounceOnce): [BounceTrigger stringForParameter:kBounceTriggerParamTagBounceOnce] };
 }
 
 - (NSRequestUserAttentionType)bounceType
@@ -78,20 +96,27 @@ enum {
     }
 }
 
-- (BOOL)performActionWithCapturedStrings:(NSString *const *)capturedStrings
+- (BOOL)performActionWithCapturedStrings:(NSArray<NSString *> *)stringArray
                           capturedRanges:(const NSRange *)capturedRanges
-                            captureCount:(NSInteger)captureCount
-                               inSession:(PTYSession *)aSession
+                               inSession:(id<iTermTriggerSession>)aSession
                                 onString:(iTermStringLine *)stringLine
                     atAbsoluteLineNumber:(long long)lineNumber
                         useInterpolation:(BOOL)useInterpolation
                                     stop:(BOOL *)stop {
-    [NSApp requestUserAttention:[self bounceType]];
+    const NSRequestUserAttentionType bounceType = [self bounceType];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp requestUserAttention:bounceType];
+    });
     return YES;
 }
 
 - (int)defaultIndex {
     return [self indexForObject:@(kBounceTriggerParamTagBounceUntilFocus)];
+}
+
+- (NSAttributedString *)paramAttributedString {
+    return [[NSAttributedString alloc] initWithString:[BounceTrigger stringForParameter:[[NSNumber castFrom:self.param] intValue]]
+                                           attributes:self.regularAttributes];
 }
 
 @end

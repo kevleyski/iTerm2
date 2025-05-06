@@ -8,36 +8,95 @@
 
 #import <Cocoa/Cocoa.h>
 #import "iTermPreferences.h"
+#import "iTermSearchableViewController.h"
 #import "PreferenceInfo.h"
+
+@protocol iTermPreferencePanelSizing<NSObject>
+- (CGFloat)preferencePanelMinimumWidth;
+@end
+
+// Post this notif if you change a setting that the settings panel should pick up. See the userinfo
+// key below.
+extern NSString *const kPreferenceDidChangeFromOtherPanel;
 
 // Used in preferenceDidChangeFromOtherPanel:'s notification's user info dictionary.
 extern NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey;
+extern NSString *const iTermPreferencesDidToggleIndicateNonDefaultValues;
 
 // View controllers for tabs in the Preferences dialog inherit from this class. Consider it
 // abstract. The pattern is to call -defineControl:key:type: in -awakeFromNib for each control.
 // In IB, assign all controls the -settingChanged: selector, and for text fields, make your view
 // controller the delegate.
-@interface iTermPreferencesBaseViewController : NSViewController<NSTabViewDelegate>
+@interface iTermPreferencesBaseViewController : NSViewController<iTermSearchableViewController, PreferenceController, NSTabViewDelegate>
 
 @property(nonatomic, readonly) NSMapTable *keyMap;
-@property(nonatomic, readonly) NSArray *keysForBulkCopy;
+@property(nonatomic, readonly) NSArray<NSString *> *keysForBulkCopy;
 
-@property(nonatomic, weak) NSWindowController *preferencePanel;
+@property(nonatomic, weak) NSWindowController<iTermPreferencePanelSizing> *preferencePanel;
 
 #pragma mark - Core Methods
 
 // Bind a preference control to a key defined in iTermPreferences.
 - (PreferenceInfo *)defineControl:(NSControl *)control
                               key:(NSString *)key
+                      relatedView:(NSView *)relatedView
                              type:(PreferenceInfoType)type;
+
+- (PreferenceInfo *)defineControl:(NSControl *)control
+                              key:(NSString *)key
+                      displayName:(NSString *)displayName // for search
+                             type:(PreferenceInfoType)type;
+
+- (PreferenceInfo *)defineUnsearchableControl:(NSControl *)control
+                                          key:(NSString *)key
+                                         type:(PreferenceInfoType)type;
+
+- (void)associateStepper:(NSStepper *)stepper withPreference:(PreferenceInfo *)info;
 
 // Define a control with a custom settingChanged and update handler. If they're both not null then
 // the default value is not type checked.
 - (PreferenceInfo *)defineControl:(NSControl *)control
                               key:(NSString *)key
+                      relatedView:(NSView *)relatedView
                              type:(PreferenceInfoType)type
                    settingChanged:(void (^)(id))settingChanged
                            update:(BOOL (^)(void))update;
+
+- (PreferenceInfo *)defineControl:(NSControl *)control
+                              key:(NSString *)key
+                      displayName:(NSString *)displayName // for search
+                             type:(PreferenceInfoType)type
+                   settingChanged:(void (^)(id))settingChanged
+                           update:(BOOL (^)(void))update;
+
+- (PreferenceInfo *)defineControl:(NSControl *)control
+                              key:(NSString *)key
+                      relatedView:(NSView *)relatedView
+                      displayName:(NSString *)forceDisplayName
+                             type:(PreferenceInfoType)type
+                   settingChanged:(void (^)(id))settingChanged
+                           update:(BOOL (^)(void))update
+                       searchable:(BOOL)searchable;
+
+// This can be useful for synthetic values.
+- (PreferenceInfo *)unsafeDefineControl:(NSControl *)control
+                                    key:(NSString *)key
+                            relatedView:(NSView *)relatedView
+                            displayName:(NSString *)forceDisplayName
+                                   type:(PreferenceInfoType)type
+                         settingChanged:(void (^)(id))settingChanged
+                                 update:(BOOL (^)(void))update
+                             searchable:(BOOL)searchable;
+
+- (void)setControl:(NSControl *)control inPreference:(PreferenceInfo *)info;
+
+- (void)addViewToSearchIndex:(NSView *)control
+                 displayName:(NSString *)displayName
+                     phrases:(NSArray<NSString *> *)phrases
+                         key:(NSString *)key;
+
+// Call this after defining controls.
+- (void)commitControls;
 
 #pragma mark - IBActions
 
@@ -94,6 +153,8 @@ extern NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey;
 - (void)setObject:(NSObject *)object forKey:(NSString *)key;
 - (NSObject *)objectForKey:(NSString *)key;
 
+- (BOOL)valueOfKeyEqualsDefaultValue:(NSString *)key;
+
 // If this returns YES, then changes to this panel will post a notification causing other panels to
 // update their values for the affected preference.
 - (BOOL)shouldUpdateOtherPanels;
@@ -104,10 +165,21 @@ extern NSString *const kPreferenceDidChangeFromOtherPanelKeyUserInfoKey;
 // The prefs panel this view controller belongs to will close. This implementation does nothing.
 - (void)windowWillClose;
 
+// The prefs panel calls this before another tab gets selected.
+- (void)willDeselectTab;
+
 - (void)resizeWindowForCurrentTabAnimated:(BOOL)animated;
 
 // Override this if you have a tab view.
 - (NSTabView *)tabView;
 - (CGFloat)minimumWidth;
+- (void)saveDeferredUpdates;
+
+- (BOOL)keyHasSyntheticGetter:(NSString *)key;
+- (BOOL)keyHasSyntheticSetter:(NSString *)key;
+- (id)syntheticObjectForKey:(NSString *)key;
+- (void)setSyntheticValue:(id)value forKey:(NSString *)key;
+- (void)updateNonDefaultIndicatorVisibleForInfo:(PreferenceInfo *)info;
+- (void)updateNonDefaultIndicators;
 
 @end

@@ -13,4 +13,9 @@
 // Returns a filename for a temp file. The file will be named /tmp/\(prefix)\(random stuff)\(suffix)
 - (NSString *)temporaryFileNameWithPrefix:(NSString *)prefix suffix:(NSString *)suffix;
 
+- (BOOL)it_securityAgentIsActive;
+- (BOOL)it_openURL:(NSURL *)url;
+- (NSString *)it_newToken;
+- (BOOL)it_checkToken:(NSString *)token;
+
 @end

@@ -1,9 +1,11 @@
 #import "VT100GridTypes.h"
 
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermASCIITexture.h"
 #import "iTermCursor.h"
 #import "iTermImageRenderer.h"
 #import "iTermIndicatorRenderer.h"
+#import "iTermLineStyleMarkRenderer.h"
 #import "iTermMarkRenderer.h"
 #import "iTermMetalDebugInfo.h"
 #import "iTermMetalGlyphKey.h"
@@ -11,6 +13,11 @@
 #import "iTermTextRendererTransientState.h"
 
 @import MetalKit;
+@class iTermBidiDisplayInfo;
+@class iTermKittyImageDraw;
+@class iTermKittyImageRun;
+@class iTermTerminalButton;
+@class iTermMetalView;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -21,6 +28,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
 @property (nonatomic) ITermCursorType type;
 @property (nonatomic, strong) NSColor *cursorColor;
 @property (nonatomic) BOOL doubleWidth;
+@property (nonatomic) BOOL cursorShadow;
 
 // Block cursors care about drawing the character overtop the cursor in a
 // different color than the character would normally be. If this is set, the
@@ -34,6 +42,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
 @property (nonatomic) BOOL password;
 @property (nonatomic) BOOL copyModeCursorSelecting;
 @property (nonatomic) VT100GridCoord copyModeCursorCoord;
+@property (nonatomic) vector_float4 backgroundColor;
 @end
 
 @interface iTermMetalIMEInfo : NSObject
@@ -48,12 +57,17 @@ NS_CLASS_AVAILABLE(10_11, NA)
 
 NS_CLASS_AVAILABLE(10_11, NA)
 @protocol iTermMetalDriverDataSourcePerFrameState<NSObject>
-
+@property (nonatomic, readonly) NSRect adjustedDocumentVisibleRect;
 @property (nonatomic, readonly) VT100GridSize gridSize;
 @property (nonatomic, readonly) CGSize cellSize;
 @property (nonatomic, readonly) CGSize cellSizeWithoutSpacing;
 @property (nonatomic, readonly) vector_float4 defaultBackgroundColor;
 @property (nonatomic, readonly) vector_float4 processedDefaultBackgroundColor;
+@property (nonatomic, readonly) vector_float4 processedDefaultTextColor;
+@property (nonatomic, readonly) vector_float4 defaultTextColor;
+@property (nonatomic, readonly) vector_float4 blockHoverColor;
+@property (nonatomic, readonly) vector_float4 selectedBackgroundColor;
+@property (nonatomic, readonly) iTermLineStyleMarkColors lineStyleMarkColors;
 @property (nonatomic, readonly) NSImage *badgeImage;
 @property (nonatomic, readonly) CGRect badgeSourceRect;
 @property (nonatomic, readonly) CGRect badgeDestinationRect;
@@ -69,19 +83,49 @@ NS_CLASS_AVAILABLE(10_11, NA)
 @property (nonatomic, readonly) NSEdgeInsets edgeInsets;
 @property (nonatomic, readonly) BOOL hasBackgroundImage;
 @property (nonatomic, readonly) CGFloat transparencyAlpha;
+@property (nonatomic, readonly) CGFloat blend;
+@property (nonatomic, readonly) NSEdgeInsets extraMargins;
+@property (nonatomic, readonly) BOOL thinStrokesForTimestamps;
+@property (nonatomic, readonly) BOOL asciiAntiAliased;
+@property (nonatomic, readonly) NSFont *timestampFont;
+@property (nonatomic, readonly) NSColorSpace *colorSpace;
+@property (nonatomic, readonly) BOOL haveOffscreenCommandLine;
+@property (nonatomic, readonly) vector_float4 offscreenCommandLineOutlineColor;
+@property (nonatomic, readonly) vector_float4 offscreenCommandLineBackgroundColor;
+@property (nonatomic, readonly) VT100GridRange linesToSuppressDrawing;
+@property (nonatomic, readonly) CGFloat pointsOnBottomToSuppressDrawing;
+@property (nonatomic, readonly) NSArray<iTermTerminalButton *> *terminalButtons NS_AVAILABLE_MAC(11);
+@property (nonatomic, readonly) BOOL hasSelectedCommand;
+@property (nonatomic, readonly) VT100GridRect selectedCommandRect;
+@property (nonatomic, readonly) NSRange selectedCommandRegion;  // absolute line numbers
+@property (nonatomic, readonly) BOOL forceRegularBottomMargin;
+@property (nonatomic, readonly) const vector_float4 *selectedCommandOutlineColors;  // array of length 2
+@property (nonatomic, readonly) long long totalScrollbackOverflow;
+@property (nonatomic, readonly) iTermRectArray *buttonsBackgroundRects;
+
+// When a command is selected this color is drawn over other regions.
+@property (nonatomic, readonly) vector_float4 shadeColor;
+
+@property (nonatomic, readonly) NSString *statisticsString;
 
 // Initialize sketchPtr to 0. The number of set bits estimates the unique number of color combinations.
-- (void)metalGetGlyphKeys:(iTermMetalGlyphKey *)glyphKeys
-               attributes:(iTermMetalGlyphAttributes *)attributes
-                imageRuns:(NSMutableArray<iTermMetalImageRun *> *)imageRuns
-               background:(iTermMetalBackgroundColorRLE *)backgrounds
-                 rleCount:(int *)rleCount
-                markStyle:(out iTermMarkStyle *)markStylePtr
-                      row:(int)row
-                    width:(int)width
-           drawableGlyphs:(int *)drawableGlyphsPtr
-                     date:(out NSDate * _Nonnull * _Nonnull)date
-                     sketch:(out NSUInteger *)sketchPtr;
+- (void)metalGetGlyphKeysData:(iTermGlyphKeyData *)glyphKeysData
+                glyphKeyCount:(out NSUInteger *)glyphKeyCountPtr
+                   attributes:(iTermMetalGlyphAttributes *)attributes
+                    imageRuns:(NSMutableArray<iTermMetalImageRun *> *)imageRuns
+               kittyImageRuns:(NSMutableArray<iTermKittyImageRun *> *)kittyImageRuns
+                   background:(iTermMetalBackgroundColorRLE *)backgrounds
+                     rleCount:(int *)rleCount
+                    markStyle:(out iTermMarkStyle *)markStylePtr
+                   hoverState:(out BOOL *)hoverStatePtr
+                lineStyleMark:(out BOOL *)lineStyleMarkPtr
+      lineStyleMarkRightInset:(out int *)lineStyleMarkRightInset
+                          row:(int)row
+                        width:(int)width
+                     bidiInfo:(iTermBidiDisplayInfo *)bidiInfo
+               drawableGlyphs:(int *)drawableGlyphsPtr
+                         date:(out NSDate * _Nonnull * _Nonnull)date
+               belongsToBlock:(out BOOL * _Nonnull)belongsToBlock;
 
 - (iTermCharacterSourceDescriptor *)characterSourceDescriptorForASCIIWithGlyphSize:(CGSize)glyphSize
                                                                        asciiOffset:(CGSize)asciiOffset;
@@ -95,7 +139,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
                                                                                 emoji:(BOOL *)emoji;
 
 // Returns the background image or nil. If there's a background image, fill in mode.
-- (NSImage *)metalBackgroundImageGetMode:(nullable iTermBackgroundImageMode *)mode;
+- (iTermImageWrapper *)metalBackgroundImageGetMode:(nullable iTermBackgroundImageMode *)mode;
 
 // An object that compares as equal if ascii characters produced by metalImagesForGlyph would
 // produce the same bitmap.
@@ -103,7 +147,8 @@ NS_CLASS_AVAILABLE(10_11, NA)
 
 // Returns metrics and optional color for underlines.
 - (void)metalGetUnderlineDescriptorsForASCII:(out iTermMetalUnderlineDescriptor *)ascii
-                                    nonASCII:(out iTermMetalUnderlineDescriptor *)nonAscii;
+                                    nonASCII:(out iTermMetalUnderlineDescriptor *)nonAscii
+                               strikethrough:(out iTermMetalUnderlineDescriptor *)strikethrough;
 
 - (void)enumerateIndicatorsInFrame:(NSRect)frame block:(void (^)(iTermIndicatorDescriptor *))block;
 
@@ -111,10 +156,11 @@ NS_CLASS_AVAILABLE(10_11, NA)
 
 - (void)setDebugString:(NSString *)debugString;
 
-- (const iTermData *const)lineForRow:(int)y;
+- (ScreenCharArray *)screenCharArrayForRow:(int)y;
 
 - (CGRect)relativeFrame;
-- (CGSize)containerSize;
+- (CGRect)containerRect;
+- (NSArray<iTermKittyImageDraw *> *)kittyImageDraws;
 
 @end
 
@@ -136,7 +182,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
 
 // Our platform independent render class
 NS_CLASS_AVAILABLE(10_11, NA)
-@interface iTermMetalDriver : NSObject<MTKViewDelegate>
+@interface iTermMetalDriver : NSObject<iTermMetalViewDelegate>
 
 @property (nullable, nonatomic, weak) id<iTermMetalDriverDataSource> dataSource;
 @property (nonatomic, readonly) NSString *identifier;
@@ -151,13 +197,16 @@ cellSizeWithoutSpacing:(CGSize)cellSizeWithoutSpacing
            gridSize:(VT100GridSize)gridSize
         asciiOffset:(CGSize)asciiOffset
               scale:(CGFloat)scale
-            context:(CGContextRef)context;
+            context:(CGContextRef)context
+legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
+   rightExtraPoints:(CGFloat)rightExtraPoints;
 
 // Draw and return immediately, calling completion block after GPU's completion
 // block is called.
 // enableSetNeedsDisplay should be NO.
 // The arg to completion is YES on success and NO if the draw was aborted for lack of resources.
-- (void)drawAsynchronouslyInView:(MTKView *)view completion:(void (^)(BOOL))completion;
+- (void)drawAsynchronouslyInView:(iTermMetalView *)view completion:(void (^)(BOOL))completion;
+- (void)expireNonASCIIGlyphs;
 
 @end
 

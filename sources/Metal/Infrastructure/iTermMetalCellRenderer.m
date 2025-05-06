@@ -2,22 +2,33 @@
 
 #import "iTermMetalCellRenderer.h"
 #import "iTermMetalBufferPool.h"
+#import "iTermPreferences.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @implementation iTermCellRenderConfiguration
 
 - (instancetype)initWithViewportSize:(vector_uint2)viewportSize
+                legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
                                scale:(CGFloat)scale
                   hasBackgroundImage:(BOOL)hasBackgroundImage
+                        extraMargins:(NSEdgeInsets)extraMargins
+maximumExtendedDynamicRangeColorComponentValue:(CGFloat)maximumExtendedDynamicRangeColorComponentValue
+                          colorSpace:(NSColorSpace *)colorSpace
+                    rightExtraPixels:(CGFloat)rightExtraPixels
                             cellSize:(CGSize)cellSize
                            glyphSize:(CGSize)glyphSize
               cellSizeWithoutSpacing:(CGSize)cellSizeWithoutSpacing
                             gridSize:(VT100GridSize)gridSize
                usingIntermediatePass:(BOOL)usingIntermediatePass {
     self = [super initWithViewportSize:viewportSize
+                  legacyScrollbarWidth:legacyScrollbarWidth
                                  scale:scale
-                    hasBackgroundImage:hasBackgroundImage];
+                    hasBackgroundImage:hasBackgroundImage
+                          extraMargins:extraMargins
+maximumExtendedDynamicRangeColorComponentValue:maximumExtendedDynamicRangeColorComponentValue
+                            colorSpace:colorSpace
+                      rightExtraPixels:rightExtraPixels];
     if (self) {
         _cellSize = cellSize;
         _cellSizeWithoutSpacing = cellSizeWithoutSpacing;
@@ -65,24 +76,19 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (NSEdgeInsets)margins {
-    CGFloat MARGIN_WIDTH;
-    CGFloat MARGIN_HEIGHT;
-    if (@available(macOS 10.14, *)) {
-        // MTKView goes to window's edges. It does not overlap the rounded corners.
-        MARGIN_WIDTH = [iTermAdvancedSettingsModel terminalMargin] * self.configuration.scale;
-        MARGIN_HEIGHT = [iTermAdvancedSettingsModel terminalVMargin] * self.configuration.scale;
-    } else {
-        // MTKView inset on sides and top to avoid overlapping rounded corners too much.
-        MARGIN_WIDTH = MAX(0, [iTermAdvancedSettingsModel terminalMargin] - 1) * self.configuration.scale;
-        MARGIN_HEIGHT = 0;
-    }
+    // iTermMetalView goes to window's edges. It does not overlap the rounded corners.
+    const CGSize marginSize =
+        CGSizeMake([iTermPreferences intForKey:kPreferenceKeySideMargins] * self.configuration.scale,
+                   [iTermPreferences intForKey:kPreferenceKeyTopBottomMargins] * self.configuration.scale);
 
-    CGSize usableSize = CGSizeMake(self.cellConfiguration.viewportSize.x - MARGIN_WIDTH * 2,
-                                   self.cellConfiguration.viewportSize.y - MARGIN_HEIGHT * 2);
-    return NSEdgeInsetsMake(fmod(usableSize.height, self.cellConfiguration.cellSize.height) + MARGIN_HEIGHT,
-                            MARGIN_WIDTH,
-                            MARGIN_HEIGHT,
-                            fmod(usableSize.width, self.cellConfiguration.cellSize.width) + MARGIN_WIDTH);
+    const NSEdgeInsets extraMargins = self.configuration.extraMargins;
+    const CGSize usableSize =
+    CGSizeMake(self.cellConfiguration.viewportSizeExcludingLegacyScrollbars.x - marginSize.width * 2 - extraMargins.left - extraMargins.right,
+               self.cellConfiguration.viewportSizeExcludingLegacyScrollbars.y - marginSize.height * 2 - extraMargins.top - extraMargins.bottom);
+    return NSEdgeInsetsMake(fmod(usableSize.height, self.cellConfiguration.cellSize.height) + marginSize.height + extraMargins.bottom,
+                            marginSize.width,
+                            marginSize.height + extraMargins.top,
+                            fmod(usableSize.width, self.cellConfiguration.cellSize.width) + marginSize.width);
 }
 
 - (void)writeDebugInfoToFolder:(NSURL *)folder {

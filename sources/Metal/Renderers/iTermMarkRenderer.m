@@ -1,9 +1,13 @@
 #import "iTermMarkRenderer.h"
 
+#import "DebugLogging.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "iTermPreferences.h"
 #import "iTermTextDrawingHelper.h"
 #import "iTermTextureArray.h"
 #import "iTermMetalCellRenderer.h"
+#import "NSImage+iTerm.h"
+#import "NSObject+iTerm.h"
 
 @interface iTermMarkRendererTransientState()
 @property (nonatomic, strong) iTermTextureArray *marksArrayTexture;
@@ -58,6 +62,7 @@
 @implementation iTermMarkRenderer {
     iTermMetalCellRenderer *_cellRenderer;
     iTermTextureArray *_marksArrayTexture;
+    NSColorSpace *_colorSpace;
     CGSize _markSize;
     iTermMetalMixedSizeBufferPool *_piuPool;
 }
@@ -96,33 +101,49 @@
 }
 
 - (void)initializeTransientState:(iTermMarkRendererTransientState *)tState {
+    DLog(@"Initialize transient state");
     const CGFloat scale = tState.configuration.scale;
 
-    CGRect leftMarginRect = CGRectMake(0,
+    DLog(@"Side margin size is %@, scale is %@, cell size is %@, cell size without spacing is %@",
+         @([iTermPreferences intForKey:kPreferenceKeySideMargins]),
+         @(scale),
+         NSStringFromSize(tState.cellConfiguration.cellSize),
+         NSStringFromSize(tState.cellConfiguration.cellSizeWithoutSpacing));
+    CGRect leftMarginRect = CGRectMake(1,
                                        0,
-                                       ([iTermAdvancedSettingsModel terminalMargin] - 1) * scale,
+                                       ([iTermPreferences intForKey:kPreferenceKeySideMargins] - 1) * scale,
                                        tState.cellConfiguration.cellSize.height);
+    DLog(@"leftMarginRect=%@", NSStringFromRect(leftMarginRect));
     CGRect markRect = [iTermTextDrawingHelper frameForMarkContainedInRect:leftMarginRect
                                                                  cellSize:tState.cellConfiguration.cellSize
                                                    cellSizeWithoutSpacing:tState.cellConfiguration.cellSizeWithoutSpacing
                                                                     scale:scale];
-    if (!CGSizeEqualToSize(markRect.size, _markSize)) {
-        // Mark size has changed
-        _markSize = markRect.size;
-        if (_markSize.width > 0 && _markSize.height > 0) {
-            _marksArrayTexture = [[iTermTextureArray alloc] initWithTextureWidth:_markSize.width
-                                                                   textureHeight:_markSize.height
-                                                                     arrayLength:3
-                                                                            bgra:NO
-                                                                          device:_cellRenderer.device];
+    DLog(@"markRect=%@, _markSize=%@", NSStringFromRect(markRect), NSStringFromSize(_markSize));
 
+    if (!CGSizeEqualToSize(markRect.size, _markSize) || ![NSObject object:tState.configuration.colorSpace isEqualToObject:_colorSpace]) {
+        DLog(@"Mark size or colorspace has changed");
+        _markSize = markRect.size;
+        _colorSpace = tState.configuration.colorSpace;
+        if (_markSize.width > 0 && _markSize.height > 0) {
+            DLog(@"Size is positive, make images of size %@", NSStringFromSize(_markSize));
             NSColor *successColor = [iTermTextDrawingHelper successMarkColor];
             NSColor *otherColor = [iTermTextDrawingHelper otherMarkColor];
             NSColor *failureColor = [iTermTextDrawingHelper errorMarkColor];
 
-            [_marksArrayTexture addSliceWithImage:[self newImageWithMarkOfColor:successColor size:_markSize]];
-            [_marksArrayTexture addSliceWithImage:[self newImageWithMarkOfColor:failureColor size:_markSize]];
-            [_marksArrayTexture addSliceWithImage:[self newImageWithMarkOfColor:otherColor size:_markSize]];
+            NSImage *regularSuccessImage = [self newImageWithMarkOfColor:successColor size:_markSize folded:NO];
+            NSImage *regularFailureImage = [self newImageWithMarkOfColor:failureColor size:_markSize folded:NO];
+            NSImage *regularOtherImage = [self newImageWithMarkOfColor:otherColor size:_markSize folded:NO];
+
+            NSImage *foldedSuccessImage = [self newImageWithMarkOfColor:successColor size:_markSize folded:YES];
+            NSImage *foldedFailureImage = [self newImageWithMarkOfColor:failureColor size:_markSize folded:YES];
+            NSImage *foldedOtherImage = [self newImageWithMarkOfColor:otherColor size:_markSize folded:YES];
+            _marksArrayTexture = [[iTermTextureArray alloc] initWithImages:@[regularSuccessImage,
+                                                                             regularFailureImage,
+                                                                             regularOtherImage,
+                                                                             foldedSuccessImage,
+                                                                             foldedFailureImage,
+                                                                             foldedOtherImage]
+                                                                    device:_cellRenderer.device];
         }
     }
 
@@ -151,15 +172,16 @@
                                            0,
                                            tState.markSize.width,
                                            tState.markSize.height);
+    DLog(@"Using texture frame of %@", NSStringFromRect(textureFrame));
     const iTermVertex vertices[] = {
         // Pixel Positions                              Texture Coordinates
-        { { CGRectGetMaxX(quad), CGRectGetMinY(quad) }, { CGRectGetMaxX(textureFrame), CGRectGetMinY(textureFrame) } },
-        { { CGRectGetMinX(quad), CGRectGetMinY(quad) }, { CGRectGetMinX(textureFrame), CGRectGetMinY(textureFrame) } },
-        { { CGRectGetMinX(quad), CGRectGetMaxY(quad) }, { CGRectGetMinX(textureFrame), CGRectGetMaxY(textureFrame) } },
+        { { CGRectGetMaxX(quad), CGRectGetMinY(quad) }, { CGRectGetMaxX(textureFrame), CGRectGetMaxY(textureFrame) } },
+        { { CGRectGetMinX(quad), CGRectGetMinY(quad) }, { CGRectGetMinX(textureFrame), CGRectGetMaxY(textureFrame) } },
+        { { CGRectGetMinX(quad), CGRectGetMaxY(quad) }, { CGRectGetMinX(textureFrame), CGRectGetMinY(textureFrame) } },
 
-        { { CGRectGetMaxX(quad), CGRectGetMinY(quad) }, { CGRectGetMaxX(textureFrame), CGRectGetMinY(textureFrame) } },
-        { { CGRectGetMinX(quad), CGRectGetMaxY(quad) }, { CGRectGetMinX(textureFrame), CGRectGetMaxY(textureFrame) } },
-        { { CGRectGetMaxX(quad), CGRectGetMaxY(quad) }, { CGRectGetMaxX(textureFrame), CGRectGetMaxY(textureFrame) } },
+        { { CGRectGetMaxX(quad), CGRectGetMinY(quad) }, { CGRectGetMaxX(textureFrame), CGRectGetMaxY(textureFrame) } },
+        { { CGRectGetMinX(quad), CGRectGetMaxY(quad) }, { CGRectGetMinX(textureFrame), CGRectGetMinY(textureFrame) } },
+        { { CGRectGetMaxX(quad), CGRectGetMaxY(quad) }, { CGRectGetMaxX(textureFrame), CGRectGetMinY(textureFrame) } },
     };
     tState.vertexBuffer = [_cellRenderer.verticesPool requestBufferFromContext:tState.poolContext
                                                                       withBytes:vertices
@@ -183,55 +205,10 @@
 
 #pragma mark - Private
 
-- (NSImage *)newImageWithMarkOfColor:(NSColor *)color size:(CGSize)size {
-    // Doing this hacky crap with NSBitmapImageRep is necessary to get it
-    // pixel-perfect. If you lock an NSImage it'll create a rep that's larger by
-    // the scale factor (of, uh, something).
-    NSBitmapImageRep *offscreenRep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
-                                                                              pixelsWide:size.width
-                                                                              pixelsHigh:size.height
-                                                                           bitsPerSample:8
-                                                                         samplesPerPixel:4
-                                                                                hasAlpha:YES
-                                                                                isPlanar:NO
-                                                                          colorSpaceName:NSDeviceRGBColorSpace
-                                                                            bitmapFormat:NSAlphaFirstBitmapFormat
-                                                                             bytesPerRow:0
-                                                                            bitsPerPixel:0];
-    offscreenRep = [offscreenRep bitmapImageRepByRetaggingWithColorSpace:[NSColorSpace sRGBColorSpace]];
-
-    NSGraphicsContext *g = [NSGraphicsContext graphicsContextWithBitmapImageRep:offscreenRep];
-    [NSGraphicsContext saveGraphicsState];
-    [NSGraphicsContext setCurrentContext:g];
-
-    CGRect rect = CGRectMake(0, 0, size.width, size.height);
-
-    NSPoint bottom = NSMakePoint(NSMinX(rect), NSMinY(rect));
-    NSPoint right = NSMakePoint(NSMaxX(rect), NSMidY(rect));
-    NSPoint top = NSMakePoint(NSMinX(rect), NSMaxY(rect));
-
-    NSBezierPath *path;
-
-    path = [NSBezierPath bezierPath];
-    [color set];
-    [path moveToPoint:top];
-    [path lineToPoint:right];
-    [path lineToPoint:bottom];
-    [path lineToPoint:top];
-    [path fill];
-
-    [[NSColor blackColor] set];
-    path = [NSBezierPath bezierPath];
-    [path moveToPoint:NSMakePoint(bottom.x, bottom.y)];
-    [path lineToPoint:NSMakePoint(right.x, right.y)];
-    [path setLineWidth:1.0];
-    [path stroke];
-
-    [NSGraphicsContext restoreGraphicsState];
-
-    NSImage *img = [[NSImage alloc] initWithSize:size];
-    [img addRepresentation:offscreenRep];
-    return img;
+- (NSImage *)newImageWithMarkOfColor:(NSColor *)color size:(CGSize)pixelSize folded:(BOOL)folded {
+    return [iTermTextDrawingHelper newImageWithMarkOfColor:color
+                                                 pixelSize:pixelSize
+                                                    folded:folded];
 }
 
 @end

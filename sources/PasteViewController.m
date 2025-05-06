@@ -86,7 +86,7 @@ static NSString *iTermPasteViewControllerNibName(BOOL mini) {
         return;
     }
 
-    NSShadow *shadow = [[NSShadow alloc] init];
+    NSShadow *shadow = [[[NSShadow alloc] init] autorelease];
     shadow.shadowOffset = NSMakeSize(2, -2);
     shadow.shadowColor = [NSColor colorWithWhite:0 alpha:0.3];
     shadow.shadowBlurRadius = 2;
@@ -105,15 +105,13 @@ static NSString *iTermPasteViewControllerNibName(BOOL mini) {
     if ([term isKindOfClass:[PseudoTerminal class]]) {
         _label.textColor = [term accessoryTextColorForMini:self.mini];
     }
-    if (@available(macOS 10.14, *)) {
-        if (!self.mini) {
-            return;
-        }
-        if (_label.textColor.perceivedBrightness > 0.5) {
-            progressIndicator_.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-        } else {
-            progressIndicator_.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
-        }
+    if (!self.mini) {
+        return;
+    }
+    if (_label.textColor.perceivedBrightness > 0.5) {
+        progressIndicator_.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    } else {
+        progressIndicator_.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
     }
 }
 

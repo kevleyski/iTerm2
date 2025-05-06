@@ -19,7 +19,9 @@ const NSTimeInterval kUpdateInterval = 1.0 / 60.0;
 - (void)dismiss;
 @end
 
-@implementation CPKEyedropperWindow
+@implementation CPKEyedropperWindow {
+    NSColorSpace *_colorSpace;
+}
 
 // Gives the origin for the window.
 + (NSPoint)origin {
@@ -29,20 +31,60 @@ const NSTimeInterval kUpdateInterval = 1.0 / 60.0;
     return origin;
 }
 
-+ (void)pickColorWithCompletion:(void (^)(NSColor *color))completion {
++ (BOOL)canTakeScreenshot {
+    if (@available(macOS 10.16, *)) {
+      return CGPreflightScreenCaptureAccess();
+    }
+    return YES;
+}
+
++ (void)complainAboutScreenCapturePermission {
+    if (@available(macOS 10.15, *)) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Permission Needed";
+        alert.informativeText = @"The eyedropper needs Screen Recording permission to work.";
+        [alert addButtonWithTitle:@"OK"];
+        [alert addButtonWithTitle:@"Cancel"];
+        if ([alert runModal] == NSAlertFirstButtonReturn) {
+            CGRequestScreenCaptureAccess();
+            NSURL *URL = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"];
+            [[NSWorkspace sharedWorkspace] openURL:URL];
+        }
+        return;
+    }
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Permission Needed";
+    alert.informativeText = [NSString stringWithFormat:@"The eyedropper requires screen recording permission.\n\nYou can enable this by adding %@ to System Preferences > Security & Privacy > Privacy > Screen Recording.", [NSRunningApplication currentApplication].localizedName];
+    [alert addButtonWithTitle:@"Open System Preferences"];
+    [alert addButtonWithTitle:@"Cancel"];
+    if ([alert runModal] == NSAlertFirstButtonReturn) {
+        NSURL *URL = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"];
+        [[NSWorkspace sharedWorkspace] openURL:URL];
+    }
+}
+
++ (void)pickColorWithColorSpace:(NSColorSpace *)colorSpace completion:(void (^)(NSColor *color))completion {
+    if (![self canTakeScreenshot]) {
+        [self complainAboutScreenCapturePermission];
+        if (![self canTakeScreenshot]) {
+            return;
+        }
+    }
     NSPoint origin = [CPKEyedropperWindow origin];
     NSRect frame = NSMakeRect(origin.x, origin.y, kSize, kSize);
     CPKEyedropperWindow *eyedropperWindow =
             [[CPKEyedropperWindow alloc] initWithContentRect:frame
-                                           styleMask:NSBorderlessWindowMask
+                                           styleMask:NSWindowStyleMaskBorderless
                                                      backing:NSBackingStoreBuffered
                                                        defer:NO];
+    eyedropperWindow->_colorSpace = colorSpace;
     eyedropperWindow.opaque = NO;
     eyedropperWindow.backgroundColor = [NSColor clearColor];
     eyedropperWindow.hasShadow = NO;
     eyedropperWindow.previousKeyWindow = [NSApp keyWindow];
     NSRect rect = NSMakeRect(0, 0, frame.size.width, frame.size.height);
-    eyedropperWindow.eyedropperView = [[CPKEyedropperView alloc] initWithFrame:rect];
+    eyedropperWindow.eyedropperView = [[CPKEyedropperView alloc] initWithFrame:rect colorSpace:colorSpace];
     __weak __typeof(eyedropperWindow) weakWindow = eyedropperWindow;
     eyedropperWindow.eyedropperView.click = ^() {
         [weakWindow accept];
@@ -84,7 +126,7 @@ const NSTimeInterval kUpdateInterval = 1.0 / 60.0;
 - (void)grabScreenshots {
     self.screenshots = [NSMutableArray array];
     for (NSScreen *screen in [NSScreen screens]) {
-        CPKScreenshot *screenshot = [CPKScreenshot grabFromScreen:screen];
+        CPKScreenshot *screenshot = [CPKScreenshot grabFromScreen:screen colorSpace:_colorSpace];
         [self.screenshots addObject:screenshot];
     }
 }
@@ -171,7 +213,7 @@ const NSTimeInterval kUpdateInterval = 1.0 / 60.0;
     NSMutableArray *outerArray = [NSMutableArray array];
     const NSInteger radius = 9;
     CPKScreenshot *screenshot = [self currentScreenScreenshot];
-    NSColor *blackColor = [NSColor cpk_colorWithRed:0 green:0 blue:0 alpha:1];
+    NSColor *blackColor = [NSColor cpk_colorWithRed:0 green:0 blue:0 alpha:1 colorSpace:self.colorSpace];
     for (NSInteger x = point.x - radius; x <= point.x + radius; x++) {
         NSMutableArray *innerArray = [NSMutableArray array];
         for (NSInteger y = point.y - radius; y <= point.y + radius; y++) {
@@ -212,7 +254,7 @@ const NSTimeInterval kUpdateInterval = 1.0 / 60.0;
     point.y = screen.frame.size.height - point.y;
     point.x *= screen.backingScaleFactor;
     point.y *= screen.backingScaleFactor;
-    self.selectedColor = [[self.currentScreenScreenshot colorAtX:point.x y:point.y] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    self.selectedColor = [[self.currentScreenScreenshot colorAtX:point.x y:point.y] colorUsingColorSpace:_colorSpace];
 }
 
 - (void)dismiss {

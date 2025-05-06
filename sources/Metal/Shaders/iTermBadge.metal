@@ -22,18 +22,18 @@ iTermBadgeVertexShader(uint vertexID [[ vertex_id ]],
     out.clipSpacePosition.xy = pixelSpacePosition / viewportSize;
     out.clipSpacePosition.z = 0.0;
     out.clipSpacePosition.w = 1;
-    out.textureCoordinate = vertexArray[vertexID].textureCoordinate;
+    const float2 coord = vertexArray[vertexID].textureCoordinate;
+    out.textureCoordinate = float2(coord.x, 1 - coord.y);
 
     return out;
 }
 
 fragment float4
 iTermBadgeFragmentShader(iTermBadgeVertexFunctionOutput in [[stage_in]],
-                         texture2d<half> texture [[ texture(iTermTextureIndexPrimary) ]]) {
+                         texture2d<float> texture [[ texture(iTermTextureIndexPrimary) ]]) {
     constexpr sampler textureSampler(mag_filter::linear,
                                      min_filter::linear);
 
-    const half4 colorSample = texture.sample(textureSampler, in.textureCoordinate);
-    return float4(colorSample);
+    return texture.sample(textureSampler, in.textureCoordinate);
 }
 

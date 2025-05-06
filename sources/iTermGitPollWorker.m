@@ -8,212 +8,108 @@
 #import "iTermGitPollWorker.h"
 
 #import "DebugLogging.h"
+
+#import "iTermAdvancedSettingsModel.h"
 #import "iTermCommandRunner.h"
-#import "iTermGitCache.h"
+#import "iTermCommandRunnerPool.h"
+#import "iTermGitState+MainApp.h"
+#import "iTermSlowOperationGateway.h"
 #import "iTermTuple.h"
 #import "NSArray+iTerm.h"
 #import "NSStringITerm.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef void (^iTermGitCallback)(iTermGitState *);
+typedef void (^iTermGitPollWorkerCompletionBlock)(iTermGitState * _Nullable);
 
 @implementation iTermGitPollWorker {
-    iTermCommandRunner *_commandRunner;
-    NSMutableData *_readData;
-    NSInteger _generation;
-    NSMutableArray<NSString *> *_queue;
-    iTermGitCache *_cache;
-    NSMutableDictionary<NSString *, NSMutableArray<iTermGitCallback> *> *_outstanding;
-    int _bucket;
+    NSMutableDictionary<NSString *, iTermGitState *> *_cache;
+    NSMutableDictionary<NSString *, NSMutableArray<iTermGitPollWorkerCompletionBlock> *> *_pending;
 }
 
-+ (instancetype)instanceForPath:(NSString *)path {
-    // If one of the gets hung because of a network file system then it won't affect most of the
-    // others.
-    const int numberOfBuckets = 4;
-    static dispatch_once_t onceToken[numberOfBuckets];
-    static id instances[numberOfBuckets];
-    const int bucket = [path hash] % numberOfBuckets;
-    dispatch_once(&onceToken[bucket], ^{
-        instances[bucket] = [[self alloc] initWithBucket:bucket];
++ (instancetype)sharedInstance {
+    static id instance;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[self alloc] init];
     });
-    return instances[bucket];
+    return instance;
 }
 
-- (instancetype)initWithBucket:(int)bucket {
+- (instancetype)init {
     self = [super init];
     if (self) {
-        _bucket = bucket;
-        _readData = [NSMutableData data];
-        _queue = [NSMutableArray array];
-        _cache = [[iTermGitCache alloc] init];
-        _outstanding = [NSMutableDictionary dictionary];
+        _cache = [NSMutableDictionary dictionary];
+        _pending = [NSMutableDictionary dictionary];
     }
     return self;
 }
 
+- (NSString *)cachedBranchForPath:(NSString *)path {
+    return _cache[path].branch;
+}
+
+- (NSString *)debugInfoForDirectory:(NSString *)path {
+    iTermGitState *existing = _cache[path];
+    NSMutableArray<iTermGitPollWorkerCompletionBlock> *pending = _pending[path];
+    return [NSString stringWithFormat:@"Cache status: %@\nPending calls: %@\n",
+            existing ? [NSString stringWithFormat:@"Have cached value of age %@", @(existing.age)] : @"No cached value",
+            @(pending.count)];
+}
+
+- (void)requestPath:(NSString *)path completion:(void (^)(iTermGitState * _Nullable))completion {
+    DLog(@"requestPath:%@", path);
+    const NSTimeInterval ttl = 1;
+
+    iTermGitState *existing = _cache[path];
+    DLog(@"Existing state %@ has age %@", existing, @(existing.age));
+    if (existing != nil && existing.age < ttl) {
+        completion(existing);
+        return;
+    }
+
+    NSMutableArray<iTermGitPollWorkerCompletionBlock> *pending = _pending[path];
+    if (pending.count) {
+        DLog(@"Add to pending request for %@ with %@ waiting blocks. Pending is now:\n%@", path, @(pending.count), _pending);
+        [pending addObject:[completion copy]];
+        return;
+    }
+
+    _pending[path] = [@[ [completion copy] ] mutableCopy];
+    DLog(@"Create pending request for %@ with a single waiter", path);
+    DLog(@"Send through gateway with the following pending requests:\n%@", _pending);
+    [[iTermSlowOperationGateway sharedInstance] requestGitStateForPath:path completion:^(iTermGitState * _Nullable state) {
+        DLog(@"Got response for %@ with state %@", path, state);
+        [self didFetchState:state path:path];
+    }];
+}
+
+- (void)didFetchState:(iTermGitState *)state path:(NSString *)path {
+    DLog(@"Did fetch state %@ for path %@", state, path);
+    iTermGitState *cached = _cache[path];
+    if (cached != nil &&
+        !isnan(cached.creationTime) &&  // just paranoia to avoid unbounded recursion
+        cached.creationTime > state.creationTime) {
+        DLog(@"Cached entry is newer. Recurse.");
+        [self didFetchState:cached path:path];
+        return;
+    }
+
+    DLog(@"Save to cache");
+    _cache[path] = state;
+
+    NSArray<iTermGitPollWorkerCompletionBlock> *blocks = _pending[path];
+    DLog(@"Invoke %@ blocks", @(blocks.count));
+    [_pending removeObjectForKey:path];
+    DLog(@"Remove all waiters from pending for %@. Pending is now\n%@", path, _pending);
+    [blocks enumerateObjectsUsingBlock:^(iTermGitPollWorkerCompletionBlock  _Nonnull block, NSUInteger idx, BOOL * _Nonnull stop) {
+        DLog(@"Invoke completion block for path %@ with state %@", path, state);
+        block(state);
+    }];
+}
+
 - (void)invalidateCacheForPath:(NSString *)path {
-    [_cache removeStateForPath:path];
-}
-
-- (void)requestPath:(NSString *)path completion:(iTermGitCallback)completion {
-    iTermGitState *cached = [_cache stateForPath:path];
-    if (cached) {
-        completion(cached);
-        return;
-    }
-
-    DLog(@"git poll worker %d got request for path %@", _bucket, path);
-
-    NSMutableArray<iTermGitCallback> *callbacks = _outstanding[path];
-    if (callbacks) {
-        DLog(@"Attach request for %@ to existing callback", path);
-        [callbacks addObject:[completion copy]];
-        return;
-    }
-    DLog(@"enqueue request for %@", path);
-    callbacks = [NSMutableArray array];
-    _outstanding[path] = callbacks;
-
-    [self createCommandRunnerIfNeeded];
-    DLog(@"git component requesting poll of %@", path);
-    __block BOOL finished = NO;
-    void (^wrapper)(iTermGitState *) = ^(iTermGitState *state) {
-        if (state) {
-            [self->_cache setState:state forPath:path ttl:2];
-        }
-        if (!finished) {
-            finished = YES;
-            completion(state);
-        }
-    };
-    [callbacks addObject:[wrapper copy]];
-    [_queue addObject:path];
-
-    [_commandRunner write:[[path stringByAppendingString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding] completion:^(size_t written, int error) {
-        DLog(@"git component wrote %d bytes, got error code %d", (int)written, error);
-    }];
-
-    const NSTimeInterval timeout = 2;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (!finished) {
-            finished = YES;
-            [self killScript];
-        }
-    });
-}
-
-- (void)createCommandRunnerIfNeeded {
-    if (!_commandRunner) {
-        NSBundle *bundle = [NSBundle bundleForClass:self.class];
-        NSString *script = [bundle pathForResource:@"iterm2_git_poll" ofType:@"sh"];
-        if (!script) {
-            DLog(@"failed to get path to script from bundle %@", bundle);
-            return;
-        }
-        DLog(@"Launch new git poller script from %@", script);
-        NSString *sandboxConfig = [[[NSString stringWithContentsOfFile:[bundle pathForResource:@"git" ofType:@"sb"]
-                                                              encoding:NSUTF8StringEncoding
-                                                                 error:nil] componentsSeparatedByString:@"\n"] componentsJoinedByString:@" "];
-        assert(sandboxConfig.length > 0);
-        _commandRunner = [[iTermCommandRunner alloc] initWithCommand:@"/usr/bin/sandbox-exec" withArguments:@[ @"-p", sandboxConfig, script ] path:@"/"];
-        __weak __typeof(self) weakSelf = self;
-        _commandRunner.outputHandler = ^(NSData *data) {
-            [weakSelf didRead:data];
-        };
-        NSInteger generation = _generation++;
-        _commandRunner.completion = ^(int code) {
-            [weakSelf scriptDied:generation];
-        };
-        [_commandRunner run];
-    }
-}
-
-- (void)didRead:(NSData *)data {
-    DLog(@"Read %@ bytes from git poller script", @(data.length));
-
-    // If more than 100k gets queued up something has gone terribly wrong
-    const size_t maxBytes = 100000;
-    if (_readData.length + data.length > maxBytes) {
-        DLog(@"wtf, have queued up more than 100k of output from the git poller script");
-        [_commandRunner terminate];
-        _commandRunner = nil;
-        [_readData setLength:0];
-        return;
-    }
-
-    [_readData appendData:data];
-    [self handleBlocks];
-}
-
-- (void)handleBlocks {
-    while ([self handleBlock]) {}
-}
-
-- (BOOL)handleBlock {
-    char *endMarker = "\n--END--\n";
-    NSData *endMarkerData = [NSData dataWithBytesNoCopy:endMarker length:strlen(endMarker) freeWhenDone:NO];
-    NSRange range = [_readData rangeOfData:endMarkerData options:0 range:NSMakeRange(0, _readData.length)];
-    if (range.location == NSNotFound) {
-        return NO;
-    }
-
-    NSRange thisRange = NSMakeRange(0, NSMaxRange(range));
-    NSData *thisData = [_readData subdataWithRange:thisRange];
-    [_readData replaceBytesInRange:thisRange withBytes:"" length:0];
-    NSString *string = [[NSString alloc] initWithData:thisData
-                                             encoding:NSUTF8StringEncoding];
-    DLog(@"Read this string from git poller script:\n%@", string);
-    NSArray<NSString *> *lines = [string componentsSeparatedByString:@"\n"];
-    NSDictionary<NSString *, NSString *> *dict = [lines keyValuePairsWithBlock:^iTermTuple *(NSString *line) {
-        NSRange colon = [line rangeOfString:@": "];
-        if (colon.location == NSNotFound) {
-            return nil;
-        }
-        NSString *key = [line substringToIndex:colon.location];
-        NSString *value = [line substringFromIndex:NSMaxRange(colon)];
-        return [iTermTuple tupleWithObject:key andObject:value];
-    }];
-
-    DLog(@"Parsed dict:\n%@", dict);
-    iTermGitState *state = [[iTermGitState alloc] init];
-    state.dirty = [dict[@"DIRTY"] isEqualToString:@"dirty"];
-    state.pushArrow = dict[@"PUSH"];
-    state.pullArrow = dict[@"PULL"];
-    state.branch = dict[@"BRANCH"];
-
-    NSString *path = _queue.firstObject;
-    if (path) {
-        DLog(@"Invoking callbacks for path %@", path);
-        [_queue removeObjectAtIndex:0];
-        NSArray<iTermGitCallback> *callbacks = _outstanding[path];
-        [_outstanding removeObjectForKey:path];
-        for (iTermGitCallback block in callbacks) {
-            block(state);
-        }
-    }
-    return YES;
-}
-
-- (void)killScript {
-    DLog(@"killing wedged git poller script");
-    [_commandRunner terminate];
-    [self reset];
-}
-
-- (void)reset {
-    [_readData setLength:0];
-    _commandRunner = nil;
-    [_queue removeAllObjects];
-}
-
-- (void)scriptDied:(NSInteger)generation {
-    DLog(@"* script died *");
-    if (generation != _generation) {
-        return;
-    }
-    [self reset];
+    [_pending removeObjectForKey:path];
 }
 
 @end

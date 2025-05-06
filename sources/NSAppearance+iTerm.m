@@ -7,45 +7,76 @@
 
 #import "NSAppearance+iTerm.h"
 #import "DebugLogging.h"
+#import "iTermPreferences.h"
 
 @implementation NSAppearance (iTerm)
 
-- (iTermPreferencesTabStyle)it_tabStyle:(iTermPreferencesTabStyle)tabStyle {
-    if (tabStyle != TAB_STYLE_AUTOMATIC && tabStyle != TAB_STYLE_MINIMAL) {
-        if (@available(macOS 10.14, *)) {
-            return tabStyle;
-        } else {
-            const BOOL dark = [self.name isEqualToString:NSAppearanceNameVibrantDark];
-            DLog(@"self.name=%@ dark=%@ tabStyle=%@", self.name, @(dark), @(tabStyle));
-            switch (tabStyle) {
-                case TAB_STYLE_LIGHT:
-                    if (dark) {
-                        return TAB_STYLE_DARK;
-                    }
-                    break;
-                case TAB_STYLE_LIGHT_HIGH_CONTRAST:
-                    if (dark) {
-                        return TAB_STYLE_DARK_HIGH_CONTRAST;
-                    }
-                    break;
-
-                case TAB_STYLE_DARK:
-                case TAB_STYLE_DARK_HIGH_CONTRAST:
-                case TAB_STYLE_AUTOMATIC:
-                case TAB_STYLE_MINIMAL:
-                    break;
-            }
-
-            return tabStyle;
-        }
+- (BOOL)it_isDark {
+    NSAppearanceName bestMatch = [self bestMatchFromAppearancesWithNames:@[ NSAppearanceNameDarkAqua,
+                                                                            NSAppearanceNameVibrantDark,
+                                                                            NSAppearanceNameAqua,
+                                                                            NSAppearanceNameVibrantLight ]];
+    if ([bestMatch isEqualToString:NSAppearanceNameDarkAqua] ||
+        [bestMatch isEqualToString:NSAppearanceNameVibrantDark]) {
+        return YES;
     }
-    if (@available(macOS 10.14, *)) {
-        return [self it_mojaveTabStyle:tabStyle];
-    }
-    return TAB_STYLE_LIGHT;
+    return NO;
 }
 
-- (iTermPreferencesTabStyle)it_mojaveTabStyle:(iTermPreferencesTabStyle)tabStyle NS_AVAILABLE_MAC(10_14) {
++ (instancetype)it_appearanceForCurrentTheme {
+    iTermPreferencesTabStyle preferredStyle = [iTermPreferences intForKey:kPreferenceKeyTabStyle];
+    switch (preferredStyle) {
+        case TAB_STYLE_AUTOMATIC:
+        case TAB_STYLE_MINIMAL:
+        case TAB_STYLE_COMPACT:
+            return NSApp.effectiveAppearance;
+
+        case TAB_STYLE_LIGHT:
+        case TAB_STYLE_LIGHT_HIGH_CONTRAST:
+            return [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+
+        case TAB_STYLE_DARK:
+        case TAB_STYLE_DARK_HIGH_CONTRAST:
+            return [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    }
+}
+
++ (void)it_performBlockWithCurrentAppearanceSetToAppearanceForCurrentTheme:(void (^)(void))block {
+    NSAppearance *saved = [self currentAppearance];
+    [NSAppearance setCurrentAppearance:[self it_appearanceForCurrentTheme]];
+    block();
+    [NSAppearance setCurrentAppearance:saved];
+}
+
+- (void)it_performAsCurrentDrawingAppearance:(void (^NS_NOESCAPE)(void))block {
+    if (@available(macOS 11, *)) {
+        [self performAsCurrentDrawingAppearance:block];
+    } else {
+        NSAppearance *saved = [NSAppearance currentAppearance];
+        [NSAppearance setCurrentAppearance:self];
+        block();
+        [NSAppearance setCurrentAppearance:saved];
+    }
+}
+
+- (iTermPreferencesTabStyle)it_tabStyle:(iTermPreferencesTabStyle)tabStyle {
+    switch (tabStyle) {
+        case TAB_STYLE_AUTOMATIC:
+        case TAB_STYLE_MINIMAL:
+        case TAB_STYLE_COMPACT:
+            return [self it_mojaveTabStyle];
+
+        case TAB_STYLE_LIGHT:
+        case TAB_STYLE_LIGHT_HIGH_CONTRAST:
+            return tabStyle;
+
+        case TAB_STYLE_DARK:
+        case TAB_STYLE_DARK_HIGH_CONTRAST:
+            return tabStyle;
+    }
+}
+
+- (iTermPreferencesTabStyle)it_mojaveTabStyle NS_AVAILABLE_MAC(10_14) {
     NSString *name = [self bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua,
                                                                 NSAppearanceNameDarkAqua,
                                                                 NSAppearanceNameAccessibilityHighContrastAqua,
@@ -63,8 +94,57 @@
         return TAB_STYLE_LIGHT_HIGH_CONTRAST;
     }
     
-    DLog(@"Unexpected tab style %@", @(tabStyle));
+    DLog(@"Unexpected tab style %@", name);
     return TAB_STYLE_LIGHT;
+}
+
++ (iTermAppearanceOptions)it_appearanceOptions {
+    iTermAppearanceOptions options = 0;
+
+    switch ((iTermPreferencesTabStyle)[iTermPreferences intForKey:kPreferenceKeyTabStyle]) {
+        case TAB_STYLE_DARK:
+            options |= iTermAppearanceOptionsDark;
+            break;
+
+        case TAB_STYLE_LIGHT:
+            break;
+
+        case TAB_STYLE_DARK_HIGH_CONTRAST:
+            options |= iTermAppearanceOptionsDark;
+            options |= iTermAppearanceOptionsHighContrast;
+            break;
+
+        case TAB_STYLE_LIGHT_HIGH_CONTRAST:
+            options |= iTermAppearanceOptionsHighContrast;
+            break;
+
+        case TAB_STYLE_MINIMAL:
+            options |= iTermAppearanceOptionsMinimal;
+            // fall through
+
+        case TAB_STYLE_COMPACT:
+        case TAB_STYLE_AUTOMATIC: {
+            if ([NSAppearance it_systemThemeIsDark]) {
+                options |= iTermAppearanceOptionsDark;
+            }
+            break;
+        }
+    }
+    return options;
+}
+
++ (BOOL)it_decorationsAreDarkWithTerminalBackgroundColorIsDark:(BOOL)darkBackground {
+    const iTermAppearanceOptions options = [self it_appearanceOptions];
+    if (options & iTermAppearanceOptionsMinimal) {
+        return darkBackground;
+    }
+    return !!(options & iTermAppearanceOptionsDark);
+}
+
++ (BOOL)it_systemThemeIsDark {
+    NSAppearanceName appearance =
+        [NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    return [appearance isEqualToString:NSAppearanceNameDarkAqua];
 }
 
 @end

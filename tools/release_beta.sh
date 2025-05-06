@@ -1,7 +1,6 @@
 #!/bin/bash
 
-echo WARNING - THIS IS THE FIRST TRANSITIONAL BETA BUILD - TEST THE DICKENS OUT OF SPARKLE
-exit 1
+set -x
 
 function die {
   echo $1
@@ -13,23 +12,20 @@ if [ $# -ne 1 ]; then
    exit 1
 fi
 
-test -f "$PRIVKEY" || die "Set PRIVKEY environment variable to point at a valid private key (not set or nonexistent)"
+echo Enter the EdDSA private key
+read -s EDPRIVKEY
+
+echo Enter the notarization password
+read -s NOTPASS
+
 # Usage: SparkleSign testing.xml template.xml
 function SparkleSign {
     LENGTH=$(ls -l iTerm2-${NAME}.zip | awk '{print $5}')
-    ruby "../../ThirdParty/SparkleSigningTools/sign_update.rb" iTerm2-${NAME}.zip $PRIVKEY > /tmp/sig.txt || die SparkleSign
-    ../../tools/sign_update iTerm2-${NAME}.zip > /tmp/newsig.txt || die SparkleSignNew
 
-    echo "Signature is "
-    cat /tmp/sig.txt
-    echo "ECDSA signature is "
+    ../../tools/sign_update iTerm2-${NAME}.zip "$EDPRIVKEY" > /tmp/newsig.txt || die SparkleSignNew
+    echo "New signature is"
     cat /tmp/newsig.txt
-    actualsize=$(wc -c < /tmp/sig.txt)
-    if (( $actualsize < 60)); then
-        die "signature file too small"
-    fi
 
-    SIG=$(cat /tmp/sig.txt)
     NEWSIG=$(cat /tmp/newsig.txt)
     DATE=$(date +"%a, %d %b %Y %H:%M:%S %z")
     XML=$1
@@ -41,8 +37,10 @@ function SparkleSign {
     sed -e "s/%DATE%/${DATE}/" | \
     sed -e "s/%NAME%/${NAME}/" | \
     sed -e "s/%LENGTH%/$LENGTH/" | \
-    sed -e "s,%SIG%,${SIG}," | \
     sed -e "s,%NEWSIG%,${NEWSIG}," > $SVNDIR/source/appcasts/$1
+
+    echo "Updated appcasts file $SVNDIR/source/appcasts/$1"
+    cat $SVNDIR/source/appcasts/$1
     cp iTerm2-${NAME}.zip ~/iterm2-website/downloads/beta/
 }
 
@@ -69,8 +67,23 @@ function Build {
   rm -rf iTerm.app
   mv iTerm2.app iTerm.app
 
-  zip -ry iTerm2-${NAME}.zip iTerm.app
- 
+  # Zip it, notarize it, staple it, and re-zip it.
+  PRENOTARIZED_ZIP=iTerm2-${NAME}-prenotarized.zip
+  zip -ry $PRENOTARIZED_ZIP iTerm.app
+  xcrun notarytool submit --team-id H7V7XYVQ7D --apple-id "apple@georgester.com" --password "$NOTPASS" $PRENOTARIZED_ZIP > /tmp/upload.out 2>&1 || die "Notarization failed"
+  UUID=$(grep id: /tmp/upload.out | head -1 | sed -e 's/.*id: //')
+  echo "uuid is $UUID"
+  xcrun notarytool info --team-id H7V7XYVQ7D --apple-id "apple@georgester.com" --password "$NOTPASS" $UUID
+  sleep 1
+  while xcrun notarytool info --team-id H7V7XYVQ7D --apple-id "apple@georgester.com" --password "$NOTPASS" $UUID 2>&1 | egrep -i "in progress|Could not find the RequestUUID|Submission does not exist or does not belong to your team":
+  do
+      echo "Trying again"
+      sleep 1
+  done
+  NOTARIZED_ZIP=iTerm2-${NAME}.zip
+  xcrun stapler staple iTerm.app
+  zip -ry $NOTARIZED_ZIP iTerm.app
+
   # Update the list of changes
   vi $SVNDIR/source/appcasts/testing_changes3.txt
  
@@ -80,19 +93,27 @@ function Build {
   test -f $SVNDIR/downloads/beta/iTerm2-${NAME}.summary || (echo "iTerm2 "$VERSION" ($SUMMARY)" > $SVNDIR/downloads/beta/iTerm2-${NAME}.summary)
   test -f $SVNDIR/downloads/beta/iTerm2-${NAME}.description || (echo "$DESCRIPTION" > $SVNDIR/downloads/beta/iTerm2-${NAME}.description)
   vi $SVNDIR/downloads/beta/iTerm2-${NAME}.description
-  echo 'SHA-256 of the zip file is' > $SVNDIR/downloads/beta/iTerm2-${NAME}.changelog
-  shasum -a256 iTerm2-${NAME}.zip | awk '{print $1}' >> $SVNDIR/downloads/beta/iTerm2-${NAME}.changelog
+  rm -f /tmp/sum /tmp/sum.asc
+  shasum -a256 iTerm2-${NAME}.zip | awk '{print $1}' > /tmp/sum
+  gpg --clearsign /tmp/sum
+  echo "Version $VERSION of iTerm2 was built on $BUILDDATE." > $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
+  echo '' >> $SVNDIR/downloads/stable/iTerm2-${NAME}.changelog
+  echo "You can use the following to verify the zip file on https://keybase.io/verify:" >> $SVNDIR/downloads/beta/iTerm2-${NAME}.changelog
+  echo "" >> $SVNDIR/downloads/beta/iTerm2-${NAME}.changelog
+  cat /tmp/sum.asc >> $SVNDIR/downloads/beta/iTerm2-${NAME}.changelog
   vi $SVNDIR/downloads/beta/iTerm2-${NAME}.changelog
   pushd $SVNDIR
-  git add downloads/beta/iTerm2-${NAME}.summary downloads/beta/iTerm2-${NAME}.description downloads/beta/iTerm2-${NAME}.changelog downloads/beta/iTerm2-${NAME}.zip source/appcasts/testing3_new.xml source/appcasts/testing3_modern.xml source/appcasts/testing3.xml source/appcasts/testing_changes3.txt
+  git add downloads/beta/iTerm2-${NAME}.summary downloads/beta/iTerm2-${NAME}.description downloads/beta/iTerm2-${NAME}.changelog downloads/beta/iTerm2-${NAME}.zip source/appcasts/testing3_new.xml source/appcasts/testing3_modern.xml source/appcasts/testing_changes3.txt
   popd
 
-  # Legacy
-  SparkleSign ${SPARKLE_PREFIX}testing3.xml ${SPARKLE_PREFIX}template3.xml
   # Transitional
   SparkleSign ${SPARKLE_PREFIX}testing3_new.xml ${SPARKLE_PREFIX}template3_new.xml
   # Modern
   SparkleSign ${SPARKLE_PREFIX}testing3_modern.xml ${SPARKLE_PREFIX}template3_modern.xml
+
+  # Copy experiment to control
+  cp $SVNDIR/source/appcasts/${SPARKLE_PREFIX}testing3_new.xml    $SVNDIR/source/appcasts/${SPARKLE_PREFIX}testing_new.xml
+  cp $SVNDIR/source/appcasts/${SPARKLE_PREFIX}testing3_modern.xml $SVNDIR/source/appcasts/${SPARKLE_PREFIX}testing_modern.xml
 
   popd
 }
@@ -109,11 +130,11 @@ ORIG_DIR=`pwd`
 
 echo "Build beta release"
 make clean
-make Beta
+make -j8 Beta
 
 BUILDTYPE=Beta
 
-Build $BUILDTYPE "" "OS 10.10+" "This is the recommended beta build for most users." "" "--deep"
+Build $BUILDTYPE "" "OS 10.15+" "This is the recommended beta build for most users." "" "--deep"
 
 git checkout -- version.txt
 #set -x
@@ -125,4 +146,3 @@ git push --tags
 cd $SVNDIR
 git commit -am v${VERSION}
 git push origin master
-

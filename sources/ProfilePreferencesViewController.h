@@ -41,6 +41,8 @@ extern NSString *const kProfileSessionHotkeyDidChange;
 
 - (void)selectGuid:(NSString *)guid;
 
+- (void)openToProfileWithGuid:(NSString *)guid;
+
 - (void)selectFirstProfileIfNecessary;
 
 - (void)changeFont:(id)fontManager;
@@ -62,5 +64,8 @@ andEditComponentWithIdentifier:(NSString *)identifier
 
 - (void)resizeWindowForCurrentTabAnimated:(BOOL)animated;
 - (void)invalidateSavedSize;
+
+- (BOOL)hasViewController:(NSViewController *)viewController;
+- (id<iTermSearchableViewController>)viewControllerWithOwnerIdentifier:(NSString *)ownerIdentifier;
 
 @end

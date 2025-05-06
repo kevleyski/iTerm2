@@ -12,7 +12,10 @@ typedef NS_ENUM(NSUInteger, iTermStatusBarComponentKnobType) {
     iTermStatusBarComponentKnobTypeCheckbox,
     iTermStatusBarComponentKnobTypeText,
     iTermStatusBarComponentKnobTypeDouble,
-    iTermStatusBarComponentKnobTypeColor
+    iTermStatusBarComponentKnobTypeColor,
+    iTermStatusBarComponentKnobTypeAction,
+    iTermStatusBarComponentKnobTypeInvocation,  // Text but suggests function calls
+    iTermStatusBarComponentKnobTypeFont
 };
 
 NS_ASSUME_NONNULL_BEGIN
@@ -23,6 +26,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setDescription:(NSString *)description placeholder:(NSString *)placeholder;
 - (CGFloat)controlOffset;
 - (void)sizeToFit;
+- (void)setHelpURL:(NSURL *)url;
 @end
 
 // Describes a configurable property of a status bar component.
@@ -34,6 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) NSString *stringValue;  // aliases `value`
 @property (nonatomic, readonly, nullable) NSNumber *numberValue;  // aliases `value`
 @property (nonatomic, readonly) NSString *key;
+@property (nonatomic, strong) NSURL *helpURL;
 @property (nonatomic, strong, nullable) id value;
 
 - (instancetype)initWithLabelText:(nullable NSString *)labelText

@@ -12,25 +12,66 @@
 #include <sys/select.h>
 #include <sys/time.h>
 
+@interface iTermHTTPConnection()
+@property (atomic) BOOL closing;
+@end
+
 @implementation iTermHTTPConnection {
     int _fd;  // @synchronized(_fdSync)
+    NSInteger _fdRetainCount;  // @synchronized(_fdSync);
     NSObject *_fdSync;
-    iTermSocketAddress *_clientAddress;
     NSURLRequest *_request;
     NSTimeInterval _deadline;
     NSMutableData *_buffer;
 }
 
-- (instancetype)initWithFileDescriptor:(int)fd clientAddress:(iTermSocketAddress *)address {
+- (instancetype)initWithFileDescriptor:(int)fd
+                         clientAddress:(iTermSocketAddress *)address
+                                  euid:(NSNumber *)euid {
     self = [super init];
     if (self) {
         _fd = fd;
         _fdSync = [[NSObject alloc] init];
+        [self retainFileDescriptor];
         _buffer = [[NSMutableData alloc] init];
         _clientAddress = address;
+        _euid = euid;
         _queue = dispatch_queue_create("com.iterm2.httpconn", NULL);
     }
     return self;
+}
+
+- (void)retainFileDescriptor {
+    @synchronized (_fdSync) {
+        _fdRetainCount += 1;
+        DLog(@"%@ retain fd, rc <- %@", self, @(_fdRetainCount));
+    }
+}
+
+- (void)releaseFileDescriptor {
+    @synchronized (_fdSync) {
+        _fdRetainCount -= 1;
+        DLog(@"%@ release fd, rc <- %@", self, @(_fdRetainCount));
+        if (_fdRetainCount > 0) {
+            return;
+        }
+        [self closeFileDescriptor];
+    }
+}
+
+- (void)closeFileDescriptor {
+    DLog(@"Close http connection from %@", [NSThread callStackSymbols]);
+    @synchronized (_fdSync) {
+        if (_fd < 0) {
+            DLog(@"File descriptor already closed");
+            return;
+        }
+        const int rc = close(_fd);
+        if (rc != 0) {
+            XLog(@"close failed with %s", strerror(errno));
+        }
+        _fd = -1;
+    }
 }
 
 - (dispatch_io_t)newChannelOnQueue:(dispatch_queue_t)queue {
@@ -42,15 +83,12 @@
 }
 
 - (void)threadSafeClose {
-    @synchronized(_fdSync) {
-        if (_fd >= 0) {
-            DLog(@"Close http connection from %@", [NSThread callStackSymbols]);
-            int rc = close(_fd);
-            if (rc != 0) {
-                XLog(@"close failed with %s", strerror(errno));
-            }
-            _fd = -1;
+    @synchronized (_fdSync) {
+        if (self.closing) {
+            return;
         }
+        self.closing = YES;
+        [self releaseFileDescriptor];
     }
 }
 
@@ -93,6 +131,10 @@
 
 - (void)badRequest {
     [self sendResponseWithCode:400 reason:@"Bad Request" headers:@{}];
+}
+
+- (void)unacceptable {
+    [self sendResponseWithCode:406 reason:@"Unacceptable (upgrade Python library)" headers:@{}];
 }
 
 - (void)unauthorized {
@@ -259,9 +301,7 @@
         } else {
             DLog(@"EOF reached");
         }
-        @synchronized(_fdSync) {
-            _fd = -1;
-        }
+        [self threadSafeClose];
         return NO;
     }
 
@@ -342,14 +382,37 @@
             } else {
                 DLog(@"EOF reached");
             }
-            @synchronized(_fdSync) {
-                _fd = -1;
-            }
+            [self threadSafeClose];
             return NO;
         }
         offset += rc;
     }
     return YES;
+}
+
+- (void)writeAsynchronously:(dispatch_data_t)dispatchData
+                    channel:(dispatch_io_t)channel
+                      queue:(dispatch_queue_t)queue
+                 completion:(void (^)(bool done,
+                                      dispatch_data_t _Nullable data,
+                                      int error))completion {
+    @synchronized (_fdSync) {
+        if (self.closing) {
+            DLog(@"Decline to write asynchronously because the connection is closing.");
+            return;
+        }
+        [self retainFileDescriptor];
+    }
+    dispatch_io_write(channel,
+                      0,  // offset
+                      dispatchData,
+                      queue,
+                      ^(bool done, dispatch_data_t  _Nullable data, int error) {
+        if (done) {
+            [self releaseFileDescriptor];
+        }
+        completion(done, data, error);
+    });
 }
 
 @end

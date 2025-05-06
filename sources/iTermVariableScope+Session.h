@@ -31,20 +31,35 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable, nonatomic, strong) NSString *triggerName;
 @property (nullable, nonatomic, strong) NSString *windowName;
 @property (nullable, nonatomic, strong) NSString *jobName;
+@property (nullable, nonatomic, strong) NSString *processTitle;
+@property (nullable, nonatomic, strong) NSString *commandLine;
 @property (nullable, nonatomic, strong) NSString *presentationName;
-@property (nullable, nonatomic, strong) NSString *tmuxWindowTitle;
 @property (nullable, nonatomic, strong) NSString *tmuxRole;
 @property (nullable, nonatomic, strong) NSString *tmuxClientName;
 @property (nullable, nonatomic, strong) NSString *autoNameFormat;
 @property (nullable, nonatomic, strong) NSString *autoName;
 @property (nullable, nonatomic, strong) NSNumber *tmuxWindowPane;
+@property (nullable, nonatomic, strong) NSString *tmuxWindowPaneIndex;
 @property (nullable, nonatomic, strong) NSNumber *jobPid;
 @property (nullable, nonatomic, strong) NSNumber *pid;
+@property (nullable, nonatomic, strong) NSNumber *effectiveRootPid;
+@property (nullable, nonatomic, strong) NSString *tmuxPaneTitle;
 @property (nullable, nonatomic, strong) NSString *tmuxStatusLeft;
 @property (nullable, nonatomic, strong) NSString *tmuxStatusRight;
 @property (nullable, nonatomic, strong) NSNumber *mouseReportingMode;
 @property (nullable, nonatomic, strong) NSString *badge;
+@property (nullable, nonatomic, strong) NSString *selection;
+@property (nullable, nonatomic, strong) NSNumber *selectionLength;
 @property (nullable, nonatomic, readonly) iTermVariableScope<iTermTabScope> *tab;
+@property (nullable, nonatomic, strong) NSNumber *bellCount;
+@property (nullable, nonatomic, strong) NSNumber *showingAlternateScreen;
+@property (nullable, nonatomic, copy) NSString *logFilename;
+@property (nullable, nonatomic, copy) NSArray *mouseInfo;
+@property (nonatomic) BOOL applicationKeypad;
+@property (nullable, nonatomic, strong) NSString *homeDirectory;
+@property (nonatomic) NSInteger sshIntegrationLevel;
+@property (nullable, nonatomic, copy) NSString *shell;
+@property (nullable, nonatomic, copy) NSString *uname;
 
 @end
 

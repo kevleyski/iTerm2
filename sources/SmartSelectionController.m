@@ -10,8 +10,12 @@
 
 #import "DebugLogging.h"
 #import "ProfileModel.h"
+#import "iTermProfilePreferences.h"
 #import "ITAddressBookMgr.h"
 #import "FutureMethods.h"
+#import "NSObject+iTerm.h"
+#import "NSTextField+iTerm.h"
+#import "NSWorkspace+iTerm.h"
 
 NSString *const kRegexKey = @"regex";
 NSString *const kNotesKey = @"notes";
@@ -25,6 +29,17 @@ NSString *const kHighPrecision = @"high";
 NSString *const kVeryHighPrecision = @"very_high";
 
 static NSString *const kLogDebugInfoKey = @"Log Smart Selection Debug Info";
+
+static char iTermSmartSelectionControllerAssociatedObjectRowIndexKey;
+
+const double SmartSelectionVeryLowPrecision = 0.00001;
+const double SmartSelectionLowPrecision = 0.001;
+const double SmartSelectionNormalPrecision = 1.0;
+const double SmartSelectionHighPrecision = 1000.0;
+const double SmartSelectionVeryHighPrecision = 1000000.0;
+
+@interface SmartSelectionController() <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate>
+@end
 
 @implementation SmartSelectionController {
     IBOutlet NSTableView *tableView_;
@@ -77,11 +92,11 @@ static NSString *const kLogDebugInfoKey = @"Log Smart Selection Debug Info";
 }
 
 + (double)precisionInRule:(NSDictionary *)rule {
-    NSDictionary *precisionValues = @{ kVeryLowPrecision: @0.00001,
-                                       kLowPrecision: @0.001,
-                                       kNormalPrecision: @1.0,
-                                       kHighPrecision: @1000.0,
-                                       kVeryHighPrecision: @1000000.0 };
+    NSDictionary *precisionValues = @{ kVeryLowPrecision: @(SmartSelectionVeryLowPrecision),
+                                       kLowPrecision: @(SmartSelectionLowPrecision),
+                                       kNormalPrecision: @(SmartSelectionNormalPrecision),
+                                       kHighPrecision: @(SmartSelectionHighPrecision),
+                                       kVeryHighPrecision: @(SmartSelectionVeryHighPrecision) };
 
     NSString *precision = rule[kPrecisionKey];
     return [precisionValues[precision] doubleValue];
@@ -134,12 +149,13 @@ static NSString *const kLogDebugInfoKey = @"Log Smart Selection Debug Info";
     }
     Profile* bookmark = [self bookmark];
     [[self modelForBookmark:bookmark] setObject:rules forKey:KEY_SMART_SELECTION_RULES inBookmark:bookmark];
-    [tableView_ reloadData];
+    [self reloadData];
+    // This must flush user defaults for setUseInterpolatedStrings to work.
     [delegate_ smartSelectionChanged:nil];
 }
 
 - (IBAction)help:(id)sender {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"http://www.iterm2.com/smartselection.html"]];
+    [[NSWorkspace sharedWorkspace] it_openURL:[NSURL URLWithString:@"http://www.iterm2.com/smartselection.html"]];
 }
 
 - (IBAction)addRule:(id)sender {
@@ -150,7 +166,12 @@ static NSString *const kLogDebugInfoKey = @"Log Smart Selection Debug Info";
 
 - (IBAction)removeRule:(id)sender {
     assert(tableView_.selectedRow >= 0);
-    [self setRule:nil forRow:[tableView_ selectedRow]];
+    const NSInteger row = tableView_.selectedRow;
+    if (row < 0) {
+        return;
+    }
+    [self reloadData];
+    [self setRule:nil forRow:row];
 }
 
 - (IBAction)loadDefaults:(id)sender {
@@ -158,13 +179,13 @@ static NSString *const kLogDebugInfoKey = @"Log Smart Selection Debug Info";
     [[self modelForBookmark:bookmark] setObject:[SmartSelectionController defaultRules]
                                          forKey:KEY_SMART_SELECTION_RULES
                                      inBookmark:bookmark];
-    [tableView_ reloadData];
+    [self reloadData];
     [delegate_ smartSelectionChanged:nil];
 }
 
 - (void)setGuid:(NSString *)guid {
     guid_ = [guid copy];
-    [tableView_ reloadData];
+    [self reloadData];
 }
 
 - (NSString *)displayNameForPrecision:(NSString *)precision {
@@ -192,85 +213,121 @@ static NSString *const kLogDebugInfoKey = @"Log Smart Selection Debug Info";
 #pragma mark - NSTableViewDataSource
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)aTableView {
+    DLog(@"Reporting number of rows: %@", @(self.rules.count));
+    DLog(@"%@", [NSThread callStackSymbols]);
     return self.rules.count;
 }
 
-- (id)tableView:(NSTableView *)aTableView
-        objectValueForTableColumn:(NSTableColumn *)aTableColumn
-            row:(NSInteger)rowIndex {
-    NSDictionary *rule = self.rules[rowIndex];
+- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)aTableColumn row:(NSInteger)rowIndex {
+    NSArray<NSDictionary *> *rules = self.rules;
+    if (rowIndex < 0 || rowIndex >= rules.count) {
+        DLog(@"Asked for row %@ out of %@", @(rowIndex), rules);
+        return [self tableViewCellWithString:@"BUG"
+                                 placeholder:nil
+                                   tableView:tableView
+                                         row:rowIndex
+                                  identifier:@"bug"
+                                  fixedPitch:NO];
+    }
+    NSDictionary *rule = rules[rowIndex];
     if (aTableColumn == regexColumn_) {
-        return rule[kRegexKey];
+        return [self tableViewCellWithString:rule[kRegexKey]
+                                 placeholder:@"Enter Regular Expression"
+                                   tableView:tableView
+                                         row:rowIndex
+                                  identifier:kRegexKey
+                                  fixedPitch:YES];
     } else if (aTableColumn == notesColumn_) {
-        return rule[kNotesKey];
+        return [self tableViewCellWithString:rule[kNotesKey]
+                                 placeholder:@"Enter Description"
+                                   tableView:tableView
+                                         row:rowIndex
+                                  identifier:kNotesKey
+                                  fixedPitch:NO];
     } else {
         NSString *precision = rule[kPrecisionKey];
-        return @([self indexForPrecision:precision]);
+        return [self tableViewPrecisionMenuWithSelectedIndex:[self indexForPrecision:precision]
+                                                         row:rowIndex
+                                                   tableView:tableView];
     }
 }
 
-- (void)tableView:(NSTableView *)aTableView
-   setObjectValue:(id)anObject
-   forTableColumn:(NSTableColumn
-                   *)aTableColumn
-              row:(NSInteger)rowIndex {
-    NSMutableDictionary *rule = [self.rules[rowIndex] mutableCopy];
+- (NSView *)tableViewCellWithString:(NSString *)string
+                        placeholder:(NSString *)placeholder
+                          tableView:(NSTableView *)tableView
+                                row:(NSInteger)rowIndex
+                         identifier:(NSString *)identifier
+                         fixedPitch:(BOOL)fixedPitch {
+    NSTableCellView *view = [tableView makeViewWithIdentifier:identifier owner:self];
+    if (!view) {
+        view = [[NSTableCellView alloc] init];
 
-    if (aTableColumn == regexColumn_) {
-        rule[kRegexKey] = anObject;
-    } else if (aTableColumn == notesColumn_) {
-        rule[kNotesKey] = anObject;
-    } else {
-        rule[kPrecisionKey] = [self precisionKeyWithIndex:[anObject intValue]];
+        NSTextField *textField = [NSTextField it_textFieldForTableViewWithIdentifier:identifier];
+        textField.placeholderString = placeholder;
+        textField.delegate = self;
+        textField.editable = YES;
+        textField.selectable = YES;
+        textField.textColor = [NSColor labelColor];
+        textField.usesSingleLineMode = YES;
+        if (fixedPitch) {
+            textField.font = [NSFont userFixedPitchFontOfSize:[NSFont systemFontSize]];
+        } else {
+            textField.font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+        }
+        textField.continuous = YES;
+        [textField it_setAssociatedObject:@(rowIndex) forKey:&iTermSmartSelectionControllerAssociatedObjectRowIndexKey];
+        textField.lineBreakMode = NSLineBreakByTruncatingTail;
+        view.textField = textField;
+        [view addSubview:textField];
+        textField.frame = view.bounds;
+        textField.autoresizingMask = (NSViewWidthSizable | NSViewHeightSizable);
     }
+    view.textField.stringValue = string ?: @"";
+    return view;
+}
+
+- (NSView *)tableViewPrecisionMenuWithSelectedIndex:(NSInteger)index
+                                                row:(NSInteger)row
+                                          tableView:(NSTableView *)tableView {
+    NSPopUpButton *button = [tableView makeViewWithIdentifier:@"SmartSelectionControllerPrecision" owner:self];
+    if (!button) {
+        button = [[NSPopUpButton alloc] init];
+        [button it_setAssociatedObject:@(row) forKey:&iTermSmartSelectionControllerAssociatedObjectRowIndexKey];
+        [button setTarget:self];
+        [button setAction:@selector(changePrecision:)];
+        button.identifier = @"precision";
+        button.bordered = NO;
+        [button.menu removeAllItems];
+        for (NSString *precisionKey in [SmartSelectionController precisionKeys]) {
+            [button addItemWithTitle:[self displayNameForPrecision:precisionKey]];
+        }
+        [button sizeToFit];
+    }
+    [button selectItemAtIndex:index];
+
+    return button;
+}
+
+- (void)changePrecision:(NSPopUpButton *)sender {
+    const NSInteger rowIndex = [[sender it_associatedObjectForKey:&iTermSmartSelectionControllerAssociatedObjectRowIndexKey] integerValue];
+    const NSInteger index = sender.indexOfSelectedItem;
+    NSMutableDictionary *rule = [self.rules[rowIndex] mutableCopy];
+    rule[kPrecisionKey] = [self precisionKeyWithIndex:index];
     [self setRule:rule forRow:rowIndex];
 }
 
 #pragma mark - NSTableViewDelegate
 
-- (BOOL)tableView:(NSTableView *)aTableView
-      shouldEditTableColumn:(NSTableColumn *)aTableColumn
-              row:(NSInteger)rowIndex {
-    if (aTableColumn == regexColumn_ ||
-        aTableColumn == notesColumn_) {
-        return YES;
-    }
-    return NO;
-}
-
-- (NSCell *)tableView:(NSTableView *)tableView
-    dataCellForTableColumn:(NSTableColumn *)tableColumn
-                  row:(NSInteger)row {
-    if (tableColumn == precisionColumn_) {
-        NSPopUpButtonCell *cell =
-            [[NSPopUpButtonCell alloc] initTextCell:[self displayNameForPrecision:kVeryLowPrecision] pullsDown:NO];
-        for (NSString *precisionKey in [SmartSelectionController precisionKeys]) {
-            [cell addItemWithTitle:[self displayNameForPrecision:precisionKey]];
-        }
-
-        [cell setBordered:NO];
-
-        return cell;
-    } else if (tableColumn == regexColumn_) {
-        NSTextFieldCell *cell = [[NSTextFieldCell alloc] initTextCell:@"regex"];
-        [cell setPlaceholderString:@"Enter Regular Expression"];
-        [cell setEditable:YES];
-        [cell setTruncatesLastVisibleLine:YES];
-        [cell setLineBreakMode:NSLineBreakByTruncatingTail];
-
-        return cell;
-    } else if (tableColumn == notesColumn_) {
-        NSTextFieldCell *cell = [[NSTextFieldCell alloc] initTextCell:@"notes"];
-        [cell setPlaceholderString:@"Enter Description"];
-        [cell setTruncatesLastVisibleLine:YES];
-        [cell setLineBreakMode:NSLineBreakByTruncatingTail];
-        [cell setEditable:YES];
-        return cell;
-    }
-    return nil;
-}
-
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
+    [self updateHasSelection];
+}
+
+- (void)reloadData {
+    [tableView_ reloadData];
+    [self updateHasSelection];
+}
+
+- (void)updateHasSelection {
     self.hasSelection = [tableView_ numberOfSelectedRows] > 0;
 }
 
@@ -282,7 +339,7 @@ static NSString *const kLogDebugInfoKey = @"Log Smart Selection Debug Info";
 + (BOOL)logDebugInfo {
     NSNumber *n = [[NSUserDefaults standardUserDefaults] valueForKey:kLogDebugInfoKey];
     if (n) {
-        return [n intValue] == NSOnState;
+        return [n intValue] == NSControlStateValueOn;
     } else {
         return NO;
     }
@@ -299,6 +356,7 @@ static NSString *const kLogDebugInfoKey = @"Log Smart Selection Debug Info";
     }
     NSArray *actions = [SmartSelectionController actionsInRule:rule];
     [contextMenuPrefsController_ setActions:actions];
+    contextMenuPrefsController_.useInterpolatedStrings = [self useInterpolatedStrings];
     [contextMenuPrefsController_ window];
     [contextMenuPrefsController_ setDelegate:self];
     __weak __typeof(self) weakSelf = self;
@@ -311,17 +369,46 @@ static NSString *const kLogDebugInfoKey = @"Log Smart Selection Debug Info";
 }
 
 - (void)windowWillOpen {
-    [logDebugInfo_ setState:[SmartSelectionController logDebugInfo] ? NSOnState : NSOffState];
+    [logDebugInfo_ setState:[SmartSelectionController logDebugInfo] ? NSControlStateValueOn : NSControlStateValueOff];
 }
 
 #pragma mark - Context Menu Actions Delegate
 
-- (void)contextMenuActionsChanged:(NSArray *)newActions {
+- (void)contextMenuActionsChanged:(NSArray *)newActions useInterpolatedStrings:(BOOL)useInterpolatedStrings {
     int rowIndex = [tableView_ selectedRow];
     NSMutableDictionary *rule = [[self.rules objectAtIndex:rowIndex] mutableCopy];
     [rule setObject:newActions forKey:kActionsKey];
+    [self setUseInterpolatedStrings:useInterpolatedStrings];
+    // This call flushes user defaults, which setUseInterpolatedStrings: needs.
     [self setRule:rule forRow:rowIndex];
     [contextMenuPrefsController_.window.sheetParent endSheet:contextMenuPrefsController_.window];
+}
+
+- (void)setUseInterpolatedStrings:(BOOL)useInterpolatedStrings {
+    // Note: this assumes the caller will flush to user defaults.
+    Profile *profile = [self bookmark];
+    [[self modelForBookmark:profile] setObject:@(useInterpolatedStrings)
+                                        forKey:KEY_SMART_SELECTION_ACTIONS_USE_INTERPOLATED_STRINGS
+                                    inBookmark:profile];
+}
+
+- (BOOL)useInterpolatedStrings {
+    return [iTermProfilePreferences boolForKey:KEY_SMART_SELECTION_ACTIONS_USE_INTERPOLATED_STRINGS
+                                     inProfile:self.bookmark];
+}
+
+#pragma mark - NSTextFieldDelegate
+
+- (void)controlTextDidEndEditing:(NSNotification *)obj {
+    NSTextField *textField = obj.object;
+    const NSInteger rowIndex = [[textField it_associatedObjectForKey:&iTermSmartSelectionControllerAssociatedObjectRowIndexKey] integerValue];
+    NSMutableDictionary *rule = [self.rules[rowIndex] mutableCopy];
+    if ([textField.identifier isEqualToString:kNotesKey]) {
+        rule[kNotesKey] = textField.stringValue;
+    } else if ([textField.identifier isEqualToString:kRegexKey]) {
+        rule[kRegexKey] = textField.stringValue;
+    }
+    [self setRule:rule forRow:rowIndex];
 }
 
 @end

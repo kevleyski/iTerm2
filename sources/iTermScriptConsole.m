@@ -12,6 +12,7 @@
 #import "iTermScriptInspector.h"
 #import "iTermAPIScriptLauncher.h"
 #import "iTermWebSocketConnection.h"
+#import "DebugLogging.h"
 #import "NSArray+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSTextField+iTerm.h"
@@ -56,6 +57,17 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
     return instance;
 }
 
+- (void)awakeFromNib {
+#ifdef MAC_OS_X_VERSION_10_16
+    if (@available(macOS 10.16, *)) {
+        _tableView.style = NSTableViewStyleInset;
+    }
+#endif
+    _callsView.textColor = [NSColor textColor];
+    NSScrollView *scrollView = _callsView.enclosingScrollView;
+    scrollView.horizontalScrollElasticity = NSScrollElasticityNone;
+}
+
 - (void)makeTextViewHorizontallyScrollable:(NSTextView *)textView {
     [textView.enclosingScrollView setHasHorizontalScroller:YES];
     [textView setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
@@ -85,23 +97,13 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
     }
 }
 
-- (void)findWithSelection:(id)sender {
-    NSControl *fakeSender = [[NSControl alloc] init];
-    fakeSender.tag = NSTextFinderActionSetSearchString;
-    if (_tabView.selectedTabViewItem.view == _logsView.enclosingScrollView) {
-        [_logsView performFindPanelAction:fakeSender];
-    } else {
-        [_callsView performFindPanelAction:fakeSender];
-    }
-}
-
-- (void)showFindPanel:(id)sender {
-    NSControl *fakeSender = [[NSControl alloc] init];
-    fakeSender.tag = NSTextFinderActionShowFindInterface;
-    if (_tabView.selectedTabViewItem.view == _logsView.enclosingScrollView) {
-        [_logsView performFindPanelAction:fakeSender];
-    } else {
-        [_callsView performFindPanelAction:fakeSender];
+- (IBAction)performFindPanelAction:(id)sender {
+    if ([[NSMenuItem castFrom:sender] tag] == NSFindPanelActionShowFindPanel) {
+        if (_tabView.selectedTabViewItem.view == _logsView.enclosingScrollView) {
+            [_logsView performFindPanelAction:sender];
+        } else {
+            [_callsView performFindPanelAction:sender];
+        }
     }
 }
 
@@ -181,7 +183,7 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
 
 - (iTermScriptHistoryEntry *)terminateScriptOnRow:(NSInteger)row {
     iTermScriptHistoryEntry *entry = [[self filteredEntries] objectAtIndex:row];
-    if (entry.isRunning && entry.pid) {
+    if (entry.isRunning && entry.onlyPid) {
         [entry kill];
     }
     return entry;
@@ -282,14 +284,13 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
         _logsView.string = @"";
         _callsView.string = @"";
         _terminateButton.enabled = NO;
-        _startButton.title = @"Start";
         _startButton.enabled = NO;
     } else {
         [self scrollLogsToBottomIfNeeded];
         [self scrollCallsToBottomIfNeeded];
         NSInteger row = _tableView.selectedRow;
         iTermScriptHistoryEntry *entry = [[self filteredEntries] objectAtIndex:row];
-        _terminateButton.enabled = entry.isRunning && (entry.pid != 0);
+        _terminateButton.enabled = entry.isRunning && (entry.onlyPid != 0);
         _startButton.enabled = entry.relaunch != nil;
         _logsView.font = [NSFont fontWithName:@"Menlo" size:12];
         _callsView.font = [NSFont fontWithName:@"Menlo" size:12];
@@ -304,25 +305,25 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
                                                                    object:entry
                                                                     queue:nil
                                                                usingBlock:^(NSNotification * _Nonnull note) {
-                                                                   __typeof(self) strongSelf = weakSelf;
-                                                                   if (!strongSelf) {
-                                                                       return;
-                                                                   }
-                                                                   if (note.userInfo) {
-                                                                       NSString *delta = note.userInfo[iTermScriptHistoryEntryDelta];
-                                                                       NSString *property = note.userInfo[iTermScriptHistoryEntryFieldKey];
-                                                                       if ([property isEqualToString:iTermScriptHistoryEntryFieldLogsValue]) {
-                                                                           [strongSelf appendLogs:delta];
-                                                                           [strongSelf scrollLogsToBottomIfNeeded];
-                                                                       } else if ([property isEqualToString:iTermScriptHistoryEntryFieldRPCValue]) {
-                                                                           [strongSelf appendCalls:delta];
-                                                                           [strongSelf scrollCallsToBottomIfNeeded];
-                                                                       }
-                                                                   } else {
-                                                                       [strongSelf->_tableView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
-                                                                                                         columnIndexes:[NSIndexSet indexSetWithIndex:0]];
-                                                                   }
-                                                               }];
+            __typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) {
+                return;
+            }
+            if (note.userInfo) {
+                NSString *delta = note.userInfo[iTermScriptHistoryEntryDelta];
+                NSString *property = note.userInfo[iTermScriptHistoryEntryFieldKey];
+                if ([property isEqualToString:iTermScriptHistoryEntryFieldLogsValue]) {
+                    [strongSelf appendLogs:delta];
+                    [strongSelf scrollLogsToBottomIfNeeded];
+                } else if ([property isEqualToString:iTermScriptHistoryEntryFieldRPCValue]) {
+                    [strongSelf appendCalls:delta];
+                    [strongSelf scrollCallsToBottomIfNeeded];
+                }
+            } else {
+                [strongSelf->_tableView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                                                  columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+            }
+        }];
     }
 }
 
@@ -343,13 +344,13 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
 }
 
 - (void)scrollLogsToBottomIfNeeded {
-    if (_scrollToBottomOnUpdate.state == NSOnState && _tabView.selectedTabViewItem.view == _logsView.enclosingScrollView) {
+    if (_scrollToBottomOnUpdate.state == NSControlStateValueOn && _tabView.selectedTabViewItem.view == _logsView.enclosingScrollView) {
         [_logsView scrollRangeToVisible: NSMakeRange(_logsView.string.length, 0)];
     }
 }
 
 - (void)scrollCallsToBottomIfNeeded {
-    if (_scrollToBottomOnUpdate.state == NSOnState && _tabView.selectedTabViewItem.view == _callsView.enclosingScrollView) {
+    if (_scrollToBottomOnUpdate.state == NSControlStateValueOn && _tabView.selectedTabViewItem.view == _callsView.enclosingScrollView) {
         [_callsView scrollRangeToVisible: NSMakeRange(_callsView.string.length, 0)];
     }
 }
@@ -408,6 +409,13 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
     }
 }
 
+- (NSString *)formatPIDs:(NSArray<NSNumber *> *)pids {
+    if (pids.count == 1) {
+        return [NSString stringWithFormat:@"PID %@", pids[0]];
+    }
+    return [NSString stringWithFormat:@"PIDs %@", [pids componentsJoinedByString:@", "]];
+}
+
 - (void)connectionRejected:(NSNotification *)notification {
     NSString *key = notification.object;
     iTermScriptHistoryEntry *entry = nil;
@@ -419,7 +427,7 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
     if (!entry) {
         NSString *name = [NSString castFrom:notification.userInfo[@"job"]];
         if (!name) {
-            name = [NSString stringWithFormat:@"pid %@", notification.userInfo[@"pid"]];
+            name = [self formatPIDs:notification.userInfo[@"pids"]];
         }
         if (!name) {
             // Shouldn't happen as there ought to always be a PID
@@ -430,14 +438,15 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
                                                    identifier:key
                                                      relaunch:nil];
     }
-    entry.pid = [notification.userInfo[@"pid"] intValue];
+    entry.pids = notification.userInfo[@"pids"];
     [[iTermScriptHistory sharedInstance] addHistoryEntry:entry];
-    [entry addOutput:notification.userInfo[@"reason"]];
+    [entry addOutput:notification.userInfo[@"reason"] completion:^{}];
     [entry stopRunning];
 }
 
 - (void)connectionAccepted:(NSNotification *)notification {
     NSString *key = notification.object;
+    DLog(@"Connection accepted with key %@", key);
     iTermScriptHistoryEntry *entry = nil;
     if (key) {
         entry = [[iTermScriptHistory sharedInstance] entryWithIdentifier:key];
@@ -447,7 +456,7 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
     if (!entry) {
         NSString *name = [NSString castFrom:notification.userInfo[@"job"]];
         if (!name) {
-            name = [NSString stringWithFormat:@"pid %@", notification.userInfo[@"pid"]];
+            name = [self formatPIDs:notification.userInfo[@"pids"]];
         }
         if (!name) {
             // Shouldn't happen as there ought to always be a PID
@@ -457,11 +466,15 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
                                                      fullPath:nil
                                                    identifier:key
                                                      relaunch:nil];
-        entry.pid = [notification.userInfo[@"pid"] intValue];
+        entry.pids = notification.userInfo[@"pids"];
+        DLog(@"Add history entry");
         [[iTermScriptHistory sharedInstance] addHistoryEntry:entry];
     }
     entry.websocketConnection = notification.userInfo[@"websocket"];
-    [entry addOutput:[NSString stringWithFormat:@"Connection accepted: %@\n", notification.userInfo[@"reason"]]];
+    DLog(@"Adding output");
+    [entry addOutput:[NSString stringWithFormat:@"Connection accepted: %@\n", notification.userInfo[@"reason"]]
+          completion:^{}];
+    DLog(@"Done");
 }
 
 - (void)connectionClosed:(NSNotification *)notification {
@@ -471,7 +484,7 @@ typedef NS_ENUM(NSInteger, iTermScriptFilterControlTag) {
     if (!entry) {
         return;
     }
-    [entry addOutput:@"\nConnection closed."];
+    [entry addOutput:@"\nConnection closed.\n" completion:^{}];
     [entry stopRunning];
 }
 

@@ -7,7 +7,10 @@
 //
 
 #import "ToolNotes.h"
+#import "iTermSetFindStringNotification.h"
 #import "NSFileManager+iTerm.h"
+#import "NSFont+iTerm.h"
+#import "NSObject+iTerm.h"
 #import "NSWindow+iTerm.h"
 #import "PTYWindow.h"
 #import "PseudoTerminal.h"
@@ -21,6 +24,30 @@ static NSString *kToolNotesSetTextNotification = @"kToolNotesSetTextNotification
 
 - (void)paste:(id)sender {
     [self pasteAsPlainText:sender];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(performFindPanelAction:)) {
+        if (menuItem.tag == NSFindPanelActionSetFindString) {
+            return self.selectedRanges.count > 0 || self.selectedRange.length > 0;
+        }
+    }
+    return [super validateMenuItem:menuItem];
+}
+
+- (void)performFindPanelAction:(id)sender {
+    NSMenuItem *menuItem = [NSMenuItem castFrom:sender];
+    if (!menuItem) {
+        return;
+    }
+    if (menuItem.tag == NSFindPanelActionSetFindString) {
+        NSString *string = [self.string substringWithRange:self.selectedRange];
+        if (string.length == 0) {
+            return;
+        }
+        [[iTermSetFindStringNotification notificationWithString:string] post];
+    }
+    [super performFindPanelAction:sender];
 }
 
 @end
@@ -38,14 +65,17 @@ static NSString *kToolNotesSetTextNotification = @"kToolNotesSetTextNotification
 
         NSScrollView *scrollview = [[[NSScrollView alloc]
                                      initWithFrame:NSMakeRect(0, 0, frame.size.width, frame.size.height)] autorelease];
-        [scrollview setBorderType:NSBezelBorder];
+        if (@available(macOS 10.16, *)) {
+            [scrollview setBorderType:NSLineBorder];
+            scrollview.scrollerStyle = NSScrollerStyleOverlay;
+        } else {
+            [scrollview setBorderType:NSBezelBorder];
+        }
         [scrollview setHasVerticalScroller:YES];
         [scrollview setHasHorizontalScroller:NO];
         [scrollview setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-        if (@available(macOS 10.14, *)) { } else {
-            scrollview.drawsBackground = NO;
-        }
-        
+        scrollview.drawsBackground = NO;
+
         NSSize contentSize = [scrollview contentSize];
         textView_ = [[iTermUnformattedTextView alloc] initWithFrame:NSMakeRect(0, 0, contentSize.width, contentSize.height)];
         [textView_ setAllowsUndo:YES];
@@ -62,6 +92,7 @@ static NSString *kToolNotesSetTextNotification = @"kToolNotesSetTextNotification
         [textView_ setDelegate:self];
 
         [textView_ readRTFDFromFile:[self filename]];
+        textView_.font = [NSFont it_toolbeltFont];
         textView_.automaticSpellingCorrectionEnabled = NO;
         textView_.automaticDashSubstitutionEnabled = NO;
         textView_.automaticQuoteSubstitutionEnabled = NO;
@@ -122,25 +153,15 @@ static NSString *kToolNotesSetTextNotification = @"kToolNotesSetTextNotification
 
 - (CGFloat)minimumHeight
 {
-    return 15;
+    return 46;
 }
 
 - (void)updateAppearance {
     if (!self.window) {
         return;
     }
-    if (@available(macOS 10.14, *)) {
-        textView_.backgroundColor = [NSColor textBackgroundColor];
-        textView_.textColor = [NSColor textColor];
-    } else {
-        if ([self.window.appearance.name isEqual:NSAppearanceNameVibrantDark]) {
-            textView_.backgroundColor = [NSColor blackColor];
-            textView_.textColor = [NSColor whiteColor];
-        } else {
-            textView_.backgroundColor = [NSColor whiteColor];
-            textView_.textColor = [NSColor blackColor];
-        }
-    }
+    textView_.drawsBackground = NO;
+    textView_.textColor = [NSColor textColor];
 }
 
 - (void)viewDidMoveToWindow {

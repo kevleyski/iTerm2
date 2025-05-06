@@ -7,6 +7,7 @@
 
 #import "iTermStatusBarKnobColorViewController.h"
 
+#import "DebugLogging.h"
 #import "NSColor+iTerm.h"
 #import "NSDictionary+iTerm.h"
 #import "NSObject+iTerm.h"
@@ -58,6 +59,10 @@
 
 - (CGFloat)controlOffset {
     return NSMinX(_well.frame);
+}
+
+- (void)setHelpURL:(NSURL *)url {
+    ITAssertWithMessage(NO, @"Not supported");
 }
 
 @end

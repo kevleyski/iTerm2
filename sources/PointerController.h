@@ -8,6 +8,8 @@
 
 #import <Cocoa/Cocoa.h>
 
+#import "iTermKeyBindingAction.h"
+
 @protocol PointerControllerDelegate <NSObject>
 
 - (void)pasteFromClipboardWithEvent:(NSEvent *)event;
@@ -24,7 +26,7 @@
 - (void)movePaneWithEvent:(NSEvent *)event;
 - (void)sendEscapeSequence:(NSString *)text withEvent:(NSEvent *)event;
 - (void)sendHexCode:(NSString *)codes withEvent:(NSEvent *)event;
-- (void)sendText:(NSString *)text withEvent:(NSEvent *)event;
+- (void)sendText:(NSString *)text withEvent:(NSEvent *)event escaping:(iTermSendTextEscaping)escaping;
 - (void)selectPaneLeftWithEvent:(NSEvent *)event;
 - (void)selectPaneRightWithEvent:(NSEvent *)event;
 - (void)selectPaneAboveWithEvent:(NSEvent *)event;
@@ -40,18 +42,22 @@
 - (void)advancedPasteWithConfiguration:(NSString *)configuration
                          fromSelection:(BOOL)fromSelection
                              withEvent:(NSEvent *)event;
+- (void)selectMenuItemWithIdentifier:(NSString *)identifier
+                               title:(NSString *)title
+                               event:(NSEvent *)event;
+- (void)invokeScriptFunction:(NSString *)function withEvent:(NSEvent *)event;
 @end
 
 @interface PointerController : NSObject
 
 @property(nonatomic, assign) id<PointerControllerDelegate> delegate;
-@property(nonatomic, readonly) BOOL viewShouldTrackTouches;
 
-- (BOOL)mouseDown:(NSEvent *)event withTouches:(int)numTouches ignoreOption:(BOOL)ignoreOption;
-- (BOOL)mouseUp:(NSEvent *)event withTouches:(int)numTouches;
+- (BOOL)mouseDown:(NSEvent *)event withTouches:(int)numTouches ignoreOption:(BOOL)ignoreOption reportable:(BOOL)reportable;
+- (BOOL)mouseUp:(NSEvent *)event withTouches:(int)numTouches reportable:(BOOL)reportable;
 - (BOOL)pressureChangeWithEvent:(NSEvent *)event;
 - (void)swipeWithEvent:(NSEvent *)event;
-- (BOOL)eventEmulatesRightClick:(NSEvent *)event;
+- (BOOL)eventEmulatesRightClick:(NSEvent *)event reportable:(BOOL)reportable;
 - (void)notifyLeftMouseDown;
+- (BOOL)threeFingerTap:(NSEvent *)event;
 
 @end

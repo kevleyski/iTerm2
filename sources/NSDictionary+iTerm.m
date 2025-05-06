@@ -9,6 +9,7 @@
 #import "NSDictionary+iTerm.h"
 
 #import "iTermTuple.h"
+#import "DebugLogging.h"
 #import "NSColor+iTerm.h"
 #import "NSWorkspace+iTerm.h"
 
@@ -18,6 +19,7 @@ static NSString *const kGridCoordAbsYKey = @"absY";
 static NSString *const kGridCoordStartKey = @"start";
 static NSString *const kGridCoordEndKey = @"end";
 static NSString *const kGridCoordRange = @"Coord Range";
+static NSString *const kGridCoordAbsRange = @"Coord Abs Range";
 static NSString *const kGridRange = @"Range";
 static NSString *const kGridRangeLocation = @"Location";
 static NSString *const kGridRangeLength = @"Length";
@@ -68,6 +70,20 @@ static const NSEventModifierFlags iTermHotkeyModifierMask = (NSEventModifierFlag
 @end
 
 @implementation NSDictionary (iTerm)
+
++ (instancetype)it_dictionaryWithContentsOfData:(NSData *)data {
+    NSError *error = nil;
+    NSDictionary *dictionary = [NSPropertyListSerialization propertyListWithData:data
+                                                                         options:NSPropertyListImmutable
+                                                                          format:nil
+                                                                           error:&error];
+
+    if (error) {
+        DLog(@"Error parsing plist: %@", error.localizedDescription);
+        return nil;
+    }
+    return dictionary;
+}
 
 + (NSDictionary *)dictionaryWithGridCoord:(VT100GridCoord)coord {
     return @{ kGridCoordXKey: @(coord.x),
@@ -123,6 +139,22 @@ static const NSEventModifierFlags iTermHotkeyModifierMask = (NSEventModifierFlag
     return range;
 }
 
++ (NSDictionary *)dictionaryWithGridAbsWindowedRange:(VT100GridAbsWindowedRange)absRange {
+    return @{ kGridCoordAbsRange: [NSDictionary dictionaryWithGridAbsCoordRange:absRange.coordRange],
+              kGridRange: [NSDictionary dictionaryWithGridRange:absRange.columnWindow] };
+}
+
+- (VT100GridAbsWindowedRange)gridAbsWindowedRange {
+    VT100GridAbsWindowedRange absRange;
+    absRange.coordRange = [self[kGridCoordAbsRange] gridAbsCoordRange];
+    absRange.columnWindow = [self[kGridRange] gridRange];
+    return absRange;
+}
+
+- (BOOL)hasGridAbsWindowedRange {
+    return self[kGridCoordAbsRange] != nil && self[kGridRange] != nil;
+}
+
 + (NSDictionary *)dictionaryWithGridRange:(VT100GridRange)range {
     return @{ kGridRangeLocation: @(range.location),
               kGridRangeLength: @(range.length) };
@@ -163,7 +195,9 @@ static const NSEventModifierFlags iTermHotkeyModifierMask = (NSEventModifierFlag
 }
 
 + (CGFloat)defaultAlphaForColorPresetKey:(NSString *)key {
-    if ([key isEqualToString:KEY_CURSOR_GUIDE_COLOR]) {
+    if ([key isEqualToString:KEY_CURSOR_GUIDE_COLOR] ||
+        [key isEqualToString:KEY_CURSOR_GUIDE_COLOR COLORS_LIGHT_MODE_SUFFIX] ||
+        [key isEqualToString:KEY_CURSOR_GUIDE_COLOR COLORS_DARK_MODE_SUFFIX]) {
         return 0.25;
     } else {
         return 1.0;
@@ -187,12 +221,17 @@ static const NSEventModifierFlags iTermHotkeyModifierMask = (NSEventModifierFlag
                                              blue:[[self objectForKey:kEncodedColorDictionaryBlueComponent] floatValue]
                                             alpha:alpha];
         return srgb;
-    } else {
-        return [NSColor colorWithCalibratedRed:[[self objectForKey:kEncodedColorDictionaryRedComponent] floatValue]
-                                         green:[[self objectForKey:kEncodedColorDictionaryGreenComponent] floatValue]
-                                          blue:[[self objectForKey:kEncodedColorDictionaryBlueComponent] floatValue]
-                                         alpha:alpha];
     }
+    if ([colorSpace isEqualToString:kEncodedColorDictionaryP3ColorSpace]) {
+        return [NSColor colorWithDisplayP3Red:[[self objectForKey:kEncodedColorDictionaryRedComponent] floatValue]
+                                        green:[[self objectForKey:kEncodedColorDictionaryGreenComponent] floatValue]
+                                         blue:[[self objectForKey:kEncodedColorDictionaryBlueComponent] floatValue]
+                                        alpha:alpha];
+    }
+    return [NSColor colorWithCalibratedRed:[[self objectForKey:kEncodedColorDictionaryRedComponent] floatValue]
+                                     green:[[self objectForKey:kEncodedColorDictionaryGreenComponent] floatValue]
+                                      blue:[[self objectForKey:kEncodedColorDictionaryBlueComponent] floatValue]
+                                     alpha:alpha];
 }
 
 - (NSDictionary *)dictionaryByRemovingNullValues {
@@ -250,6 +289,16 @@ static const NSEventModifierFlags iTermHotkeyModifierMask = (NSEventModifierFlag
     return result;
 }
 
+- (NSDictionary *)filteredWithBlock:(BOOL (^NS_NOESCAPE)(id key, id value))block {
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    [self enumerateKeysAndObjectsUsingBlock:^(id  _Nonnull key, id  _Nonnull obj, BOOL * _Nonnull stop) {
+        if (block(key, obj)) {
+            result[key] = obj;
+        }
+    }];
+    return result;
+}
+
 - (NSDictionary *)mapValuesWithBlock:(id (^)(id, id))block {
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     [self enumerateKeysAndObjectsUsingBlock:^(id  _Nonnull key, id  _Nonnull obj, BOOL * _Nonnull stop) {
@@ -299,16 +348,6 @@ static const NSEventModifierFlags iTermHotkeyModifierMask = (NSEventModifierFlag
     return result;
 }
 
-- (NSDictionary *)filterWithBlock:(BOOL (^NS_NOESCAPE)(id, id))block {
-    NSMutableDictionary *result = [NSMutableDictionary dictionary];
-    [self enumerateKeysAndObjectsUsingBlock:^(id  _Nonnull key, id  _Nonnull obj, BOOL * _Nonnull stop) {
-        if (block(key, obj)) {
-            result[key] = obj;
-        }
-    }];
-    return result;
-}
-
 - (NSInteger)addSizeInfoToSizes:(NSMutableDictionary<NSString *, NSNumber *> *)sizes
                     counts:(NSCountedSet<NSString *> *)counts
                    keypath:(NSString *)keypath {
@@ -333,6 +372,22 @@ static const NSEventModifierFlags iTermHotkeyModifierMask = (NSEventModifierFlag
         [counts addObject:path];
     }];
     return total;
+}
+
+- (NSData *)it_xmlPropertyList {
+    NSOutputStream *outputStream = [NSOutputStream outputStreamToMemory];
+    [outputStream open];
+    NSError *error = nil;
+    [NSPropertyListSerialization writePropertyList:self
+                                          toStream:outputStream
+                                            format:NSPropertyListXMLFormat_v1_0
+                                           options:0
+                                             error:&error];
+    [outputStream close];
+    if (error != nil) {
+        return nil;
+    }
+    return [outputStream propertyForKey:NSStreamDataWrittenToMemoryStreamKey];
 }
 
 - (BOOL)it_writeToXMLPropertyListAt:(NSString *)filename {
@@ -439,6 +494,10 @@ static const NSEventModifierFlags iTermHotkeyModifierMask = (NSEventModifierFlag
         }
     }];
     return result;
+}
+
+- (BOOL)it_hasZeroValue {
+    return [self isEqualToDictionary:@{}];
 }
 
 @end

@@ -15,7 +15,7 @@
 
 + (iTermCursorNeighbors)neighborsForCursorAtCoord:(VT100GridCoord)cursorCoord
                                          gridSize:(VT100GridSize)gridSize
-                                       lineSource:(const screen_char_t *(^)(int))lineSource {
+                                       lineSource:(const screen_char_t *(^NS_NOESCAPE)(int))lineSource {
     iTermCursorNeighbors neighbors;
     memset(&neighbors, 0, sizeof(neighbors));
     NSArray *coords = @[ @[ @0,    @(-1) ],     // Above
@@ -79,7 +79,7 @@
 - (NSColor *)textColorForCharacter:(screen_char_t)screenChar
                   regularTextColor:(NSColor *)proposedForeground
               smartBackgroundColor:(NSColor *)backgroundColor {
-    proposedForeground = [proposedForeground colorUsingColorSpaceName:NSCalibratedRGBColorSpace];
+    proposedForeground = [proposedForeground colorUsingColorSpace:[NSColorSpace genericRGBColorSpace]];
     return [self overrideColorForSmartCursorWithForegroundColor:proposedForeground
                                                 backgroundColor:backgroundColor];
 }

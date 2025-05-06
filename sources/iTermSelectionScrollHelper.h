@@ -15,6 +15,7 @@
 - (CGFloat)excess;
 - (BOOL)moveSelectionEndpointToX:(int)x Y:(int)y locationInTextView:(NSPoint)locationInTextView;
 - (void)selectionScrollWillStart;
+- (BOOL)selectionScrollAllowed;
 
 @end
 
@@ -24,5 +25,6 @@
 
 - (void)mouseUp;
 - (void)mouseDraggedTo:(NSPoint)locationInTextView coord:(VT100GridCoord)coord;
+- (void)disableUntilMouseUp;
 
 @end

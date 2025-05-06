@@ -2,7 +2,9 @@
 
 #import "Api.pbobjc.h"
 #import "DVR.h"
+#import "iTermAPIHelper.h"
 #import "iTermEchoProbe.h"
+#import "iTermEncoderAdapter.h"
 #import "iTermFindDriver.h"
 #import "iTermFileDescriptorClient.h"
 #import "iTermMetalUnavailableReason.h"
@@ -11,6 +13,7 @@
 #import "iTermPopupWindowController.h"
 #import "iTermSessionNameController.h"
 
+#import "GPBEnumArray+iTerm.h"
 #import "LineBuffer.h"
 #import "PTYTask.h"
 #import "PTYTextView.h"
@@ -34,22 +37,52 @@ extern NSString *const kPTYSessionCapturedOutputDidChange;
 extern NSString *const PTYSessionCreatedNotification;
 extern NSString *const PTYSessionTerminatedNotification;
 extern NSString *const PTYSessionRevivedNotification;
+extern NSString *const iTermSessionWillTerminateNotification;
+extern NSString *const PTYSessionDidResizeNotification;
+extern NSString *const PTYSessionDidDealloc;
+extern NSNotificationName const PTYCommandDidExitNotification;
+
+extern NSString *const PTYCommandDidExitUserInfoKeyCommand;
+extern NSString *const PTYCommandDidExitUserInfoKeyExitCode;
+extern NSString *const PTYCommandDidExitUserInfoKeyRemoteHost;
+extern NSString *const PTYCommandDidExitUserInfoKeyDirectory;
+extern NSString *const PTYCommandDidExitUserInfoKeySnapshot;
+extern NSString *const PTYCommandDidExitUserInfoKeyStartLine;
+extern NSString *const PTYCommandDidExitUserInfoKeyLineCount;
+extern NSString *const PTYCommandDidExitUserInfoKeyURL;
 
 @class CapturedOutput;
+@protocol ExternalSearchResultsController;
 @class FakeWindow;
+@class iTermAction;
 @class iTermAnnouncementViewController;
+@class iTermChannelClient;
+@class iTermConductor;
+@protocol iTermContentSubscriber;
 @class iTermEchoProbe;
+@class iTermExpect;
+@class iTermImageWrapper;
+@class iTermKeyBindingAction;
+@class iTermPathCompletionHelper;
+@class iTermRunningRemoteCommand;
+@class iTermSSHReconnectionInfo;
+@class iTermScriptHistoryEntry;
+@class iTermSessionModeHandler;
 @class iTermStatusBarViewController;
 @class iTermSwiftyStringGraph;
+@class iTermVariableReference;
 @class iTermVariables;
 @class iTermVariableScope;
+@class PTYSessionZoomState;
 @class PTYTab;
 @class PTYTask;
 @class PTYTextView;
 @class PasteContext;
 @class PreferencePanel;
+@protocol ProcessInfoProvider;
 @class PTYSession;
-@class VT100RemoteHost;
+@class SSHIdentity;
+@protocol VT100RemoteHostReading;
 @class VT100Screen;
 @class VT100Terminal;
 @class iTermColorMap;
@@ -60,12 +93,14 @@ extern NSString *const PTYSessionRevivedNotification;
 @class iTermQuickLookController;
 @protocol iTermSessionScope;
 @class SessionView;
+@class TmuxHistory;
 
 typedef NS_ENUM(NSInteger, SplitSelectionMode) {
     kSplitSelectionModeOn,
     kSplitSelectionModeOff,
     kSplitSelectionModeCancel,
-    kSplitSelectionModeInspect
+    kSplitSelectionModeInspect,
+    kSplitSelectionModeSelect
 };
 
 typedef enum {
@@ -89,6 +124,7 @@ typedef enum {
 // live views so it will be kept alive. Use -showLiveSession:inPlaceOf: to
 // remove a view from this list.
 - (void)addHiddenLiveView:(SessionView *)hiddenLiveView;
+- (void)session:(PTYSession *)synthetic setLiveSession:(PTYSession *)live;
 
 // Provides a tab number for the ITERM_SESSION_ID environment variable. This
 // may not correspond to the physical tab number because it's immutable for a
@@ -113,6 +149,7 @@ typedef enum {
 // End the session (calling terminate normally or killing/hiding a tmux
 // session), and closes the tab if needed.
 - (void)closeSession:(PTYSession *)session;
+- (void)softCloseSession:(PTYSession *)session;
 
 // Sets whether the bell indicator should show.
 - (void)setBell:(BOOL)flag;
@@ -132,7 +169,8 @@ typedef enum {
 - (void)nameOfSession:(PTYSession *)session didChangeTo:(NSString *)newName;
 
 // Session-initiated font size. May cause window size to adjust.
-- (void)sessionDidChangeFontSize:(PTYSession *)session;
+- (void)sessionDidChangeFontSize:(PTYSession *)session
+                    adjustWindow:(BOOL)adjustWindow;
 
 // Session-initiated resize.
 - (BOOL)sessionInitiatedResize:(PTYSession*)session width:(int)width height:(int)height;
@@ -148,6 +186,7 @@ typedef enum {
 
 // Make session active in this tab. Assumes session belongs to thet ab.
 - (void)setActiveSession:(PTYSession*)session;
+- (void)setActiveSessionPreservingMaximization:(PTYSession *)session;
 
 // Index of the tab. 0-based.
 - (int)number;
@@ -162,10 +201,9 @@ typedef enum {
 - (void)unmaximize;
 
 // Tmux window number (a tmux window is like a tab).
-- (void)setTmuxFont:(NSFont *)font
-       nonAsciiFont:(NSFont *)nonAsciiFont
-           hSpacing:(double)horizontalSpacing
-           vSpacing:(double)verticalSpacing;
+- (void)setTmuxFontTable:(iTermFontTable *)fontTable
+                hSpacing:(double)horizontalSpacing
+                vSpacing:(double)verticalSpacing;
 
 // The tmux window title changed.
 - (void)sessionDidChangeTmuxWindowNameTo:(NSString *)newName;
@@ -182,11 +220,14 @@ typedef enum {
 - (BOOL)session:(PTYSession *)session shouldAllowDrag:(id<NSDraggingInfo>)sender;
 - (BOOL)session:(PTYSession *)session performDragOperation:(id<NSDraggingInfo>)sender;
 
-// Indicates if the splits are currently being dragged. Affects how resizing works for tmux tabs.
+// Indicates if the splits in a tmux tab are currently being dragged. Affects how resizing works for tmux tabs.
+- (BOOL)sessionBelongsToTmuxTabWhoseSplitsAreBeingDragged;
+
+// As above but for all tabs, not just tmux.
 - (BOOL)sessionBelongsToTabWhoseSplitsAreBeingDragged;
 
 // User double clicked on title bar
-- (void)sessionDoubleClickOnTitleBar;
+- (void)sessionDoubleClickOnTitleBar:(PTYSession *)session;
 
 // Returns the 0-based pane number to use in $ITERM_SESSION_ID.
 - (NSUInteger)sessionPaneNumber:(PTYSession *)session;
@@ -199,6 +240,7 @@ typedef enum {
 - (void)sessionCurrentDirectoryDidChange:(PTYSession *)session;
 - (void)sessionCurrentHostDidChange:(PTYSession *)session;
 - (void)sessionProxyIconDidChange:(PTYSession *)session;
+- (void)sessionDidRestart:(PTYSession *)session;
 
 // Remove a session from the tab, even if it's the only one.
 - (void)sessionRemoveSession:(PTYSession *)session;
@@ -208,6 +250,10 @@ typedef enum {
 
 // Whether metal is allowed has changed
 - (void)sessionUpdateMetalAllowed;
+- (void)sessionDidChangeMetalViewAlphaValue:(PTYSession *)session to:(CGFloat)newValue;
+
+// Amount of transparency changed (perhaps to none!)
+- (void)sessionTransparencyDidChange;
 
 // Scrollback buffer cleared.
 - (void)sessionDidClearScrollbackBuffer:(PTYSession *)session;
@@ -229,6 +275,37 @@ typedef enum {
 
 - (void)sessionDidInvalidateStatusBar:(PTYSession *)session;
 - (void)sessionAddSwiftyStringsToGraph:(iTermSwiftyStringGraph *)graph;
+- (iTermVariableScope *)sessionTabScope;
+- (void)sessionDidReportSelectedTmuxPane:(PTYSession *)session;
+- (void)sessionDidUpdatePaneTitle:(PTYSession *)session;
+- (void)sessionDidSetWindowTitle:(NSString *)title;
+- (void)sessionJobDidChange:(PTYSession *)session;
+- (void)sessionEditActions;
+- (void)sessionEditSnippets;
+- (void)session:(PTYSession *)session
+setBackgroundImage:(iTermImageWrapper *)image
+           mode:(iTermBackgroundImageMode)imageMode
+backgroundColor:(NSColor *)backgroundColor;
+- (iTermImageWrapper *)sessionBackgroundImage;
+- (iTermBackgroundImageMode)sessionBackgroundImageMode;
+- (CGFloat)sessionBlend;
+- (void)sessionDidUpdatePreferencesFromProfile:(PTYSession *)session;
+- (id<iTermSwipeHandler>)sessionSwipeHandler;
+- (BOOL)sessionIsInSelectedTab:(PTYSession *)session;
+- (void)sessionDisableFocusFollowsMouseAtCurrentLocation;
+- (void)sessionDidResize:(PTYSession *)session;
+- (BOOL)sessionPasswordManagerWindowIsOpen;
+- (BOOL)sessionShouldDragWindowByPaneTitleBar:(PTYSession *)session;
+- (void)sessionSubtitleDidChange:(PTYSession *)session;
+- (void)sessionActivate:(PTYSession *)session;
+
+- (void)session:(PTYSession *)session setFilter:(NSString *)filter;
+- (PTYSession *)sessionSyntheticSessionFor:(PTYSession *)live;
+- (void)sessionClose:(PTYSession *)session;
+- (void)sessionProcessInfoProviderDidChange:(PTYSession *)session;
+- (void)sessionSwapWithSessionInDirection:(int)direction;
+- (BOOL)sessionBelongsToHotkeyWindow:(PTYSession *)session;
+- (void)swapSession:(PTYSession *)existing withBuriedSession:(PTYSession *)buried;
 
 @end
 
@@ -236,6 +313,9 @@ typedef enum {
 @interface PTYSession : NSResponder <
     iTermEchoProbeDelegate,
     iTermFindDriverDelegate,
+    iTermSubscribable,
+    iTermTmuxControllerSession,
+    iTermUniquelyIdentifiable,
     iTermWeaklyReferenceable,
     PopupDelegate,
     PTYTaskDelegate,
@@ -252,6 +332,8 @@ typedef enum {
 @property(nonatomic, assign) BOOL active;
 
 @property(nonatomic, assign) BOOL alertOnNextMark;
+// This comes from prefs and is kept up to date.
+@property(nonatomic, readonly) BOOL alertOnMarksinOffscreenSessions;
 @property(nonatomic, copy) NSColor *tabColor;
 
 @property(nonatomic, readonly) DVR *dvr;
@@ -271,8 +353,10 @@ typedef enum {
 // Do we need to prompt on close for this session?
 @property(nonatomic, readonly) iTermPromptOnCloseReason *promptOnCloseReason;
 
-// Array of subprocessess names.
-@property(nonatomic, readonly) NSArray *childJobNames;
+// Array of subprocessess names. WARNING: This forces a synchronous update of the process cache.
+// It is up-to-date but too slow to call frequently.
+// The first value is the name and the second is the process title.
+@property(nonatomic, readonly) NSArray<iTermTuple<NSString *, NSString *> *> *childJobNameTuples;
 
 // Is the session idle? Used by updateLabelAttributes to send a user notification when processing ends.
 @property(nonatomic, assign) BOOL havePostedIdleNotification;
@@ -289,7 +373,7 @@ typedef enum {
 
 // The window title that should be used when this session is current. Otherwise defaultName
 // should be used.
-@property(nonatomic, readonly) NSString *windowTitle;
+@property(nonatomic, copy) NSString *windowTitle;
 
 // The path to the proxy icon that should be used when this session is current. If is nil the current directory icon
 // is shown.
@@ -297,8 +381,6 @@ typedef enum {
 
 // Shell wraps the underlying file descriptor pair.
 @property(nonatomic, retain) PTYTask *shell;
-
-@property(nonatomic, readonly) VT100Terminal *terminal;
 
 // The value of the $TERM environment var.
 @property(nonatomic, copy) NSString *termVariable;
@@ -309,14 +391,15 @@ typedef enum {
 // Screen contents, plus scrollback buffer.
 @property(nonatomic, retain) VT100Screen *screen;
 
-// The view in which this session's objects live.
+// The view in which this session's objects live. Can't call this from swift because of dependency madness.
 @property(nonatomic, retain) SessionView *view;
+@property(nonatomic, readonly) NSView *genericView;  // Use this from swift
 
 // The view that contains all the visible text in this session and that does most input handling.
 // This is the one and only subview of the document view of -scrollview.
 @property(nonatomic, retain) PTYTextView *textview;
 
-@property(nonatomic, assign) NSStringEncoding encoding;
+@property(nonatomic, readonly) NSStringEncoding encoding;
 
 // Send a character periodically.
 @property(nonatomic, assign) BOOL antiIdle;
@@ -328,16 +411,17 @@ typedef enum {
 @property(nonatomic, assign) NSTimeInterval antiIdlePeriod;
 
 // If true, close the tab when the session ends.
-@property(nonatomic, assign) BOOL autoClose;
+@property(nonatomic, assign) iTermSessionEndAction endAction;
 
 // Should ambiguous-width characters (e.g., Greek) be treated as double-width? Usually a bad idea.
 @property(nonatomic, assign) BOOL treatAmbiguousWidthAsDoubleWidth;
 
 // True if mouse movements are sent to the host.
-@property(nonatomic, assign) BOOL xtermMouseReporting;
+@property(nonatomic, readonly) BOOL xtermMouseReporting;
 
 // True if the mouse wheel movements are sent to the host.
 @property(nonatomic, assign) BOOL xtermMouseReportingAllowMouseWheel;
+@property(nonatomic, assign) BOOL xtermMouseReportingAllowClicksAndDrags;
 
 // Profile for this session
 @property(nonatomic, copy) Profile *profile;
@@ -350,13 +434,14 @@ typedef enum {
 
 @property(nonatomic, assign) iTermBackgroundImageMode backgroundImageMode;
 
+// Blend level as specified in this session's profile.
+@property(nonatomic, readonly) CGFloat desiredBlend;
+
 // Filename of background image.
 @property(nonatomic, copy) NSString *backgroundImagePath;  // Used by scripting
-@property(nonatomic, retain) NSImage *backgroundImage;
+@property(nonatomic, retain) iTermImageWrapper *backgroundImage;
 
-@property(nonatomic, retain) iTermColorMap *colorMap;
 @property(nonatomic, assign) float transparency;
-@property(nonatomic, assign) float blend;
 @property(nonatomic, assign) BOOL useBoldFont;
 @property(nonatomic, assign) iTermThinStrokesSetting thinStrokes;
 @property(nonatomic, assign) BOOL asciiLigatures;
@@ -368,8 +453,6 @@ typedef enum {
 
 // Is bell currently in ringing state?
 @property(nonatomic, assign) BOOL bell;
-
-@property(nonatomic, readonly) NSDictionary *arrangement;
 
 @property(nonatomic, readonly) int columns;
 @property(nonatomic, readonly) int rows;
@@ -384,7 +467,7 @@ typedef enum {
 // Has this session's bookmark been divorced from the profile in the ProfileModel? Changes
 // in this bookmark may happen independently of the persistent bookmark.
 // You should usually not assign to this; instead use divorceAddressBookEntryFromPreferences.
-@property(nonatomic, assign) BOOL isDivorced;
+@property(nonatomic, assign, readonly) BOOL isDivorced;
 
 // Ignore resize notifications. This would be set because the session's size mustn't be changed
 // due to temporary changes in the window size, as code later on may need to know the session's
@@ -407,13 +490,14 @@ typedef enum {
 // Call this on tmux clients to get the session with the tmux gateway.
 @property(nonatomic, readonly) PTYSession *tmuxGatewaySession;
 
-@property(nonatomic, readonly) VT100RemoteHost *currentHost;
+@property(nonatomic, readonly) id<VT100RemoteHostReading> currentHost;
 
 @property(nonatomic, readonly) int tmuxPane;
 
 // FinalTerm
 @property(nonatomic, readonly) NSArray *autocompleteSuggestionsForCurrentCommand;
 @property(nonatomic, readonly) NSString *currentCommand;
+@property(nonatomic, readonly) NSString *currentCommandUpToCursor;
 
 // Session is not in foreground and notifications are enabled on the screen.
 @property(nonatomic, readonly) BOOL shouldPostUserNotification;
@@ -427,16 +511,17 @@ typedef enum {
 
 // The computed label
 @property(nonatomic, readonly) NSString *badgeLabel;
+@property(nonatomic, readonly) NSString *subtitle;
 
 // Commands issued, directories entered, and hosts connected to during this session.
 // Requires shell integration.
 @property(nonatomic, readonly) NSMutableArray<NSString *> *commands;  // of NSString
 @property(nonatomic, readonly) NSMutableArray<NSString *> *directories;  // of NSString
-@property(nonatomic, readonly) NSMutableArray<VT100RemoteHost *> *hosts;  // of VT100RemoteHost
+@property(nonatomic, readonly) NSMutableArray<id<VT100RemoteHostReading>> *hosts;  // of VT100RemoteHost
 
 @property (nonatomic, readonly) iTermVariables *variables;
 @property (nonatomic, readonly) iTermVariableScope<iTermSessionScope> *variablesScope;
-@property (nonatomic, readonly) BOOL triggerParametersUseInterpolatedStrings;
+@property (nonatomic, readonly) iTermVariableScope *genericScope;  // Just like `variablesScope` but usable from Swift.
 
 @property(atomic, readonly) PTYSessionTmuxMode tmuxMode;
 
@@ -455,6 +540,14 @@ typedef enum {
 // symlinks resolved is returned.
 @property(nonatomic, readonly) NSString *currentLocalWorkingDirectory;
 
+// Async version of currentLocalWorkingDirectory.
+- (void)asyncCurrentLocalWorkingDirectory:(void (^)(NSString *pwd))completion;
+
+- (void)asyncInitialDirectoryForNewSessionBasedOnCurrentDirectory:(void (^)(NSString *pwd))completion;
+
+// Gets the local directory as URL. Weirdly, combines the remote hostname and the local path because this is really only used for the proxy icon.
+- (void)asyncGetCurrentLocationWithCompletion:(void (^)(NSURL *url))completion;
+
 // A UUID that uniquely identifies this session.
 // Used to link serialized data back to a restored session (e.g., which session
 // a command in command history belongs to). Also to link content from an
@@ -469,6 +562,7 @@ typedef enum {
 @property(nonatomic, assign) BOOL sessionIsSeniorToTmuxSplitPane;
 
 @property(nonatomic, readonly) NSArray<iTermCommandHistoryCommandUseMO *> *commandUses;
+@property(nonatomic, readonly) BOOL eligibleForAutoCommandHistory;
 
 // If we want to show quicklook this will not be nil.
 @property(nonatomic, readonly) iTermQuickLookController *quickLookController;
@@ -484,6 +578,7 @@ typedef enum {
 @property(nonatomic) BOOL overrideGlobalDisableMetalWhenIdleSetting;
 @property(nonatomic, readonly) BOOL canProduceMetalFramecap;
 @property(nonatomic, readonly) NSColor *textColorForStatusBar;
+@property(nonatomic, readonly) NSColor *processedBackgroundColor;
 @property(nonatomic, readonly) NSImage *tabGraphic;
 @property(nonatomic, readonly) iTermStatusBarViewController *statusBarViewController;
 @property(nonatomic, readonly) BOOL shouldShowTabGraphic;
@@ -491,12 +586,53 @@ typedef enum {
 @property(nonatomic, readonly) iTermEchoProbe *echoProbe;
 @property(nonatomic, readonly) BOOL canOpenPasswordManager;
 @property(nonatomic) BOOL shortLivedSingleUse;
+@property(nonatomic, retain) NSMutableDictionary<NSString *, NSString *> *hostnameToShell;  // example.com -> fish
+@property(nonatomic, readonly) NSString *sessionId;
+@property(nonatomic, retain) NSNumber *cursorTypeOverride;
+@property(nonatomic, readonly) NSDictionary *environment;
+@property(nonatomic, readonly) BOOL hasNontrivialJob;
+@property(nonatomic, readonly) BOOL tmuxPaused;
+@property(nonatomic, readonly) NSString *userShell;  // Something like "/bin/bash".
+@property(nonatomic, copy) NSString *filter;
+@property(nonatomic, readonly, strong) iTermAsyncFilter *asyncFilter;
+@property(nonatomic, readonly) NSMutableArray<id<iTermContentSubscriber>> *contentSubscribers;
+@property(nonatomic, readonly) PTYSessionZoomState *stateToSaveForZoom;  // current state to restore after exiting zoom in the future
+@property(nonatomic, strong) PTYSessionZoomState *savedStateForZoom;  // set in synthetic sessions, not in live sessions.
+
+// Excludes SESSION_ARRANGEMENT_CONTENTS. Nil if session not created from arrangement.
+@property(nonatomic, copy) NSDictionary *foundingArrangement;
+@property(nonatomic, readonly) id<ExternalSearchResultsController> externalSearchResultsController;
+@property(nonatomic, readonly) SSHIdentity *sshIdentity;
+@property(nonatomic, readonly) NSArray<iTermSSHReconnectionInfo *> *sshCommandLineSequence;
+@property(nonatomic, readonly) id<ProcessInfoProvider> processInfoProvider;
+@property(nonatomic, readonly) BOOL shouldShowAutoComposer;
+@property(nonatomic, readonly) NSString *regularExpressonForNonLowPrecisionSmartSelectionRulesCombined;
+@property(nonatomic, strong) NSCursor *defaultPointer;
+@property(nonatomic, readonly) iTermConductor *conductor;
+@property(nonatomic, readonly) iTermExpect *expect;
+@property(nonatomic, strong) iTermRunningRemoteCommand *runningRemoteCommand;
+@property(nonatomic, readonly) iTermSessionModeHandler *modeHandler;
+@property(nonatomic, strong) iTermPathCompletionHelper *pathCompletionHelper;
+@property(nonatomic, readonly) NSMutableArray<iTermChannelClient *> *channelClients;
+@property(nonatomic, copy) NSString *channelUID;
+@property(nonatomic, copy) NSString *channelParentGuid;
 
 #pragma mark - methods
 
++ (BOOL)arrangement:(NSDictionary *)arrangement
+         passesTest:(BOOL (^NS_NOESCAPE)(NSDictionary *candidate))closure;
++ (NSDictionary *)modifiedArrangement:(NSDictionary *)arrangement
+                              mutator:(NSDictionary *(^)(NSDictionary *))mutator;
 + (NSDictionary *)repairedArrangement:(NSDictionary *)arrangement
              replacingProfileWithGUID:(NSString *)badGuid
                           withProfile:(Profile *)goodProfile;
++ (NSDictionary *)repairedArrangement:(NSDictionary *)arrangement
+     replacingOldCWDOfSessionWithGUID:(NSString *)guid
+                           withOldCWD:(NSString *)replacementOldCWD;
++ (NSDictionary *)repairedArrangement:(NSDictionary *)arrangement
+                  settingCustomLocale:(NSString *)lang;
++ (NSDictionary *)repairedArrangement:(NSDictionary *)arrangement
+                       profileMutator:(Profile *(^)(Profile *))profileMutator;
 
 + (BOOL)handleShortcutWithoutTerminal:(NSEvent*)event;
 + (void)selectMenuItem:(NSString*)theName;
@@ -515,13 +651,16 @@ typedef enum {
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initSynthetic:(BOOL)synthetic NS_DESIGNATED_INITIALIZER;
 
-- (void)didFinishInitialization:(BOOL)ok;
+- (void)didFinishInitialization;
 
 // Jump to a particular point in time.
 - (long long)irSeekToAtLeast:(long long)timestamp;
 
 // Begin showing DVR frames from some live session.
 - (void)setDvr:(DVR*)dvr liveSession:(PTYSession*)liveSession;
+- (void)clearInstantReplay;
+
+- (void)willRetireSyntheticSession:(PTYSession *)syntheticSession;
 
 // Append a bunch of lines from this (presumably synthetic) session from another (presumably live)
 // session.
@@ -534,19 +673,33 @@ typedef enum {
 - (BOOL)setScreenSize:(NSRect)aRect parent:(id<WindowControllerInterface>)parent;
 
 // triggers
-- (void)clearTriggerLine;
-- (void)appendStringToTriggerLine:(NSString *)s;
+- (void)setAllTriggersEnabled:(BOOL)enabled;
+- (BOOL)anyTriggerCanBeEnabled;
+- (BOOL)anyTriggerCanBeDisabled;
+// (regex, enabled)
+- (NSArray<iTermTuple<NSString *, NSNumber *> *> *)triggerTuples;
+- (void)toggleTriggerEnabledAtIndex:(NSInteger)index;
 
-+ (void)drawArrangementPreview:(NSDictionary *)arrangement frame:(NSRect)frame;
++ (void)drawArrangementPreview:(NSDictionary *)arrangement frame:(NSRect)frame dark:(BOOL)dark;
 - (void)setSizeFromArrangement:(NSDictionary*)arrangement;
-+ (PTYSession*)sessionFromArrangement:(NSDictionary*)arrangement
-                               inView:(SessionView*)sessionView
++ (PTYSession*)sessionFromArrangement:(NSDictionary *)arrangement
+                                named:(NSString *)arrangementName
+                               inView:(SessionView *)sessionView
                          withDelegate:(id<PTYSessionDelegate>)delegate
-                        forObjectType:(iTermObjectType)objectType;
+                        forObjectType:(iTermObjectType)objectType
+                   partialAttachments:(NSDictionary *)partialAttachments;
+- (PTYSession *)newSessionForChannelID:(NSString *)channelID command:(NSString *)command;
+
 + (NSDictionary *)arrangementFromTmuxParsedLayout:(NSDictionary *)parseNode
                                          bookmark:(Profile *)bookmark
-                                   tmuxController:(TmuxController *)tmuxController;
+                                   tmuxController:(TmuxController *)tmuxController
+                                           window:(int)window;
++ (NSDictionary *)arrangementForChannelID:(NSString *)channelID
+                                  profile:(Profile *)profile
+                         workingDirectory:(NSString *)workingDirectory
+                                     size:(VT100GridSize)size;
 + (NSString *)guidInArrangement:(NSDictionary *)arrangement;
++ (NSString *)initialWorkingDirectoryFromArrangement:(NSDictionary *)arrangement;
 
 - (void)textViewFontDidChange;
 
@@ -554,15 +707,23 @@ typedef enum {
 - (void)resizeFromArrangement:(NSDictionary *)arrangement;
 
 - (void)startProgram:(NSString *)program
+                 ssh:(BOOL)ssh
          environment:(NSDictionary *)prog_env
+         customShell:(NSString *)customShell
               isUTF8:(BOOL)isUTF8
        substitutions:(NSDictionary *)substitutions
+         arrangement:(NSString *)arrangement
+     fromArrangement:(BOOL)fromArrangement
           completion:(void (^)(BOOL))completion;
 
 // This is an alternative to runCommandWithOldCwd and startProgram. It attaches
 // to an existing server. Use only if [iTermAdvancedSettingsModel runJobsInServers]
 // is YES.
-- (void)attachToServer:(iTermFileDescriptorServerConnection)serverConnection;
+- (void)attachToServer:(iTermGeneralServerConnection)serverConnection
+            completion:(void (^)(void))completion;
+
+// Acts like the user pressing cmd-W but without confirmation.
+- (void)close;
 
 - (void)softTerminate;
 - (void)terminate;
@@ -573,13 +734,15 @@ typedef enum {
 
 // Preferences
 - (void)setPreferencesFromAddressBookEntry: (NSDictionary *)aePrefs;
-- (void)loadInitialColorTable;
+- (void)loadInitialColorTableAndResetCursorGuide;
 
 // Call this after the profile changed. If not divorced, the profile and
 // settings are updated. If divorced, changes are found in the session and
 // shared profiles and merged, updating this object's addressBookEntry and
 // overriddenFields.
 - (BOOL)reloadProfile;
+
+- (void)inheritDivorceFrom:(PTYSession *)parent decree:(NSString *)decree;
 
 - (BOOL)shouldSendEscPrefixForModifier:(unsigned int)modmask;
 
@@ -593,9 +756,14 @@ typedef enum {
 // NO for `forceEncoding` and the terminal's encoding will be used instead of `optionalEncoding`.
 - (void)writeTaskNoBroadcast:(NSString *)string
                     encoding:(NSStringEncoding)optionalEncoding
-               forceEncoding:(BOOL)forceEncoding;
+               forceEncoding:(BOOL)forceEncoding
+                   reporting:(BOOL)reporting;
 
-- (void)writeLatin1EncodedData:(NSData *)data broadcastAllowed:(BOOL)broadcast;
+- (void)writeLatin1EncodedData:(NSData *)data broadcastAllowed:(BOOL)broadcast reporting:(BOOL)reporting;
+
+- (void)updateViewBackgroundImage;
+- (void)invalidateBlend;
+- (void)setShowAlternateScreen:(BOOL)showAlternateScreen announce:(BOOL)announce;
 
 // PTYTextView
 - (BOOL)hasTextSendingKeyMappingForEvent:(NSEvent*)event;
@@ -615,12 +783,12 @@ typedef enum {
 - (void)deleteForward:(id)sender;
 - (void)setSplitSelectionMode:(SplitSelectionMode)mode move:(BOOL)move;
 - (void)setSmartCursorColor:(BOOL)value;
-- (void)setMinimumContrast:(float)value;
 
 // Returns the frame size for a scrollview that perfectly contains the contents
 // of this session based on rows/cols, and taking into account the presence of
 // a scrollbar.
 - (NSSize)idealScrollViewSizeWithStyle:(NSScrollerStyle)scrollerStyle;
+- (void)lockScroll;
 
 // Update the scrollbar's visibility and style. Returns YES if a change was made.
 // This is the one and only way that scrollbars should be changed after initialization. It ensures
@@ -652,19 +820,21 @@ typedef enum {
 - (void)updateDisplayBecause:(NSString *)reason;
 - (void)doAntiIdle;
 - (NSString*)ansiColorsMatchingForeground:(NSDictionary*)fg andBackground:(NSDictionary*)bg inBookmark:(Profile*)aDict;
-- (void)updateScroll;
 
 - (void)changeFontSizeDirection:(int)dir;
-- (void)setFont:(NSFont*)font
-    nonAsciiFont:(NSFont*)nonAsciiFont
-    horizontalSpacing:(float)horizontalSpacing
-    verticalSpacing:(float)verticalSpacing;
+- (void)setFontTable:(iTermFontTable *)fontTable
+   horizontalSpacing:(CGFloat)horizontalSpacing
+     verticalSpacing:(CGFloat)verticalSpacing;
 
 // Assigns a new GUID to the session so that changes to the bookmark will not
 // affect it. Returns the GUID of a divorced bookmark. Does nothing if already
 // divorced, but still returns the divorced GUID.
 - (NSString*)divorceAddressBookEntryFromPreferences;
 - (void)remarry;
+
+// After divorcing, if there are already profile values that differ from underlying, call this to
+// set overridden fields.
+- (void)refreshOverriddenFields;
 
 // Call refresh on the textview and schedule a timer if anything is blinking.
 - (void)refresh;
@@ -675,14 +845,13 @@ typedef enum {
 // Jump to the saved scroll position
 - (void)jumpToSavedScrollPosition;
 
-// Prepare to use the given string for the next search.
-- (void)useStringForFind:(NSString*)string;
-
 // Search for the selected text.
 - (void)findWithSelection;
 
 // Show the find view
 - (void)showFindPanel;
+- (void)showFilter;
+- (void)stopFiltering;
 
 // Find next/previous occurrence of find string.
 - (void)searchNext;
@@ -693,6 +862,8 @@ typedef enum {
 - (void)launchSilentCoprocessWithCommand:(NSString *)command;
 
 - (void)setFocused:(BOOL)focused;
+- (void)performBlockWithoutFocusReporting:(void (^NS_NOESCAPE)(void))block;
+- (void)incrementDisableFocusReporting:(NSInteger)delta;
 - (BOOL)wantsContentChangedNotification;
 
 // The dcsID identifies the parser associated with this session. Parsers run in
@@ -706,33 +877,58 @@ typedef enum {
 // impose this restriction because they must belong to the same controller.
 - (BOOL)isCompatibleWith:(PTYSession *)otherSession;
 - (void)setTmuxPane:(int)windowPane;
+- (void)setTmuxHistory:(TmuxHistory *)history
+            altHistory:(TmuxHistory *)altHistory
+                 state:(NSDictionary *)state;
+- (void)toggleTmuxPausePane;
 
 - (void)addNoteAtCursor;
-- (void)addNoteWithText:(NSString *)text inAbsoluteRange:(VT100GridAbsCoordRange)range;
-- (void)previousMarkOrNote;
-- (void)nextMarkOrNote;
+- (void)previousMark;
+- (void)nextMark;
+- (void)previousAnnotation;
+- (void)nextAnnotation;
 - (void)scrollToMark:(id<iTermMark>)mark;
-- (id<iTermMark>)markAddedAtCursorOfClass:(Class)theClass;
+- (void)scrollToMarkWithGUID:(NSString *)guid;
+- (void)revealPromptMarkWithID:(NSString *)guid;
+- (void)saveScrollPositionWithName:(NSString *)name;
+- (void)renameMark:(id<VT100ScreenMarkReading>)mark to:(NSString *)newName;
 
 // Select this session and tab and bring window to foreground.
 - (void)reveal;
+- (void)revealSelection:(iTermSelection *)selection;
+- (void)highlightMarkOrNote:(id<IntervalTreeImmutableObject>)obj;
+
+// Make this session active in its tab but don't reveal the tab or window if not already active.
+- (void)makeActive;
 
 // Refreshes the textview and takes a snapshot of the SessionView.
 - (NSImage *)snapshot;
+- (NSImage *)snapshotCenteredOn:(VT100GridAbsCoord)coord size:(NSSize)size;
 
 - (void)enterPassword:(NSString *)password;
-
-- (void)addCapturedOutput:(CapturedOutput *)capturedOutput;
 
 - (void)queueAnnouncement:(iTermAnnouncementViewController *)announcement
                identifier:(NSString *)identifier;
 
 - (void)tryToRunShellIntegrationInstallerWithPromptCheck:(BOOL)promptCheck;
 
-- (NSDictionary *)arrangementWithContents:(BOOL)includeContents;
+- (BOOL)encodeArrangementWithContents:(BOOL)includeContents
+                              encoder:(id<iTermEncoderAdapter>)encoder;
+
+- (BOOL)encodeArrangementWithContents:(BOOL)includeContents
+                              encoder:(id<iTermEncoderAdapter>)encoder
+                   replacementProfile:(Profile *)replacementProfile
+                          saveProgram:(BOOL)saveProgram
+                         pendingJumps:(NSArray<iTermSSHReconnectionInfo *> *)pendingJumps;
+- (BOOL)canChangeProfileInArrangement;
+- (void)changeProfileInArrangement;
 
 - (void)toggleTmuxZoom;
 - (void)forceTmuxDetach;
+- (void)tmuxDidDisconnect;
+- (void)tmuxWindowTitleDidChange;
+
+- (void)restoreStateForZoom:(PTYSessionZoomState *)state;
 
 // This is to work around a macOS bug where setNeedsDisplay: on the root view controller does not
 // cause the TextViewWrapper to be redrawn in its entirety.
@@ -744,28 +940,31 @@ typedef enum {
 // Make this session's textview the first responder.
 - (void)takeFocus;
 
+- (id)tmuxFormat:(NSString *)tmuxFormat
+       reference:(iTermVariableReference *)ref
+           error:(out NSError **)errorPtr;
+
 // Show an announcement explaining why a restored session is an orphan.
 - (void)showOrphanAnnouncement;
 
 - (BOOL)hasAnnouncementWithIdentifier:(NSString *)identifier;
 
 // Change the current profile but keep the name the same.
-- (void)setProfile:(NSDictionary *)newProfile preservingName:(BOOL)preserveName;
+- (void)setProfile:(NSDictionary *)newProfile
+    preservingName:(BOOL)preserveName;
 
 // Make the scroll view's document view be this session's textViewWrapper.
 - (void)setScrollViewDocumentView;
 
 // Set a value in the session's dictionary without affecting the backing profile.
 - (void)setSessionSpecificProfileValues:(NSDictionary *)newValues;
+- (NSString *)amendedColorKey:(NSString *)baseKey;
 
 - (void)useTransparencyDidChange;
 
-- (void)performKeyBindingAction:(int)keyBindingAction parameter:(NSString *)keyBindingText event:(NSEvent *)event;
+- (void)performKeyBindingAction:(iTermKeyBindingAction *)action event:(NSEvent *)event;
 
 - (void)setColorsFromPresetNamed:(NSString *)presetName;
-
-- (void)triggerDidDetectStartOfPromptAt:(VT100GridAbsCoord)coord;
-- (void)triggerDidDetectEndOfPromptAt:(VT100GridAbsCoord)coord;
 
 // Burys a session
 - (void)bury;
@@ -780,26 +979,54 @@ typedef enum {
 
 - (BOOL)willEnableMetal;
 - (BOOL)metalAllowed:(out iTermMetalUnavailableReason *)reason;
-- (void)executeTokens:(const CVector *)vector bytesHandled:(int)length;
 - (void)injectData:(NSData *)data;
 
 // Call this when a session moves to a different tab or window to update the session ID.
 - (void)didMoveSession;
-- (void)triggerDidChangeNameTo:(NSString *)newName;
-- (void)setTmuxWindowTitle:(NSString *)newName;
 - (void)didInitializeSessionWithName:(NSString *)name;
 - (void)profileNameDidChangeTo:(NSString *)name;
 - (void)profileDidChangeToProfileWithName:(NSString *)name;
 - (void)updateStatusBarStyle;
 - (BOOL)checkForCyclesInSwiftyStrings;
+- (void)applyAction:(iTermAction *)action;
+- (BOOL)sessionModeConsumesEvent:(NSEvent *)event;
+- (Profile *)profileForSplit;
+- (void)compose;
+- (void)openComposerWithString:(NSString *)text escaping:(iTermSendTextEscaping)escaping;
+- (BOOL)closeComposer;
+- (void)didChangeScreen:(CGFloat)scaleFactor;
+- (void)addContentSubscriber:(id<iTermContentSubscriber>)contentSubscriber;
+- (void)didFinishRestoration;
+- (void)performActionForCapturedOutput:(CapturedOutput *)capturedOutput;
+- (void)userInitiatedReset;
+- (void)resetForRelaunch;
+- (void)resetMode;
+- (void)enclosingTabWillBeDeselected;
+- (void)enclosingTabDidBecomeSelected;
+- (void)copyTextFromBlockWithID:(NSString *)blockID;
+- (void)runCommand:(NSString *)command
+       inDirectory:(NSString *)directory
+            onHost:(NSString *)hostname
+            asUser:(NSString *)username;
+- (BOOL)handleKeyDownWithBuckyBits:(NSEvent *)event;
+- (BOOL)handleKeyUpWithBuckyBits:(NSEvent *)event;
+- (BOOL)handleFlagsChangedWithBuckyBits:(NSEvent *)event;
+- (CGFloat)desiredRightExtra;
++ (CGFloat)desiredRightExtraForProfile:(Profile *)profile;
 
 #pragma mark - API
 
 - (ITMGetBufferResponse *)handleGetBufferRequest:(ITMGetBufferRequest *)request;
-- (ITMGetPromptResponse *)handleGetPromptRequest:(ITMGetPromptRequest *)request;
+- (void)handleGetPromptRequest:(ITMGetPromptRequest *)request
+                    completion:(void (^)(ITMGetPromptResponse *response))completion;
+- (void)handleListPromptsRequest:(ITMListPromptsRequest *)request
+                      completion:(void (^)(ITMListPromptsResponse *response))completion;
 - (ITMNotificationResponse *)handleAPINotificationRequest:(ITMNotificationRequest *)request
                                             connectionKey:(NSString *)connectionKey;
-- (ITMSetProfilePropertyResponse_Status)handleSetProfilePropertyForKey:(NSString *)key value:(id)value;
+
+- (ITMSetProfilePropertyResponse_Status)handleSetProfilePropertyForAssignments:(NSArray<iTermTuple<NSString *, id> *> *)tuples
+                                                            scriptHistoryEntry:(iTermScriptHistoryEntry *)scriptHistoryEntry;
+
 - (ITMGetProfilePropertyResponse *)handleGetProfilePropertyForKeys:(NSArray<NSString *> *)keys;
 
 // Run a script-side function. Can include composition, references to variables.
@@ -807,10 +1034,8 @@ typedef enum {
 - (void)invokeFunctionCall:(NSString *)invocation
                      scope:(iTermVariableScope *)scope
                     origin:(NSString *)origin;
-
-#pragma mark - Testing utilities
-
-- (void)synchronousReadTask:(NSString *)string;
+- (void)setParentScope:(iTermVariableScope *)parentScope;
+- (void)setOrAppendComposerString:(NSString *)string;
 
 @end
 

@@ -46,6 +46,7 @@
     URLAction *action = [self urlAction];
     action.string = filename;
     action.actionType = kURLActionOpenURL;
+    action.hover = YES;
     return action;
 }
 
@@ -65,11 +66,19 @@
     return action;
 }
 
-+ (instancetype)urlActionToOpenImage:(iTermImageInfo *)imageInfo {
++ (instancetype)urlActionToOpenImage:(id<iTermImageInfoReading>)imageInfo {
     URLAction *action = [self urlAction];
     action.string = imageInfo.filename;
     action.actionType = kURLActionOpenImage;
     action.identifier = imageInfo;
+    return action;
+}
+
++ (instancetype)actionToShowCommandInfoForMark:(id<VT100ScreenMarkReading>)mark coord:(VT100GridCoord)coord {
+    URLAction *action = [self urlAction];
+    action.actionType = kURLActionShowCommandInfo;
+    action.mark = mark;
+    action.coord = coord;
     return action;
 }
 
@@ -93,9 +102,12 @@
         case kURLActionSecureCopyFile:
             actionType = @"SecureCopyFile";
             break;
+        case kURLActionShowCommandInfo:
+            actionType = @"ShowCommandInfo";
+            break;
     }
-    return [NSString stringWithFormat:@"<%@: %p actionType=%@ string=%@ rule=%@>",
-            [self class], self, actionType, self.string, self.rule];
+    return [NSString stringWithFormat:@"<%@: %p actionType=%@ string=%@ rule=%@ logicalRange=%@ visualRange=%@ coord=%@>",
+            [self class], self, actionType, self.string, self.rule, VT100GridWindowedRangeDescription(_logicalRange), VT100GridWindowedRangeDescription(_visualRange), VT100GridCoordDescription(self.coord)];
 }
 
 @end

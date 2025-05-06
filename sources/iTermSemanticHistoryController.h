@@ -25,12 +25,18 @@
  */
 
 #import <Foundation/Foundation.h>
+#import "iTermCancelable.h"
 
 // Keys for substitutions of openPath:workingDirectory:substitutions:.
 extern NSString *const kSemanticHistoryPathSubstitutionKey;
 extern NSString *const kSemanticHistoryPrefixSubstitutionKey;
 extern NSString *const kSemanticHistorySuffixSubstitutionKey;
 extern NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey;
+extern NSString *const kSemanticHistoryLineNumberKey;
+extern NSString *const kSemanticHistoryColumnNumberKey;
+
+@class iTermPathFinder;
+@class iTermVariableScope;
 
 @protocol iTermSemanticHistoryControllerDelegate <NSObject>
 - (void)semanticHistoryLaunchCoprocessWithCommand:(NSString *)command;
@@ -63,11 +69,14 @@ extern NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey;
 // \(key) -> substitutions[key]
 //
 // Returns YES if the file was opened, NO if it could not be opened.
-- (BOOL)openPath:(NSString *)path
+- (void)openPath:(NSString *)path
    orRawFilename:(NSString *)rawFileName
-           substitutions:(NSDictionary *)substitutions
-              lineNumber:(NSString *)lineNumber
-            columnNumber:(NSString *)columnNumber;
+        fragment:(NSString *)fragment
+   substitutions:(NSDictionary *)substitutions
+           scope:(iTermVariableScope *)scope
+      lineNumber:(NSString *)lineNumber
+    columnNumber:(NSString *)columnNumber
+      completion:(void (^)(BOOL))completion;
 
 // Do a brute force search by putting together suffixes of beforeString with prefixes of afterString
 // to find an existing file in |workingDirectory|. |charsSTakenFromPrefixPtr| will be filled in with
@@ -105,6 +114,15 @@ extern NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey;
                            charsTakenFromSuffix:(int *)suffixChars
                                  trimWhitespace:(BOOL)trimWhitespace;
 
+- (id<iTermCancelable>)pathOfExistingFileFoundWithPrefix:(NSString *)beforeStringIn
+                                                  suffix:(NSString *)afterStringIn
+                                        workingDirectory:(NSString *)workingDirectory
+                                          trimWhitespace:(BOOL)trimWhitespace
+                                              completion:(void (^)(NSString *path,
+                                                                   int prefixChars,
+                                                                   int suffixChars,
+                                                                   BOOL workingDirectoryIsLocal))completion;
+
 #pragma mark - Testing
 
 // Tests can subclass and override -fileManager to fake the filesystem. The following methods are
@@ -112,9 +130,9 @@ extern NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey;
 @property (nonatomic, readonly) NSFileManager *fileManager;
 
 // Tests can subclass and override these methods to avoid interacting with the filesystem.
-- (void)launchTaskWithPath:(NSString *)path arguments:(NSArray *)arguments wait:(BOOL)wait;
+- (void)launchTaskWithPath:(NSString *)path arguments:(NSArray *)arguments completion:(void (^)(void))completion;
 - (void)launchAppWithBundleIdentifier:(NSString *)bundleIdentifier path:(NSString *)path;
-- (BOOL)openFile:(NSString *)fullPath;
+- (BOOL)openFile:(NSString *)fullPath fragment:(NSString *)fragment;
 - (BOOL)openURL:(NSURL *)url;
 - (BOOL)openURL:(NSURL *)url editorIdentifier:(NSString *)editorIdentifier;
 - (BOOL)defaultAppForFileIsEditor:(NSString *)file;

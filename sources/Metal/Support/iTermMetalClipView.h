@@ -7,11 +7,16 @@
 
 #import <Cocoa/Cocoa.h>
 
-@class MTKView;
+@class iTermMTKView;
+
+extern NSString *const iTermMetalClipViewWillScroll;
 
 @interface iTermMetalClipView : NSClipView
 
-@property (nonatomic, weak) MTKView *metalView NS_AVAILABLE_MAC(10_11);
+@property (nonatomic, weak) iTermMTKView *metalView;
+@property (nonatomic, weak) NSView *legacyView;
 @property (nonatomic) BOOL useMetal;
+
+- (void)performBlockWithoutShowingOverlayScrollers:(void (^ NS_NOESCAPE)(void))block;
 
 @end

@@ -5,14 +5,16 @@
 #endif
 
 @class iTermThemeFrame;
+@class NSTitlebarContainerView;
 
 NS_ASSUME_NONNULL_BEGIN
 
 @implementation THE_CLASS
 {
-    int blurFilter;
     double blurRadius_;
-
+    // Hack for a 10.16 issue. Once you set blur from >0 to 0 then it is broken and will never work again.
+    int _minBlur;
+    
     // If set, then windowWillShowInitial is not invoked.
     BOOL _layoutDone;
 
@@ -29,9 +31,21 @@ NS_ASSUME_NONNULL_BEGIN
 
     NSTimeInterval _timeOfLastWindowTitleChange;
     BOOL _needsInvalidateShadow;
+    BOOL _it_restorableStateInvalid;
+    BOOL _validatingMenuItems;
+    BOOL _it_preventFrameChange;
+#if BETA
+    NSString *_lastAlphaChangeStack;
+#endif
+    BOOL _updatingDividerLayer;
+    BOOL _isMovingScreen;
+    NSInteger _resizingForTilingCount;
 }
 
 @synthesize it_openingSheet;
+@synthesize it_becomingKey;
+@synthesize it_accessibilityResizing;
+@synthesize it_preventFrameChange;
 
 - (instancetype)initWithContentRect:(NSRect)contentRect
                           styleMask:(NSWindowStyleMask)aStyle
@@ -46,18 +60,84 @@ NS_ASSUME_NONNULL_BEGIN
     if (self) {
         DLog(@"Invalidate cached occlusion: %@ %p", NSStringFromSelector(_cmd), self);
         [[iTermWindowOcclusionChangeMonitor sharedInstance] invalidateCachedOcclusion];
+        [self preventTitlebarDivider];
+    }
+    return self;
+}
+
+- (instancetype)initWithContentRect:(NSRect)contentRect styleMask:(NSWindowStyleMask)style backing:(NSBackingStoreType)backingStoreType defer:(BOOL)flag {
+    self = [super initWithContentRect:contentRect
+                            styleMask:style
+                              backing:backingStoreType
+                                defer:flag];
+    if (self) {
+        [self preventTitlebarDivider];
     }
     return self;
 }
 
 ITERM_WEAKLY_REFERENCEABLE
 
-- (void)iterm_dealloc {
+- (void)dealloc {
     DLog(@"Invalidate cached occlusion: %@ %p", NSStringFromSelector(_cmd), self);
-    [[iTermWindowOcclusionChangeMonitor sharedInstance] invalidateCachedOcclusion];
+    // Not safe to call this from dealloc because can very indirectly try to retain this object.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[iTermWindowOcclusionChangeMonitor sharedInstance] invalidateCachedOcclusion];
+    });
     [restoreState_ release];
+#if BETA
+    [_lastAlphaChangeStack release];
+#endif
     [super dealloc];
 
+}
+
+- (void)preventTitlebarDivider {
+    if (@available(macOS 10.16, *)) {
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            static IMP originalImp;
+            originalImp =
+            [iTermSelectorSwizzler permanentlySwizzleSelector:@selector(_updateDividerLayerForController:animated:)
+                                                    fromClass:NSClassFromString(@"NSTitlebarContainerView")
+                                                    withBlock:^(id receiver, id controller, BOOL animated) {
+                void (*f)(id, SEL, id, BOOL) = (void (*)(id, SEL, id, BOOL))originalImp;
+                if (![controller respondsToSelector:@selector(window)]) {
+                    f(receiver, @selector(_updateDividerLayerForController:animated:), controller, animated);
+                    return;
+                }
+                NSWindow<PTYWindow> *window = (NSWindow<PTYWindow> *)[controller window];
+                if (![window conformsToProtocol:@protocol(PTYWindow)]) {
+                    f(receiver, @selector(_updateDividerLayerForController:animated:), controller, animated);
+                    return;
+                }
+
+                [window setUpdatingDividerLayer:YES];
+                f(receiver, @selector(_updateDividerLayerForController:animated:), controller, animated);
+                [window setUpdatingDividerLayer:NO];
+            }];
+        });
+    }
+}
+
+- (NSTitlebarSeparatorStyle)titlebarSeparatorStyle NS_AVAILABLE_MAC(10_16) {
+    if (_updatingDividerLayer) {
+        id<PTYWindow> ptywindow = (id<PTYWindow>)self;
+        if ([ptywindow.ptyDelegate terminalWindowShouldHaveTitlebarSeparator]) {
+            return NSTitlebarSeparatorStyleShadow;
+        }
+        return NSTitlebarSeparatorStyleNone;
+    }
+    return [super titlebarSeparatorStyle];
+}
+
+- (void)setUpdatingDividerLayer:(BOOL)value {
+    _updatingDividerLayer = value;
+}
+
+- (void)setDocumentEdited:(BOOL)documentEdited {
+    [super setDocumentEdited:documentEdited];
+    [[NSNotificationCenter defaultCenter] postNotificationName:iTermWindowDocumentedEditedDidChange object:self];
 }
 
 - (BOOL)titleChangedRecently {
@@ -72,25 +152,25 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if (item.action == @selector(performMiniaturize:)) {
-        if (@available(macOS 10.13, *)) {
-            // Can miniaturize borderless windows
-            return ![self.ptyDelegate lionFullScreen];
-        } else {
-            // This was originally for #4402. Not sure how it worked, but I don't want to mess with 10.12.
-            return ![self.ptyDelegate anyFullScreen];
-        }
+        // Can miniaturize borderless windows
+        return ![self.ptyDelegate lionFullScreen];
     } else {
-        return [super validateMenuItem:item];
+        _validatingMenuItems = YES;
+        const BOOL result = [super validateMenuItem:item];
+        _validatingMenuItems = NO;
+        return result;
+    }
+}
+
+- (void)performWindowDragWithEvent:(NSEvent *)event {
+    if ([self.ptyDelegate ptyWindowIsDraggable:self]) {
+        [super performWindowDragWithEvent:event];
     }
 }
 
 - (void)performMiniaturize:(nullable id)sender {
     if ([self.ptyDelegate anyFullScreen]) {
-        if (@available(macOS 10.13, *)) {
-            [super miniaturize:sender];
-        } else {
-            [super performMiniaturize:sender];
-        }
+        [super miniaturize:sender];
     } else {
         DLog(@"performMiniaturize calling [self miniaturize:]");
         [self miniaturize:self];
@@ -98,7 +178,13 @@ ITERM_WEAKLY_REFERENCEABLE
 }
 
 - (NSString *)description {
-    return [NSString stringWithFormat:@"<%@: %p frame=%@ title=%@ alpha=%f isMain=%d isKey=%d isVisible=%d delegate=%p>",
+    NSString *extra = @"";
+#if BETA
+    if (_lastAlphaChangeStack) {
+        extra = [NSString stringWithFormat:@" Alpha last changed from:\n%@\n", _lastAlphaChangeStack];
+    }
+#endif
+    return [NSString stringWithFormat:@"<%@: %p frame=%@ title=%@ alpha=%f isMain=%d isKey=%d isVisible=%d collectionBehavior=%@ styleMask=%@ delegate=%p%@>",
             [self class],
             self,
             [NSValue valueWithRect:self.frame],
@@ -107,7 +193,15 @@ ITERM_WEAKLY_REFERENCEABLE
             (int)self.isMainWindow,
             (int)self.isKeyWindow,
             (int)self.isVisible,
-            self.delegate];
+            @(self.collectionBehavior),
+            @(self.styleMask),
+            self.delegate,
+            extra];
+}
+
+- (void)setCollectionBehavior:(NSWindowCollectionBehavior)collectionBehavior {
+    DLog(@"%@: setCollectionBehavior=%@\n%@", self, @(collectionBehavior), [NSThread callStackSymbols]);
+    [super setCollectionBehavior:collectionBehavior];
 }
 
 - (NSString *)windowIdentifier {
@@ -118,7 +212,26 @@ ITERM_WEAKLY_REFERENCEABLE
     return [NSString stringWithFormat:@"window-%ld", (long)_uniqueNumber];
 }
 
+- (void)setIt_restorableStateInvalid:(BOOL)it_restorableStateInvalid {
+    _it_restorableStateInvalid = NO;
+}
+
+- (BOOL)it_restorableStateInvalid {
+    return _it_restorableStateInvalid;
+}
+
+- (void)invalidateRestorableState {
+    self.it_restorableStateInvalid = YES;
+    [super invalidateRestorableState];
+}
+
+- (void)encodeRestorableStateWithCoder:(NSCoder *)coder backgroundQueue:(NSOperationQueue *)queue {
+    self.it_restorableStateInvalid = NO;
+    [super encodeRestorableStateWithCoder:coder backgroundQueue:queue];
+}
+
 - (void)encodeRestorableStateWithCoder:(NSCoder *)coder {
+    self.it_restorableStateInvalid = NO;
     [super encodeRestorableStateWithCoder:coder];
     [coder encodeObject:restoreState_ forKey:kTerminalWindowStateRestorationWindowArrangementKey];
 }
@@ -129,18 +242,19 @@ ITERM_WEAKLY_REFERENCEABLE
 }
 
 - (void)enableBlur:(double)radius {
-    const double kEpsilon = 0.001;
-    if (blurFilter && fabs(blurRadius_ - radius) < kEpsilon) {
-        return;
-    }
-
-    CGSConnectionID con = CGSMainConnectionID();
+    CGSConnectionID con = CGSDefaultConnectionForThread();
     if (!con) {
         return;
     }
     CGSSetWindowBackgroundBlurRadiusFunction* function = GetCGSSetWindowBackgroundBlurRadiusFunction();
     if (function) {
-        function(con, [self windowNumber], (int)radius);
+        if (@available(macOS 10.16, *)) {
+            if (radius >= 1) {
+                _minBlur = 1;
+            }
+        }
+        DLog(@"enable blur with radius %@ for window %@", @(MAX(_minBlur, radius)), self);
+        function(con, [self windowNumber], (int)MAX(_minBlur, radius));
     } else {
         NSLog(@"Couldn't get blur function");
     }
@@ -148,18 +262,15 @@ ITERM_WEAKLY_REFERENCEABLE
 }
 
 - (void)disableBlur {
-    CGSConnectionID con = CGSMainConnectionID();
+    CGSConnectionID con = CGSDefaultConnectionForThread();
     if (!con) {
         return;
     }
 
     CGSSetWindowBackgroundBlurRadiusFunction* function = GetCGSSetWindowBackgroundBlurRadiusFunction();
     if (function) {
-        function(con, [self windowNumber], 0);
-    } else if (blurFilter) {
-        CGSRemoveWindowFilter(con, (CGSWindowID)[self windowNumber], blurFilter);
-        CGSReleaseCIFilter(CGSMainConnectionID(), blurFilter);
-        blurFilter = 0;
+        DLog(@"disable blur for window %@", self);
+        function(con, [self windowNumber], MAX(_minBlur, 0));
     }
 }
 
@@ -168,13 +279,10 @@ ITERM_WEAKLY_REFERENCEABLE
 }
 
 - (void)toggleFullScreen:(nullable id)sender {
-    if (![[self ptyDelegate] lionFullScreen]  &&
-        ![iTermPreferences boolForKey:kPreferenceKeyLionStyleFullscreen]) {
-        // The user must have clicked on the toolbar arrow, but the pref is set
-        // to use traditional fullscreen.
-        [(id<PTYWindowDelegateProtocol>)[self delegate] toggleTraditionalFullScreenMode];
-    } else {
+    if ([self.ptyDelegate toggleFullScreenShouldUseLionFullScreen]) {
         [super toggleFullScreen:sender];
+    } else {
+        [(id<PTYWindowDelegateProtocol>)[self delegate] toggleTraditionalFullScreenMode];
     }
 }
 
@@ -252,7 +360,7 @@ ITERM_WEAKLY_REFERENCEABLE
 }
 
 - (void)makeKeyAndOrderFront:(nullable id)sender {
-    DLog(@"%@ makeKeyAndOrderFront: layoutDone=%@ %@", NSStringFromClass([self class]), @(_layoutDone), [NSThread callStackSymbols]);
+    DLog(@"%@ makeKeyAndOrderFront: layoutDone=%@ %@", self, @(_layoutDone), [NSThread callStackSymbols]);
     if (!_layoutDone) {
         DLog(@"try to call windowWillShowInitial");
         [self setLayoutDone];
@@ -266,7 +374,10 @@ ITERM_WEAKLY_REFERENCEABLE
     DLog(@"The current window frame is %fx%f", [self frame].size.width, [self frame].size.height);
     DLog(@"Invalidate cached occlusion: %@ %p", NSStringFromSelector(_cmd), self);
     [[iTermWindowOcclusionChangeMonitor sharedInstance] invalidateCachedOcclusion];
+    self.it_becomingKey = YES;
     [super makeKeyAndOrderFront:sender];
+    [self.ptyDelegate ptyWindowDidMakeKeyAndOrderFront:self];
+    self.it_becomingKey = NO;
 }
 
 - (BOOL)canBecomeKeyWindow {
@@ -285,18 +396,21 @@ ITERM_WEAKLY_REFERENCEABLE
 
 - (void)orderFrontRegardless {
     DLog(@"Invalidate cached occlusion: %@ %p", NSStringFromSelector(_cmd), self);
+    DLog(@"%@\n%@", NSStringFromSelector(_cmd), [NSThread callStackSymbols]);
     [[iTermWindowOcclusionChangeMonitor sharedInstance] invalidateCachedOcclusion];
     [super orderFrontRegardless];
 }
 
 - (void)orderFront:(nullable id)sender {
     DLog(@"Invalidate cached occlusion: %@ %p", NSStringFromSelector(_cmd), self);
+    DLog(@"%@\n%@", NSStringFromSelector(_cmd), [NSThread callStackSymbols]);
     [[iTermWindowOcclusionChangeMonitor sharedInstance] invalidateCachedOcclusion];
     [super orderFront:sender];
 }
 
 - (void)orderBack:(nullable id)sender {
     DLog(@"Invalidate cached occlusion: %@ %p", NSStringFromSelector(_cmd), self);
+    DLog(@"%@\n%@", NSStringFromSelector(_cmd), [NSThread callStackSymbols]);
     [[iTermWindowOcclusionChangeMonitor sharedInstance] invalidateCachedOcclusion];
     [super orderBack:sender];
 }
@@ -316,6 +430,14 @@ ITERM_WEAKLY_REFERENCEABLE
 - (void)setAlphaValue:(CGFloat)alphaValue {
     DLog(@"Invalidate cached occlusion: %@ %p", NSStringFromSelector(_cmd), self);
     [[iTermWindowOcclusionChangeMonitor sharedInstance] invalidateCachedOcclusion];
+#if BETA
+    if (alphaValue < 0.01 && !_lastAlphaChangeStack) {
+        _lastAlphaChangeStack = [[[NSThread callStackSymbols] componentsJoinedByString:@"\n"] copy];
+    } else if (alphaValue > 0.01) {
+        [_lastAlphaChangeStack release];
+        _lastAlphaChangeStack = nil;
+    }
+#endif
     [super setAlphaValue:alphaValue];
 }
 
@@ -426,11 +548,69 @@ ITERM_WEAKLY_REFERENCEABLE
     return NSWindowTabbingModeDisallowed;
 }
 
+- (void)it_moveToScreen:(NSScreen *)screen {
+    [self _moveToScreen:screen];
+}
+
+
+- (void)_moveToScreen:(id)sender {
+    if (![[THE_CLASS superclass] instancesRespondToSelector:_cmd]) {
+        return;
+    }
+    if ([sender isKindOfClass:[NSScreen class]]) {
+        [self.ptyDelegate terminalWindowWillMoveToScreen:sender];
+    }
+    DLog(@"_isMovingScreen = YES");
+    _isMovingScreen = YES;
+    [super _moveToScreen:sender];
+    _isMovingScreen = NO;
+    DLog(@"_isMovingScreen = NO");
+    if ([sender isKindOfClass:[NSScreen class]]) {
+        [self.ptyDelegate terminalWindowDidMoveToScreen:sender];
+    }
+}
+
+- (BOOL)it_isMovingScreen {
+    return _isMovingScreen;
+}
+
+- (void)_resizeFromWindowManagerWithTargetGeometry:(id)geometry
+                                      springSettings:(id)springSettings
+                                          completion:(id)completion NS_AVAILABLE_MAC(15_0) {
+    _resizingForTilingCount += 1;
+    DLog(@"incr _resizingForTilingCount to %@", @(_resizingForTilingCount));
+    [super _resizeFromWindowManagerWithTargetGeometry:geometry
+                                       springSettings:springSettings
+                                           completion:completion];
+    _resizingForTilingCount -= 1;
+    DLog(@"decr _resizingForTilingCount to %@", @(_resizingForTilingCount));
+}
+
+- (BOOL)it_resizingForTiling {
+    return _resizingForTilingCount > 0;
+}
+
 - (void)setFrame:(NSRect)frameRect display:(BOOL)flag {
-    DLog(@"setFrame:%@ display:%@ from\n%@",
-         NSStringFromRect(frameRect), @(flag),
+    DLog(@"setFrame:%@ display:%@ maxy=%@ of %@ from\n%@",
+         NSStringFromRect(frameRect), @(flag), @(NSMaxY(frameRect)),
+          self.delegate,
          [NSThread callStackSymbols]);
+    if (self.it_preventFrameChange) {
+        // This is a terrible hack.
+        // When you restart and choose to restore windows after logging back in, appkit sets the
+        // window size from the restoration completion block. This has the effect of reversing the
+        // width adjustment that we make to the window to account for a change in the scrollbar
+        // style change. See _widthAdjustment in PseudoTerminal.m for details. Issue 9877
+        DLog(@"Disregarding frame change");
+        return;
+    }
     [super setFrame:frameRect display:flag];
+}
+
+- (void)setFrameOrigin:(NSPoint)point {
+    DLog(@"Set frame origin to %@", NSStringFromPoint(point));
+    [super setFrameOrigin:point];
+    DLog(@"Frame maxy=%@ now", @(NSMaxY(self.frame)));
 }
 
 #if ENABLE_COMPACT_WINDOW_HACK
@@ -441,14 +621,34 @@ ITERM_WEAKLY_REFERENCEABLE
 + (Class)frameViewClassForStyleMask:(NSUInteger)windowStyle {
     return [iTermThemeFrame class] ?: [super frameViewClassForStyleMask:windowStyle];
 }
+
+// https://chromium.googlesource.com/chromium/src/+/refs/tags/73.0.3683.86/ui/views_bridge_mac/native_widget_mac_nswindow.mm#169
+// The base implementation returns YES if the window's frame view is a custom
+// class, which causes undesirable changes in behavior. AppKit NSWindow
+// subclasses are known to override it and return NO.
+//
+// In particular, this fixes issue 8478 (traffic light buttons vertically off-center in native full screen).
+- (BOOL)_usesCustomDrawing {
+    return NO;
+}
 #else
 - (BOOL)isCompact {
     return NO;
 }
 #endif
 
+- (void)accessibilitySetSizeAttribute:(id)arg1 {
+    self.it_accessibilityResizing += 1;
+    [super accessibilitySetSizeAttribute:arg1];
+    self.it_accessibilityResizing -= 1;
+}
+
 - (NSColor *)it_terminalWindowDecorationBackgroundColor {
     return [self.ptyDelegate terminalWindowDecorationBackgroundColor];
+}
+
+- (id<PSMTabStyle>)it_tabStyle {
+    return [self.ptyDelegate terminalWindowTabStyle];
 }
 
 - (NSColor *)it_terminalWindowDecorationTextColorForBackgroundColor:(NSColor *)backgroundColor {
@@ -475,6 +675,10 @@ ITERM_WEAKLY_REFERENCEABLE
         _needsInvalidateShadow = NO;
         [self invalidateShadow];
     });
+}
+
+- (BOOL)isMovable {
+    return _validatingMenuItems || [super isMovable];
 }
 
 NS_ASSUME_NONNULL_END

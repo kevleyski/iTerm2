@@ -10,13 +10,20 @@
 
 @implementation iTermImageWell
 
+- (void)awakeFromNib {
+    self.wantsLayer = YES;
+    self.layer.borderColor = [[NSColor whiteColor] CGColor];
+    self.layer.borderWidth = 2.0;
+    self.layer.cornerRadius = 6.0;
+}
+
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)draggingInfo {
     if (![super performDragOperation:draggingInfo]) {
         return NO;
     }
 
     NSPasteboard *pasteboard = [draggingInfo draggingPasteboard];
-    NSString *theString = [pasteboard stringForType:NSFilenamesPboardType];
+    NSString *theString = [pasteboard stringForType:NSPasteboardTypeFileURL];
 
     if (theString) {
         NSData *data = [theString dataUsingEncoding:NSUTF8StringEncoding];
@@ -39,9 +46,13 @@
 }
 
 - (void)mouseUp:(NSEvent *)theEvent {
-    if (theEvent.clickCount == 2) {
+    if (theEvent.clickCount == 1) {
         [_delegate imageWellDidClick:self];
     }
+}
+
+- (BOOL)clipsToBounds {
+    return YES;
 }
 
 @end

@@ -31,6 +31,16 @@
             *rmlen = 1;
             break;
 
+        case 'V':
+            result->type = VT100CC_SPA;
+            *rmlen = 2;
+            break;
+
+        case 'W':
+            result->type = VT100CC_EPA;
+            *rmlen = 2;
+            break;
+
         case '%':
             if (c2 == '@') {
                 result->type = ISO2022_SELECT_LATIN_1;
@@ -111,6 +121,11 @@
             }
             break;
 
+        case '9':
+            result->type = VT100_DECFI;
+            *rmlen = 2;
+            break;
+
         case '8':
             result->type = VT100CSI_DECRC;
             *rmlen = 2;
@@ -118,6 +133,11 @@
 
         case '7':
             result->type = VT100CSI_DECSC;
+            *rmlen = 2;
+            break;
+
+        case '6':
+            result->type = VT100_DECBI;
             *rmlen = 2;
             break;
 

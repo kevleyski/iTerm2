@@ -31,6 +31,10 @@
     [super dealloc];
 }
 
+- (NSString *)debugDescription {
+    return [records_ description];
+}
+
 - (NSString *)valueInRecord:(NSArray *)record forField:(NSString *)fieldName
 {
     if (!map_) {
@@ -53,8 +57,9 @@
 
 @implementation TSVParser
 
-+ (TSVDocument *)documentFromString:(NSString *)string withFields:(NSArray *)fields
-{
++ (TSVDocument *)documentFromString:(NSString *)string
+                         withFields:(NSArray *)fields
+                   workAroundTabBug:(BOOL)workAroundTabBug {
     NSArray *lines = [string componentsSeparatedByString:@"\n"];
     if ([lines count] == 0) {
         return nil;
@@ -64,6 +69,10 @@
     for (int i = 0; i < lines.count; i++) {
         NSString *row = [lines objectAtIndex:i];
         NSArray *rowArray = [row componentsSeparatedByString:@"\t"];
+        if (workAroundTabBug && rowArray.count == 1) {
+            // Work around a bug in 3.4-next
+            rowArray = [row componentsSeparatedByString:@"\\t"];
+        }
         if (rowArray.count >= fields.count) {
             [doc.records addObject:rowArray];
         }
@@ -75,9 +84,8 @@
 
 @implementation NSString (TSV)
 
-- (TSVDocument *)tsvDocumentWithFields:(NSArray *)fields
-{
-    return [TSVParser documentFromString:self withFields:fields];
+- (TSVDocument *)tsvDocumentWithFields:(NSArray *)fields workAroundTabBug:(BOOL)workAroundTabBug {
+    return [TSVParser documentFromString:self withFields:fields workAroundTabBug:workAroundTabBug];
 }
 
 @end

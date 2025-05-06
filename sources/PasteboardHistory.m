@@ -32,9 +32,10 @@
 #import "NSDateFormatterExtras.h"
 #import "NSStringITerm.h"
 #import "PopupModel.h"
+#import "iTermAdvancedSettingsModel.h"
 #import "iTermController.h"
 #import "iTermPreferences.h"
-#import "iTermAdvancedSettingsModel.h"
+#import "iTermSecureKeyboardEntryController.h"
 
 #define PBHKEY_ENTRIES @"Entries"
 #define PBHKEY_VALUE @"Value"
@@ -44,16 +45,11 @@
 
 + (PasteboardEntry*)entryWithString:(NSString *)s score:(double)score
 {
-    PasteboardEntry *e = [[[PasteboardEntry alloc] init] autorelease];
+    PasteboardEntry *e = [[PasteboardEntry alloc] init];
     [e setMainValue:s];
     [e setScore:score];
     [e setPrefix:@""];
     return e;
-}
-
-- (void)dealloc {
-    [_timestamp release];
-    [super dealloc];
 }
 
 @end
@@ -97,27 +93,19 @@
         NSString *appname = [[NSBundle mainBundle] objectForInfoDictionaryKey:(NSString *)kCFBundleNameKey];
         path_ = [path_ stringByAppendingPathComponent:appname];
         [[NSFileManager defaultManager] createDirectoryAtPath:path_ withIntermediateDirectories:YES attributes:nil error:NULL];
-        path_ = [[path_ stringByAppendingPathComponent:@"pbhistory.plist"] copyWithZone:[self zone]];
+        path_ = [[path_ stringByAppendingPathComponent:@"pbhistory.plist"] copy];
 
         [self _loadHistoryFromDisk];
     }
     return self;
 }
 
-- (void)dealloc
-{
-    [path_ release];
-    [entries_ release];
-    [super dealloc];
-}
-
-- (NSArray*)entries
-{
+- (NSArray*)entries {
     return entries_;
 }
 
 - (NSDictionary*)_entriesToDict {
-    NSMutableArray *a = [[[NSMutableArray alloc] init] autorelease];
+    NSMutableArray *a = [NSMutableArray array];
 
     for (PasteboardEntry *entry in entries_) {
         [a addObject:[NSDictionary dictionaryWithObjectsAndKeys:[entry mainValue], PBHKEY_VALUE,
@@ -137,35 +125,54 @@
     }
 }
 
-- (void)clear
-{
+- (void)clear {
     [entries_ removeAllObjects];
 }
 
-- (void)eraseHistory
-{
+- (void)eraseHistory {
     [[NSFileManager defaultManager] removeItemAtPath:path_ error:NULL];
 }
 
-- (void)_writeHistoryToDisk
-{
+- (void)_writeHistoryToDisk {
     if ([iTermPreferences boolForKey:kPreferenceKeySavePasteAndCommandHistory]) {
-        [NSKeyedArchiver archiveRootObject:[self _entriesToDict] toFile:path_];
+        NSError *error = nil;
+        NSData *data =
+        [NSKeyedArchiver archivedDataWithRootObject:[self _entriesToDict]
+                              requiringSecureCoding:NO
+                                              error:&error];
+        if (error) {
+            DLog(@"Failed to archive command history: %@", error);
+            return;
+        }
+        [data writeToFile:path_ atomically:NO];
         [[NSFileManager defaultManager] setAttributes:@{ NSFilePosixPermissions: @0600 }
                                          ofItemAtPath:path_
                                                 error:nil];
     }
 }
 
-- (void)_loadHistoryFromDisk
-{
+- (void)_loadHistoryFromDisk {
     [entries_ removeAllObjects];
-    [self _addDictToEntries:[NSKeyedUnarchiver unarchiveObjectWithFile:path_]];
+
+    NSData *data = [NSData dataWithContentsOfFile:path_];
+    if (!data) {
+        return;
+    }
+    NSError *error = nil;
+    NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:&error];
+    if (!unarchiver || error) {
+        return;
+    }
+    unarchiver.requiresSecureCoding = NO;
+    NSDictionary *dict = [unarchiver decodeObjectForKey:NSKeyedArchiveRootObjectKey];
+
+    [self _addDictToEntries:dict];
 }
 
 - (void)save:(NSString*)value
 {
-    if (IsSecureEventInputEnabled()) {
+    if (IsSecureEventInputEnabled() &&
+        ![iTermAdvancedSettingsModel saveToPasteHistoryWhenSecureInputEnabled]) {
         DLog(@"Not saving paste history because secure keyboard entry is enabled");
         return;
     }
@@ -216,11 +223,12 @@
 }
 
 - (instancetype)init {
-    self = [super initWithWindowNibName:@"PasteboardHistory" tablePtr:nil model:[[[PopupModel alloc] init] autorelease]];
+    self = [super initWithWindowNibName:@"PasteboardHistory" tablePtr:nil model:[[PopupModel alloc] init]];
     if (!self) {
         return nil;
     }
 
+    [self window];
     [self setTableView:table_];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(pasteboardHistoryDidChange:)
@@ -230,10 +238,14 @@
     return self;
 }
 
-- (void)dealloc
-{
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [super dealloc];
+- (NSString *)footerString {
+    if ([iTermAdvancedSettingsModel saveToPasteHistoryWhenSecureInputEnabled]) {
+        return nil;
+    }
+    if ([[iTermSecureKeyboardEntryController sharedInstance] isEnabled]) {
+        return @"⚠️ Secure keyboard entry disables paste history.";
+    }
+    return nil;
 }
 
 - (void)pasteboardHistoryDidChange:(id)sender
@@ -301,15 +313,33 @@
         return [super tableView:aTableView objectValueForTableColumn:aTableColumn row:rowIndex];
     }
 }
+- (NSString *)insertableString {
+    if ([table_ selectedRow] < 0) {
+        return nil;
+    }
+    PasteboardEntry *entry = [[self model] objectAtIndex:[self convertIndex:[table_ selectedRow]]];
+    return [entry mainValue];
+}
 
 - (void)rowSelected:(id)sender {
-    if ([table_ selectedRow] >= 0) {
-        PasteboardEntry *entry = [[self model] objectAtIndex:[self convertIndex:[table_ selectedRow]]];
-        NSPasteboard *thePasteboard = [NSPasteboard generalPasteboard];
-        [thePasteboard declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
-        [thePasteboard setString:[entry mainValue] forType:NSStringPboardType];
-        [[[iTermController sharedInstance] frontTextView] paste:nil];
-        [super rowSelected:sender];
+    NSString *string = [self insertableString];
+    if (!string) {
+        return;
+    }
+    NSPasteboard *thePasteboard = [NSPasteboard generalPasteboard];
+    [thePasteboard declareTypes:[NSArray arrayWithObject:NSPasteboardTypeString] owner:nil];
+    [thePasteboard setString:string forType:NSPasteboardTypeString];
+    NSResponder *responder = [[[[iTermController sharedInstance] frontTextView] window] firstResponder];
+    if ([responder respondsToSelector:@selector(paste:)]) {
+        [responder it_performNonObjectReturningSelector:@selector(paste:) withObject:nil];
+    }
+    [super rowSelected:sender];
+}
+
+- (void)previewCurrentRow {
+    NSString *string = [self insertableString];
+    if (string) {
+        [self.delegate popupPreview:string];
     }
 }
 

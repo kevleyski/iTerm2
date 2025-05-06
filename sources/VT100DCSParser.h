@@ -11,24 +11,34 @@
 #import "iTermParser.h"
 #import "CVector.h"
 
+NS_ASSUME_NONNULL_BEGIN
+
 @protocol VT100DCSParserHook<NSObject>
 
 @property(nonatomic, readonly) NSString *hookDescription;
 
+typedef NS_ENUM(NSUInteger, VT100DCSParserHookResult) {
+    // Can't continue until new input arrives.
+    VT100DCSParserHookResultBlocked,
+
+    // May have done a partial read. Check again. (formerly NO)
+    VT100DCSParserHookResultCanReadAgain,
+
+    // Totally broken. Unhook the parser.  (formerly YES)
+    VT100DCSParserHookResultUnhook
+};
+
 // Return YES if it should unhook.
-- (BOOL)handleInput:(iTermParserContext *)context
-              token:(VT100Token *)result;
+- (VT100DCSParserHookResult)handleInput:(iTermParserContext *)context
+           support8BitControlCharacters:(BOOL)support8BitControlCharacters
+                                  token:(VT100Token *)result;
 
 @end
 
-typedef NS_ENUM(NSInteger, DcsTermcapTerminfoRequestName) {
-    kDcsTermcapTerminfoRequestUnrecognizedName,
-    kDcsTermcapTerminfoRequestTerminalName,
-    kDcsTermcapTerminfoRequestiTerm2ProfileName,
-    kDcsTermcapTerminfoRequestTerminfoName
-};
-
-NS_INLINE BOOL isDCS(unsigned char *code, int len) {
+NS_INLINE BOOL isDCS(unsigned char *code, int len, BOOL support8BitControlCharacters) {
+    if (support8BitControlCharacters && len >= 1 && code[0] == VT100CC_C1_DCS) {
+        return YES;
+    }
     return (len >= 2 && code[0] == VT100CC_ESC && code[1] == 'P');
 }
 
@@ -68,10 +78,7 @@ typedef NS_ENUM(NSInteger, VT100DCSState) {
 @property(nonatomic, readonly) NSString *hookDescription;
 
 // Uniquely identifies this object so the main thread can avoid unhooking the wrong session.
-@property(nonatomic, readonly) NSString *uniqueID;
-
-+ (NSDictionary *)termcapTerminfoNameDictionary;  // string name -> DcsTermcapTerminfoRequestName
-+ (NSDictionary *)termcapTerminfoInverseNameDictionary;  // DcsTermcapTerminfoRequestName -> string name
+@property(nonatomic, readonly, nullable) NSString *uniqueID;
 
 - (void)decodeFromContext:(iTermParserContext *)context
                     token:(VT100Token *)result
@@ -81,7 +88,11 @@ typedef NS_ENUM(NSInteger, VT100DCSState) {
 // Reset to ground state, unhooking if needed.
 - (void)reset;
 
-- (void)startTmuxRecoveryMode;
+- (void)startTmuxRecoveryModeWithID:(NSString *)dcsID;
+- (void)cancelTmuxRecoveryMode;
+
+- (void)startConductorRecoveryModeWithID:(NSString *)dcsID;
+- (void)cancelConductorRecoveryMode;
 
 @end
 
@@ -95,3 +106,6 @@ typedef NS_ENUM(NSInteger, VT100DCSState) {
 @property(nonatomic, readonly) NSString *data;
 
 @end
+
+NS_ASSUME_NONNULL_END
+

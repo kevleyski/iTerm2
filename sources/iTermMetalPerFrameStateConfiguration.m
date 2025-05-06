@@ -6,10 +6,14 @@
 //
 
 #import "iTermMetalPerFrameStateConfiguration.h"
+#import "NSArray+iTerm.h"
 #import "NSColor+iTerm.h"
 #import "PTYTextView.h"
 #import "VT100Terminal.h"
+#import "iTerm2SharedARC-Swift.h"
+#import "iTermColorMap.h"
 #import "iTermController.h"
+#import "iTermMetalPerFrameState.h"
 #import "iTermTextDrawingHelper.h"
 
 static vector_float4 VectorForColor(NSColor *color) {
@@ -19,7 +23,8 @@ static vector_float4 VectorForColor(NSColor *color) {
 @implementation iTermMetalPerFrameStateConfiguration
 
 - (void)loadSettingsWithDrawingHelper:(iTermTextDrawingHelper *)drawingHelper
-                             textView:(PTYTextView *)textView {
+                             textView:(PTYTextView *)textView
+                                 glue:(id<iTermMetalPerFrameStateDelegate>)glue {
     _cellSize = drawingHelper.cellSize;
     _cellSizeWithoutSpacing = drawingHelper.cellSizeWithoutSpacing;
     _scale = textView.window.backingScaleFactor;
@@ -28,26 +33,52 @@ static vector_float4 VectorForColor(NSColor *color) {
                                   textView.dataSource.height);
     _baselineOffset = drawingHelper.baselineOffset;
     _colorMap = [textView.colorMap copy];
-    _asciiFont = textView.primaryFont;
-    _nonAsciiFont = textView.secondaryFont;
+    _fontTable = textView.fontTable;
     _useBoldFont = textView.useBoldFont;
     _useItalicFont = textView.useItalicFont;
     _useNonAsciiFont = textView.useNonAsciiFont;
-    _reverseVideo = textView.dataSource.terminal.reverseVideo;
-    _useBoldColor = textView.useBoldColor;
+    _reverseVideo = textView.dataSource.terminalReverseVideo;
+    _useCustomBoldColor = textView.useCustomBoldColor;
+    _brightenBold = textView.brightenBold;
     _thinStrokes = textView.thinStrokes;
     _isRetina = drawingHelper.isRetina;
     _isInKeyWindow = [textView isInKeyWindow];
     _textViewIsActiveSession = [textView.delegate textViewIsActiveSession];
+    _textViewIsFirstResponder = drawingHelper.textViewIsFirstResponder;
     _shouldDrawFilledInCursor = ([textView.delegate textViewShouldDrawFilledInCursor] || textView.keyFocusStolenCount);
     _blinkAllowed = textView.blinkAllowed;
     _blinkingItemsVisible = drawingHelper.blinkingItemsVisible;
-    _asciiAntialias = drawingHelper.asciiAntiAlias;
-    _nonasciiAntialias = _useNonAsciiFont ? drawingHelper.nonAsciiAntiAlias : _asciiAntialias;
+    const BOOL forceAA = (drawingHelper.forceAntialiasingOnRetina && drawingHelper.isRetina);
+    _asciiAntialias = drawingHelper.asciiAntiAlias || forceAA;
+    _nonasciiAntialias = (_useNonAsciiFont ? drawingHelper.nonAsciiAntiAlias : _asciiAntialias)  || forceAA;
     _useNativePowerlineGlyphs = drawingHelper.useNativePowerlineGlyphs;
+    _useSelectedTextColor = drawingHelper.useSelectedTextColor;
+    _ligaturesEnabled = drawingHelper.asciiLigatures || drawingHelper.nonAsciiLigatures;
     _showBroadcastStripes = drawingHelper.showStripes;
-    _processedDefaultBackgroundColor = [drawingHelper defaultBackgroundColor];
-    _timestampsEnabled = drawingHelper.showTimestamps;
+    NSColorSpace *colorSpace = textView.window.screen.colorSpace ?: [NSColorSpace it_defaultColorSpace];
+    _processedDefaultBackgroundColor = [[drawingHelper defaultBackgroundColor] colorUsingColorSpace:colorSpace];
+    _forceRegularBottomMargin = drawingHelper.forceRegularBottomMargin;
+    _processedDefaultTextColor = [[drawingHelper defaultTextColor] colorUsingColorSpace:colorSpace];
+    _blockHoverColor = [[drawingHelper blockHoverColor] colorUsingColorSpace:colorSpace];
+    _defaultTextColor = [[_colorMap colorForKey:kColorMapForeground] colorUsingColorSpace:colorSpace];
+    NSColor *selectionColor = [[_colorMap colorForKey:kColorMapSelection] colorUsingColorSpace:colorSpace];
+    _selectionColor = simd_make_float4((float)selectionColor.redComponent,
+                                       (float)selectionColor.greenComponent,
+                                       (float)selectionColor.blueComponent,
+                                       1.0);
+    NSArray<NSColor *> *scoc = drawingHelper.selectedCommandOutlineColors;
+    _selectedCommandOutlineColors[0] = scoc[0].vector;
+    _selectedCommandOutlineColors[1] = scoc[1].vector;
+    _shadeColor = drawingHelper.shadeColor.vector;
+    _shadeColor.xyz *= _shadeColor.w;
+    _buttonsBackgroundRects = [drawingHelper.buttonsBackgroundRects shiftedBy:NSMakePoint(0, -textView.visibleRect.origin.y)];
+
+    _lineStyleMarkColors = (iTermLineStyleMarkColors) {
+        .success = [[[drawingHelper defaultBackgroundColor] blendedWithColor:[iTermTextDrawingHelper successMarkColor] weight:0.5] colorUsingColorSpace:colorSpace].vector,
+        .other = [[[drawingHelper defaultBackgroundColor] blendedWithColor:[iTermTextDrawingHelper otherMarkColor] weight:0.5] colorUsingColorSpace:colorSpace].vector,
+        .failure = [[[drawingHelper defaultBackgroundColor] blendedWithColor:[iTermTextDrawingHelper errorMarkColor] weight:0.5] colorUsingColorSpace:colorSpace].vector
+    };
+
     _isFrontTextView = (textView == [[iTermController sharedInstance] frontTextView]);
     _unfocusedSelectionColor = VectorForColor([[_colorMap colorForKey:kColorMapSelection] colorDimmedBy:2.0/3.0
                                                                                        towardsGrayLevel:0.5]);
@@ -57,10 +88,11 @@ static vector_float4 VectorForColor(NSColor *color) {
     // Cursor guide
     _cursorGuideEnabled = drawingHelper.highlightCursorLine;
     _cursorGuideColor = drawingHelper.cursorGuideColor;
+    _colorSpace = textView.window.screen.colorSpace ?: [NSColorSpace it_defaultColorSpace];
 
     // Background image
-    _backgroundImageBlending = textView.blend;
-    _backgroundImageMode = textView.delegate.backgroundImageMode;
+    _backgroundImageBlend = [glue backgroundImageBlend];
+    _backgroundImageMode = [glue backroundImageMode];
     
     _edgeInsets = textView.delegate.textViewEdgeInsets;
     _edgeInsets.left++;
@@ -71,23 +103,53 @@ static vector_float4 VectorForColor(NSColor *color) {
     _edgeInsets.right *= _scale;
 
     _asciiUnderlineDescriptor.color = VectorForColor([_colorMap colorForKey:kColorMapUnderline]);
-    _asciiUnderlineDescriptor.offset = [drawingHelper yOriginForUnderlineForFont:_asciiFont.font
+    _asciiUnderlineDescriptor.offset = [drawingHelper yOriginForUnderlineForFont:_fontTable.asciiFont.font
                                                                          yOffset:0
                                                                       cellHeight:_cellSize.height];
-    _asciiUnderlineDescriptor.thickness = [drawingHelper underlineThicknessForFont:_asciiFont.font];
+    _asciiUnderlineDescriptor.thickness = [drawingHelper underlineThicknessForFont:_fontTable.asciiFont.font];
 
-    _nonAsciiUnderlineDescriptor.color = _asciiUnderlineDescriptor.color;
-    _nonAsciiUnderlineDescriptor.offset = [drawingHelper yOriginForUnderlineForFont:_nonAsciiFont.font
-                                                                            yOffset:0
-                                                                         cellHeight:_cellSize.height];
-    _nonAsciiUnderlineDescriptor.thickness = [drawingHelper underlineThicknessForFont:_nonAsciiFont.font];
+    if (_useNonAsciiFont) {
+        _nonAsciiUnderlineDescriptor.color = _asciiUnderlineDescriptor.color;
+        _nonAsciiUnderlineDescriptor.offset = [drawingHelper yOriginForUnderlineForFont:_fontTable.defaultNonASCIIFont.font
+                                                                                yOffset:0
+                                                                             cellHeight:_cellSize.height];
+        _nonAsciiUnderlineDescriptor.thickness = [drawingHelper underlineThicknessForFont:_fontTable.defaultNonASCIIFont.font];
+    } else {
+        _nonAsciiUnderlineDescriptor = _asciiUnderlineDescriptor;
+    }
+    // We use the ASCII font's color and underline thickness for strikethrough.
+    _strikethroughUnderlineDescriptor.color = _asciiUnderlineDescriptor.color;
+    _strikethroughUnderlineDescriptor.offset = [drawingHelper yOriginForStrikethroughForFont:_fontTable.asciiFont.font
+                                                                                     yOffset:0
+                                                                                  cellHeight:_cellSize.height];
+    _strikethroughUnderlineDescriptor.thickness = [drawingHelper strikethroughThicknessForFont:_fontTable.asciiFont.font];
+
+    if (@available(macOS 11, *)) {
+        _terminalButtons = [textView.terminalButtons mapWithBlock:^id _Nullable(iTermTerminalButton * _Nonnull button) {
+            return [button clone];
+        }];
+    }
 
     // Indicators
-    NSColor *color = [[textView indicatorFullScreenFlashColor] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    NSColor *color = [[textView indicatorFullScreenFlashColor] colorUsingColorSpace:_colorSpace];
     _fullScreenFlashColor = simd_make_float4(color.redComponent,
                                              color.greenComponent,
                                              color.blueComponent,
                                              textView.indicatorsHelper.fullScreenAlpha);
+
+    // Timestamps
+    _timestampsEnabled = drawingHelper.shouldShowTimestamps;
+    _timestampFont = _fontTable.asciiFont.font;
+
+    // Offscreen command line
+    if (drawingHelper.offscreenCommandLine) {
+        _offscreenCommandLineBackgroundColor = [textView.drawingHelper.offscreenCommandLineBackgroundColor colorUsingColorSpace:_colorSpace];
+        _offscreenCommandLineOutlineColor = [textView.drawingHelper.offscreenCommandLineOutlineColor colorUsingColorSpace:_colorSpace];
+    }
+
+    _selectedCommandRegion = drawingHelper.selectedCommandRegion;
+    _selectedCommandRegion.location += drawingHelper.totalScrollbackOverflow;
+    _totalScrollbackOverflow = drawingHelper.totalScrollbackOverflow;
 }
 
 @end

@@ -1,10 +1,11 @@
 #import "iTermBroadcastStripesRenderer.h"
 
 #import "iTermMetalBufferPool.h"
+#import "iTermSharedImageStore.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface iTermBroadcastStripesRendererTransientState : iTermMetalRendererTransientState
+@interface iTermBroadcastStripesRendererTransientState : iTermMetalCellRendererTransientState
 @property (nonatomic, strong) id<MTLTexture> texture;
 @property (nonatomic) CGSize size;
 @end
@@ -22,23 +23,27 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 @implementation iTermBroadcastStripesRenderer {
-    iTermMetalRenderer *_metalRenderer;
+    iTermMetalCellRenderer *_metalRenderer;
     id<MTLTexture> _texture;
     CGSize _size;
     iTermMetalBufferPool *_verticesPool;
+    NSColorSpace *_colorSpace;
+    NSImage *image;
+    iTermImageWrapper *_imageWrapper;
 }
 
 - (nullable instancetype)initWithDevice:(id<MTLDevice>)device {
     self = [super init];
     if (self) {
-        _metalRenderer = [[iTermMetalRenderer alloc] initWithDevice:device
-                                                 vertexFunctionName:@"iTermBroadcastStripesVertexShader"
-                                               fragmentFunctionName:@"iTermBroadcastStripesFragmentShader"
-                                                           blending:[iTermMetalBlending compositeSourceOver]
-                                                transientStateClass:[iTermBroadcastStripesRendererTransientState class]];
+        _metalRenderer = [[iTermMetalCellRenderer alloc] initWithDevice:device
+                                                     vertexFunctionName:@"iTermBroadcastStripesVertexShader"
+                                                   fragmentFunctionName:@"iTermBroadcastStripesFragmentShader"
+                                                               blending:[iTermMetalBlending atop]
+                                                         piuElementSize:1
+                                                    transientStateClass:[iTermBroadcastStripesRendererTransientState class]];
         NSImage *image = [[NSBundle bundleForClass:self.class] imageForResource:@"BackgroundStripes"];
+        _imageWrapper = [iTermImageWrapper withImage:image];
         _size = image.size;
-        _texture = [_metalRenderer textureFromImage:image context:nil];
         _verticesPool = [[iTermMetalBufferPool alloc] initWithDevice:device bufferSize:sizeof(iTermVertex) * 6];
     }
     return self;
@@ -52,8 +57,18 @@ NS_ASSUME_NONNULL_BEGIN
     return iTermMetalFrameDataStatPqCreateBroadcastStripesTS;
 }
 
+- (void)setColorSpace:(NSColorSpace *)colorSpace {
+    if (colorSpace == _colorSpace) {
+        return;
+    }
+    _colorSpace = colorSpace;
+    _texture = [_metalRenderer textureFromImage:_imageWrapper
+                                        context:nil
+                                     colorSpace:colorSpace];
+}
+
 - (void)drawWithFrameData:(iTermMetalFrameData *)frameData
-           transientState:(__kindof iTermMetalRendererTransientState *)transientState {
+           transientState:(__kindof iTermMetalCellRendererTransientState *)transientState {
     iTermBroadcastStripesRendererTransientState *tState = transientState;
     [_metalRenderer drawWithTransientState:tState
                              renderEncoder:frameData.renderEncoder
@@ -64,8 +79,8 @@ NS_ASSUME_NONNULL_BEGIN
                                   textures:@{ @(iTermTextureIndexPrimary): tState.texture }];
 }
 
-- (nullable __kindof iTermMetalRendererTransientState *)createTransientStateForConfiguration:(iTermRenderConfiguration *)configuration
-                                                                               commandBuffer:(id<MTLCommandBuffer>)commandBuffer {
+- (nullable __kindof iTermMetalRendererTransientState *)createTransientStateForCellConfiguration:(iTermCellRenderConfiguration *)configuration
+                                                                                   commandBuffer:(id<MTLCommandBuffer>)commandBuffer {
     if (!_enabled) {
         return nil;
     }
@@ -83,18 +98,27 @@ NS_ASSUME_NONNULL_BEGIN
     size.height *= tState.configuration.scale;
     tState.size = size;
 
-    const vector_uint2 viewportSize = tState.configuration.viewportSize;
-    const float maxX = viewportSize.x / size.width;
-    const float maxY = viewportSize.y / size.height;
+    // The quad is exactly the area where text can appear, excluding margins.
+    const vector_uint2 viewportSize = tState.configuration.viewportSizeExcludingLegacyScrollbars;
+    const NSEdgeInsets margins = tState.margins;
+    const float destRight = margins.left + tState.cellConfiguration.gridSize.width * tState.cellConfiguration.cellSize.width;
+    const float destHeight = viewportSize.y - tState.configuration.extraMargins.top - tState.configuration.extraMargins.bottom;
+    const float destBottom = tState.configuration.extraMargins.bottom;
+    const float destTop = destBottom + destHeight;
+    const float destLeft = margins.left;
+
+    const float textureWidth = (destRight - destLeft) / size.width;
+    const float textureHeight = destHeight / size.height;
+
     const iTermVertex vertices[] = {
         // Pixel Positions, Texture Coordinates
-        { { viewportSize.x, 0 },              { maxX, 0 } },
-        { { 0,              0 },              { 0,    0 } },
-        { { 0, viewportSize.y },              { 0,    maxY } },
+        { { destRight, destBottom },     { textureWidth, 0 } },
+        { { destLeft,  destBottom },     { 0,            0 } },
+        { { destLeft,  destTop    },     { 0,            textureHeight } },
 
-        { { viewportSize.x, 0 },              { maxX, 0 } },
-        { { 0,              viewportSize.y }, { 0,    maxY } },
-        { { viewportSize.x, viewportSize.y }, { maxX, maxY } },
+        { { destRight, destBottom },     { textureWidth, 0 } },
+        { { destLeft,  destTop    },     { 0,            textureHeight } },
+        { { destRight, destTop    },     { textureWidth, textureHeight } },
     };
     tState.vertexBuffer = [_verticesPool requestBufferFromContext:tState.poolContext
                                                         withBytes:vertices

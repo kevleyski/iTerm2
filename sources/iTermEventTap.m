@@ -1,30 +1,31 @@
 #import <Cocoa/Cocoa.h>
 
 #import "DebugLogging.h"
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermApplication.h"
 #import "iTermApplicationDelegate.h"
 #import "iTermEventTap.h"
+#import "iTermFlagsChangedNotification.h"
 #import "iTermNotificationCenter.h"
+#import "iTermSecureKeyboardEntryController.h"
+#import "iTermWeakBox.h"
 #import "NSArray+iTerm.h"
 
 NSString *const iTermEventTapEventTappedNotification = @"iTermEventTapEventTappedNotification";
 
-@interface iTermEventTap()
-@property(nonatomic, strong) NSMutableArray<iTermWeakReference<id<iTermEventTapObserver>> *> *observers;
-@end
-
 @implementation iTermEventTap {
     // When using an event tap, these will be non-NULL.
     CFMachPortRef _machPort;
-    CFRunLoopSourceRef _eventSource;  // weak
+    CFRunLoopSourceRef _eventSource;
     CGEventMask _types;
+    NSMutableArray<iTermWeakBox<id<iTermEventTapObserver>> *> *_weakObservers;
 }
 
 - (instancetype)initWithEventTypes:(CGEventMask)types {
     self = [super init];
     if (self) {
         _types = types;
-        _observers = [[NSMutableArray alloc] init];
+        _weakObservers = [[NSMutableArray alloc] init];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(secureInputDidChange:)
                                                      name:iTermDidToggleSecureInputNotification
@@ -33,8 +34,17 @@ NSString *const iTermEventTapEventTappedNotification = @"iTermEventTapEventTappe
     return self;
 }
 
+- (void)dealloc {
+    CFRelease(_eventSource);
+}
+
 - (void)secureInputDidChange:(NSNotification *)notification {
-    [self setEnabled:[self shouldBeEnabled]];
+    // Avoid trying to enable it if the process is not trusted because this gets called when the
+    // app is activated/deactivated
+    const BOOL shouldBeEnabled = self.shouldBeEnabled;
+    if (!shouldBeEnabled || [[iTermPermissionsHelper accessibility] status]) {
+        [self setEnabled:shouldBeEnabled];
+    }
 }
 
 #pragma mark - APIs
@@ -54,19 +64,21 @@ NSString *const iTermEventTapEventTappedNotification = @"iTermEventTapEventTappe
 }
 
 - (void)addObserver:(id<iTermEventTapObserver>)observer {
-    [_observers addObject:observer.weakSelf];
+    DLog(@"Add observer %@", observer);
+    [_weakObservers addObject:[iTermWeakBox boxFor:observer]];
     [self setEnabled:[self shouldBeEnabled]];
 }
 
 - (void)removeObserver:(id<iTermEventTapObserver>)observer {
-    [_observers removeObject:observer];
+    DLog(@"Remove observer %@", observer);
+    [_weakObservers removeWeakBoxedObject:observer];
     [self setEnabled:[self shouldBeEnabled]];
 }
 
 #pragma mark - Accessors
 
 - (void)setEnabled:(BOOL)enabled {
-    DLog(@"iTermEventTap setEnabled:%@", @(enabled));
+    DLog(@"iTermEventTap setEnabled:%@\n%@", @(enabled), [NSThread callStackSymbols]);
     if (enabled && !self.isEnabled) {
         [self startEventTap];
     } else if (!enabled && self.isEnabled) {
@@ -81,11 +93,18 @@ NSString *const iTermEventTapEventTappedNotification = @"iTermEventTapEventTappe
 #pragma mark - Private
 
 - (BOOL)shouldBeEnabled {
+    DLog(@"Before pruning observers are %@", self.weakObservers);
     [self pruneReleasedObservers];
-    if (IsSecureEventInputEnabled()) {
+    DLog(@"%@ remappingDelegate=%@ observers=%@", self, self.remappingDelegate, self.weakObservers);
+    if (![self allowedByEventTap]) {
+        DLog(@"Event tap %@ not allowed by secure input", self.class);
         return NO;
     }
-    return (self.remappingDelegate != nil) || (self.observers.count > 0);
+    return (self.remappingDelegate != nil) || (self.weakObservers.count > 0);
+}
+
+- (BOOL)allowedByEventTap {
+    return !IsSecureEventInputEnabled();
 }
 
 /*
@@ -103,7 +122,15 @@ static CGEventRef iTermEventTapCallback(CGEventTapProxy proxy,
                                         CGEventRef event,
                                         void *refcon) {
     iTermEventTap *eventTap = (__bridge id)refcon;
-    DLog(@"event tap %@ for %@", eventTap, event);
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        DLog(@"event tap special type %@", @(type));
+    } else {
+        @try {
+            DLog(@"event tap %@ for %@", eventTap, [NSEvent eventWithCGEvent:event]);
+        } @catch (NSException *exception) {
+            DLog(@"Exception while trying to log event");
+        }
+    }
     return [eventTap eventTapCallbackWithProxy:proxy type:type event:event];
 }
 
@@ -135,7 +162,9 @@ static CGEventRef iTermEventTapCallback(CGEventTapProxy proxy,
 }
 
 - (CGEventRef)handleEvent:(CGEventRef)originalEvent ofType:(CGEventType)type {
-    CGEventRef event = [self.remappingDelegate remappedEventFromEventTappedWithType:type event:originalEvent];
+    CGEventRef event = [self.remappingDelegate remappedEventFromEventTap:self
+                                                                withType:type
+                                                                   event:originalEvent];
 
     DLog(@"Notifying observers");
     [self postEventToObservers:event type:type];
@@ -144,16 +173,14 @@ static CGEventRef iTermEventTapCallback(CGEventTapProxy proxy,
 }
 
 - (void)postEventToObservers:(CGEventRef)event type:(CGEventType)type {
-    for (id<iTermEventTapObserver> observer in self.observers) {
-        [observer eventTappedWithType:type event:event];
+    for (iTermWeakBox<id<iTermEventTapObserver>> *box in [self.weakObservers copy]) {
+        [box.object eventTappedWithType:type event:event];
     }
     [self pruneReleasedObservers];
 }
 
 - (void)pruneReleasedObservers {
-    [_observers removeObjectsPassingTest:^BOOL(iTermWeakReference<id<iTermEventTapObserver>> *anObject) {
-        return anObject.weaklyReferencedObject == nil;
-    }];
+    [_weakObservers pruneEmptyWeakBoxes];
 }
 
 - (void)reEnable {
@@ -187,6 +214,7 @@ static CGEventRef iTermEventTapCallback(CGEventTapProxy proxy,
     CFRunLoopRemoveSource(CFRunLoopGetCurrent(),
                           _eventSource,
                           kCFRunLoopCommonModes);
+    CFRelease(_eventSource);
     _eventSource = NULL;
 
     // Switch off the event taps.
@@ -209,7 +237,7 @@ static CGEventRef iTermEventTapCallback(CGEventTapProxy proxy,
     if (!_machPort) {
         XLog(@"CGEventTapCreate failed");
         AppendPinnedDebugLogMessage(@"EventTap", @"CGEventTapCreate failed");
-        AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge id)kAXTrustedCheckOptionPrompt: @YES});
+        [[iTermPermissionsHelper accessibility] request];
         goto error;
     }
 
@@ -228,7 +256,6 @@ static CGEventRef iTermEventTapCallback(CGEventTapProxy proxy,
     CFRunLoopAddSource(CFRunLoopGetCurrent(),
                        _eventSource,
                        kCFRunLoopCommonModes);
-    CFRelease(_eventSource);
 
     return YES;
 
@@ -253,13 +280,21 @@ error:
 
 @implementation iTermFlagsChangedEventTap
 
-+ (instancetype)sharedInstance {
++ (instancetype)sharedInstanceCreatingIfNeeded:(BOOL)createIfNeeded {
+    ITAssertWithMessage([NSThread isMainThread], @"Don't call this off the main thread because it's not thread-safe");
     static dispatch_once_t onceToken;
     static id instance;
+    if (!createIfNeeded) {
+        return instance;
+    }
     dispatch_once(&onceToken, ^{
         instance = [[iTermFlagsChangedEventTap alloc] initPrivate];
     });
     return instance;
+}
+
++ (instancetype)sharedInstance {
+    return [self sharedInstanceCreatingIfNeeded:YES];
 }
 
 - (instancetype)initPrivate {
@@ -278,21 +313,80 @@ error:
     if (remappingDelegate == nil) {
         remappingDelegate = self;
     }
+    DLog(@"Set remapping delegate to %@\n%@", remappingDelegate, [NSThread callStackSymbols]);
     [super setRemappingDelegate:remappingDelegate];
 }
 
 - (void)flagsDidChange:(iTermFlagsChangedNotification *)notification {
-    if (@available(macOS 10.13, *)) {
-        if (IsSecureEventInputEnabled()) {
-            DLog(@"Injecting flagsChanged event %@ because secure input is on", notification.event);
-            [self handleEvent:notification.event.CGEvent ofType:kCGEventFlagsChanged];
-        }
+    if (_count == 0) {
+        DLog(@"Injecting flagsChanged event %@ because count is 0", notification.event);
+        [self handleEvent:notification.event.CGEvent ofType:kCGEventFlagsChanged];
+    } else {
+        DLog(@"NOT injecting flagsChanged event because count is %@", @(_count));
     }
+    [self resetCount];
+}
+
+- (CGEventRef)handleEvent:(CGEventRef)originalEvent ofType:(CGEventType)type {
+    _count++;
+    DLog(@"Incr count to %@", @(_count));
+    return [super handleEvent:originalEvent ofType:type];
+}
+
+- (void)resetCount {
+    DLog(@"Reset count");
+    _count = 0;
+}
+
+- (BOOL)allowedByEventTap {
+    return YES;
 }
 
 #pragma mark - iTermEventTapRemappingDelegate
 
-- (CGEventRef)remappedEventFromEventTappedWithType:(CGEventType)type event:(CGEventRef)event {
+- (CGEventRef)remappedEventFromEventTap:(iTermEventTap *)eventTap
+                               withType:(CGEventType)type
+                                  event:(CGEventRef)event {
+    return event;
+}
+
+@end
+
+@interface iTermKeyDownEventTap()<iTermEventTapRemappingDelegate>
+@end
+
+@implementation iTermKeyDownEventTap
+
++ (instancetype)sharedInstanceCreatingIfNeeded:(BOOL)createIfNeeded {
+    ITAssertWithMessage([NSThread isMainThread], @"Don't call this off the main thread because it's not thread-safe");
+    static dispatch_once_t onceToken;
+    static id instance;
+    if (!createIfNeeded) {
+        return instance;
+    }
+    dispatch_once(&onceToken, ^{
+        instance = [[iTermKeyDownEventTap alloc] initPrivate];
+    });
+    return instance;
+}
+
++ (instancetype)sharedInstance {
+    return [self sharedInstanceCreatingIfNeeded:YES];
+}
+
+- (instancetype)initPrivate {
+    self = [super initWithEventTypes:CGEventMaskBit(kCGEventKeyDown)];
+    if (self) {
+        self.remappingDelegate = self;
+    }
+    return self;
+}
+
+#pragma mark - iTermEventTapRemappingDelegate
+
+- (CGEventRef)remappedEventFromEventTap:(iTermEventTap *)eventTap
+                               withType:(CGEventType)type
+                                  event:(CGEventRef)event {
     return event;
 }
 

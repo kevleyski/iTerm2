@@ -6,18 +6,191 @@
 //
 //
 
+#import <AppKit/AppKit.h>
+
 #import "NSObject+iTerm.h"
+
+#import "iTermAdvancedSettingsModel.h"
+#import "iTermWeakProxy.h"
+#import "NSJSONSerialization+iTerm.h"
 
 #import <objc/runtime.h>
 
 @implementation iTermDelayedPerform
 @end
 
+@interface NSNumber(Approximate)
+@end
+
+@implementation NSNumber(Approximate)
+
+- (BOOL)isApproximatelyEqual:(id)obj epsilon:(double)epsilon {
+    if (self == obj) {
+        return YES;
+    }
+    if ([self isEqual:obj]) {
+        return YES;
+    }
+    NSNumber *other = [NSNumber castFrom:obj];
+    if (!other) {
+        return NO;
+    }
+    return fabs(self.doubleValue - other.doubleValue) < epsilon;
+}
+
+@end
+
+@interface NSDictionary(Approximate)
+@end
+
+@implementation NSDictionary(Approximate)
+
+- (BOOL)isApproximatelyEqual:(id)obj epsilon:(double)epsilon {
+    if (self == obj) {
+        return YES;
+    }
+    if ([self isEqual:obj]) {
+        return YES;
+    }
+    NSDictionary *other = [NSDictionary castFrom:obj];
+    if (!other) {
+        return NO;
+    }
+    if (self.count != other.count) {
+        return NO;
+    }
+    for (NSString *key in self.allKeys) {
+        id myValue = self[key];
+        id otherValue = other[key];
+        if (!otherValue) {
+            return NO;
+        }
+        if (![NSObject object:myValue isApproximatelyEqualToObject:otherValue epsilon:epsilon]) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+@end
+
+@interface NSArray(Approximate)
+@end
+
+@implementation NSArray(Approximate)
+
+- (BOOL)isApproximatelyEqual:(id)obj epsilon:(double)epsilon {
+    if (self == obj) {
+        return YES;
+    }
+    if ([self isEqual:obj]) {
+        return YES;
+    }
+    NSArray *other = [NSArray castFrom:obj];
+    if (!other) {
+        return NO;
+    }
+    if (self.count != other.count) {
+        return NO;
+    }
+    const NSInteger count = self.count;
+    for (NSInteger i = 0; i < count; i++) {
+        if (![NSObject object:self[i] isApproximatelyEqualToObject:other[i] epsilon:epsilon]) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
+@end
+
+@protocol iTermPlaceholderProtocol
+- (void)showMenu:(id)sender;
+@end
+
+@protocol iTermNSThemeZoomWidgetCell
+- (void)stopTracking:(struct CGPoint)arg1 at:(struct CGPoint)arg2 inView:(id)arg3 mouseIsUp:(BOOL)arg4;
+- (NSView *)controlView;
+@end
+
 @implementation NSObject (iTerm)
+
+static void (*originalNSThemeZoomWidgetCellShowMenuIMP)(id, SEL, id) = NULL;
+
++ (void)load {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // Get the private class by name
+        Class class = NSClassFromString(@"_NSThemeZoomWidgetCell");
+
+        if (class) {
+            SEL originalSelector = @selector(showMenu:); // Adjust to include the argument
+            SEL swizzledSelector = @selector(swizzled__NSThemeZoomWidgetCell_showMenu:);
+
+            Method originalMethod = class_getInstanceMethod(class, originalSelector);
+            Method swizzledMethod = class_getInstanceMethod(self, swizzledSelector);
+
+            if (originalMethod) {
+                // Store the original implementation, which takes an id argument
+                originalNSThemeZoomWidgetCellShowMenuIMP = (void (*)(id, SEL, id))method_getImplementation(originalMethod);
+
+                // Perform the swizzling
+                method_exchangeImplementations(originalMethod, swizzledMethod);
+            } else {
+                // If the original method doesn't exist, add it and bind it to swizzled method
+                BOOL didAddMethod =
+                    class_addMethod(class,
+                                    originalSelector,
+                                    method_getImplementation(swizzledMethod),
+                                    method_getTypeEncoding(swizzledMethod));
+
+                if (!didAddMethod) {
+                    NSLog(@"Failed to add swizzled method");
+                }
+            }
+        }
+    });
+}
+
+- (void)swizzled__NSThemeZoomWidgetCell_showMenu:(id)arg {
+    if (originalNSThemeZoomWidgetCellShowMenuIMP && [iTermAdvancedSettingsModel enableZoomMenu]) {
+        originalNSThemeZoomWidgetCellShowMenuIMP(self, @selector(showMenu:), arg);
+    }
+}
 
 + (BOOL)object:(NSObject *)a isEqualToObject:(NSObject *)b {
     if (a == b) {
         return YES;
+    }
+    return [a isEqual:b];
+}
+
++ (BOOL)object:(NSObject * _Nullable)a isNullablyEqualToObject:(NSObject * _Nullable)b epsilon:(CGFloat)epsilon {
+    if ([self object:a isApproximatelyEqualToObject:b epsilon:epsilon]) {
+        return YES;
+    }
+    if (a == nil && [b it_hasZeroValue]) {
+        return YES;
+    }
+    if (b == nil && [a it_hasZeroValue]) {
+        return YES;
+    }
+    return NO;
+}
+
+- (BOOL)it_hasZeroValue {
+    return NO;
+}
+
++ (BOOL)object:(__kindof NSObject *)a isApproximatelyEqualToObject:(__kindof NSObject *)b epsilon:(double)epsilon {
+    if (a == b) {
+        return YES;
+    }
+    if ([a respondsToSelector:@selector(isApproximatelyEqual:epsilon:)]) {
+        return [a isApproximatelyEqual:b epsilon:epsilon];
+    }
+    if ([b respondsToSelector:@selector(isApproximatelyEqual:epsilon:)]) {
+        return [b isApproximatelyEqual:a epsilon:epsilon];
     }
     return [a isEqual:b];
 }
@@ -28,6 +201,29 @@
     } else {
         return nil;
     }
+}
+
++ (instancetype)forceCastFrom:(id)object {
+    assert(object);
+    id result = [self castFrom:object];
+    assert(result);
+    return result;
+}
+
++ (void)it_enumerateDynamicProperties:(void (^)(NSString *name))block {
+    unsigned int propcount = 0;
+    objc_property_t *props = class_copyPropertyList(self, &propcount);
+    for (unsigned int i = 0; i < propcount; i++) {
+        objc_property_t prop = props[i];
+        char *value = property_copyAttributeValue(prop, "D");
+        if (value == nil) {
+            continue;
+        }
+        free(value);
+        const char *name = property_getName(prop);
+        block([NSString stringWithUTF8String:name]);
+    }
+    free(props);
 }
 
 - (void)performSelectorWithObjects:(NSArray *)tuple {
@@ -74,21 +270,21 @@
     }
 }
 
-- (void)it_setAssociatedObject:(id)associatedObject forKey:(void *)key {
+- (void)it_setAssociatedObject:(id)associatedObject forKey:(const void *)key {
     objc_setAssociatedObject(self,
                              key,
                              associatedObject,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-- (void)it_setWeakAssociatedObject:(id)associatedObject forKey:(void *)key {
+- (void)it_setWeakAssociatedObject:(id)associatedObject forKey:(const void *)key {
     objc_setAssociatedObject(self,
                              key,
                              associatedObject,
                              OBJC_ASSOCIATION_ASSIGN);
 }
 
-- (id)it_associatedObjectForKey:(void *)key {
+- (id)it_associatedObjectForKey:(const void *)key {
     return objc_getAssociatedObject(self, key);
 }
 
@@ -96,6 +292,18 @@
     IMP imp = [self methodForSelector:selector];
     void (*func)(id, SEL, id) = (void *)imp;
     func(self, selector, object);
+}
+
+- (void)it_performNonObjectReturningSelector:(SEL)selector withObject:(id)object1 withObject:(id)object2 {
+    IMP imp = [self methodForSelector:selector];
+    void (*func)(id, SEL, id, id) = (void *)imp;
+    func(self, selector, object1, object2);
+}
+
+- (void)it_performNonObjectReturningSelector:(SEL)selector withObject:(id)object1 object:(id)object2 object:(id)object3 {
+    IMP imp = [self methodForSelector:selector];
+    void (*func)(id, SEL, id, id, id) = (void *)imp;
+    func(self, selector, object1, object2, object3);
 }
 
 - (id)it_performAutoreleasedObjectReturningSelector:(SEL)selector withObject:(id)object {
@@ -130,7 +338,7 @@
     NSDictionary *dictionary = [NSDictionary castFrom:self];
     if (dictionary) {
         for (NSObject *key in dictionary) {
-            if (![key it_isSafeForPlist]) {
+            if (![key isKindOfClass:[NSString class]]) {
                 return NO;
             }
             if (![dictionary[key] it_isSafeForPlist]) {
@@ -185,11 +393,62 @@
             if (oops) {
                 return oops;
             }
+            if (![key isKindOfClass:[NSString class]]) {
+                return [NSString stringWithFormat:@"key %@ in dictionary at %@ is %@, not NSString", key, path, NSStringFromClass([key class])];
+            }
         }
         return nil;
     }
 
     return [NSString stringWithFormat:@"%@ has type %@", path, NSStringFromClass([self class])];
+}
+
+- (instancetype)it_weakProxy {
+    return (id)[[iTermWeakProxy alloc] initWithObject:self];
+}
+
+- (NSString *)tastefulDescription {
+    return [self description];
+}
+
+- (id)it_jsonSafeValue {
+    return self;
+}
+
+- (NSString *)it_addressString {
+    return [NSString stringWithFormat:@"%p", self];
+}
+
+- (NSData *)it_keyValueCodedData {
+    NSKeyedArchiver *archiver = [[NSKeyedArchiver alloc] initRequiringSecureCoding:NO];
+    [archiver encodeObject:self forKey:@"root"];
+    [archiver finishEncoding];
+    return [archiver encodedData];
+}
+
++ (instancetype)it_fromKeyValueCodedData:(NSData *)data {
+    NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:nil];
+    if (!unarchiver) {
+        return nil;
+    }
+    NSArray *classes = @[
+        [NSArray class],
+        [NSDictionary class],
+        [NSString class],
+        [NSNumber class],
+        [NSDate class]
+    ];
+    id object = [self castFrom:[unarchiver decodeObjectOfClasses:[NSSet setWithArray:classes] forKey:@"root"]];
+    [unarchiver finishDecoding];
+    return object;
+}
+
+- (NSString *)jsonEncoded {
+    return [NSJSONSerialization it_jsonStringForObject:self];
+}
+
++ (instancetype)fromJsonEncodedString:(NSString *)string {
+    return [self castFrom:[NSJSONSerialization it_objectForJsonString:string]];
 }
 
 @end

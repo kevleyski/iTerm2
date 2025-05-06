@@ -44,6 +44,10 @@ typedef enum {
     DVRFrameTypeDiffFrame
 } DVRFrameType;
 
+@protocol DVREncodable<NSObject>
+- (NSData *)dvrEncodableData;
+@end
+
 @interface DVRBuffer : NSObject
 
 // Returns first/last used keys.
@@ -57,12 +61,16 @@ typedef enum {
 @property(nonatomic, readonly, getter=isEmpty) BOOL empty;
 @property(nonatomic, readonly) NSDictionary *dictionaryValue;
 
+@property(nonatomic, readonly) int migrateFromVersion;
+
 - (instancetype)initWithBufferCapacity:(long long)capacity;
 
 // Reserve a chunk of memory. Returns true if blocks had to be freed to make room.
 // You can get a pointer to the reserved memory with -[scratch].
 - (BOOL)reserve:(long long)length;
 - (char*)scratch;
+
+- (ptrdiff_t)offsetOfPointer:(char *)pointer;
 
 // Allocate a block. Returns the assigned key. You must have called -[reserve] first.
 // length may less than reserved amount.
@@ -79,8 +87,9 @@ typedef enum {
 
 // Look up an index entry by key.
 - (DVRIndexEntry*)entryForKey:(long long)key;
-- (BOOL)loadFromDictionary:(NSDictionary *)dict;
+- (BOOL)loadFromDictionary:(NSDictionary *)dict version:(int)version;
 - (DVRIndexEntry *)firstEntryWithTimestampAfter:(long long)timestamp;
+- (NSData *)dataAtOffset:(ptrdiff_t)offset length:(size_t)length;
 
 @end
 

@@ -17,11 +17,16 @@
 @property(nonatomic, readonly) NSData *streamData;
 @property(atomic, assign) NSStringEncoding encoding;
 @property(nonatomic, readonly) int streamLength;
+@property(atomic) BOOL literalMode;
 
 - (void)putStreamData:(const char *)buffer length:(int)length;
 - (void)clearStream;
 - (void)forceUnhookDCS:(NSString *)uniqueID;
-- (void)startTmuxRecoveryMode;
+- (void)startTmuxRecoveryModeWithID:(NSString *)dcsID;
+- (void)cancelTmuxRecoveryMode;
+
+- (NSInteger)startConductorRecoveryModeWithID:(NSString *)dcsID tree:(NSDictionary *)tree;
+- (void)cancelConductorRecoveryMode;
 
 // CVector was created for this method. Because so many VT100Token*s are created and destroyed,
 // too much time is spent adjusting their retain counts. Since an iTermObjectPool is used to avoid
@@ -31,5 +36,8 @@
 
 // Reset all state.
 - (void)reset;
+
+// Reset but preserve SSH state.
+- (void)resetExceptSSH;
 
 @end

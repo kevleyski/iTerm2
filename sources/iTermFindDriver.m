@@ -8,9 +8,15 @@
 #import "iTermFindDriver.h"
 
 #import "DebugLogging.h"
+#import "FindContext.h"
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "iTermFindPasteboard.h"
+#import "iTermSearchHistory.h"
 #import "iTermTuple.h"
 #import "NSArray+iTerm.h"
+#import "NSStringITerm.h"
+#import "NSObject+iTerm.h"
 
 static iTermFindMode gFindMode;
 static NSString *gSearchString;
@@ -19,7 +25,7 @@ static NSString *gSearchString;
 
 @property(nonatomic, assign) iTermFindMode mode;
 @property(nonatomic, copy) NSString *string;
-
+@property(nonatomic, copy) void (^progress)(NSRange);
 @end
 
 @implementation FindState
@@ -37,11 +43,8 @@ static NSString *gSearchString;
 @implementation iTermFindDriver {
     FindState *_savedState;
     FindState *_state;
-    
-    // Find runs out of a timer so that if you have a huge buffer then it
-    // doesn't lock up. This timer runs the show.
-    NSTimer *_timer;
-    
+    iTermSearchEngine *_searchEngine;
+
     // Last time the text field was edited.
     NSTimeInterval _lastEditTime;
     enum {
@@ -51,6 +54,10 @@ static NSString *gSearchString;
         kFindViewDelayStateActiveMedium,
         kFindViewDelayStateActiveLong,
     } _delayState;
+}
+
++ (iTermFindMode)mode {
+    return gFindMode;
 }
 
 + (void)loadUserDefaults {
@@ -76,10 +83,12 @@ static NSString *gSearchString;
     }
 }
 
-- (instancetype)initWithViewController:(NSViewController<iTermFindViewController> *)viewController {
+- (instancetype)initWithViewController:(NSViewController<iTermFindViewController> *)viewController
+                  filterViewController:(NSViewController<iTermFilterViewController> *)filterViewController {
     self = [super init];
     if (self) {
         _viewController = viewController;
+        _filterViewController = filterViewController;
         viewController.driver = self;
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
@@ -87,17 +96,18 @@ static NSString *gSearchString;
         });
         _state = [[FindState alloc] init];
         _state.mode = gFindMode;
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(loadFindStringFromSharedPasteboard:)
-                                                     name:@"iTermLoadFindStringFromSharedPasteboard"
-                                                   object:nil];
+        __weak __typeof(self) weakSelf = self;
+        [[iTermFindPasteboard sharedInstance] addObserver:self block:^(id sender, NSString *newValue, BOOL internallyGenerated) {
+            [weakSelf loadFindStringFromSharedPasteboard:newValue];
+        }];
     }
     return self;
 }
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [_timer invalidate];
+    [_searchEngine.timer invalidate];
+    _searchEngine.timer = nil;
 }
 
 #pragma mark - APIs
@@ -112,8 +122,17 @@ static NSString *gSearchString;
 }
 
 - (void)setFindString:(NSString *)setFindString {
+    [self setFindString:setFindString unconditionally:NO];
+}
+
+- (void)setFindStringUnconditionally:(NSString *)setFindString {
+    [self setFindString:setFindString unconditionally:YES];
+}
+
+- (void)setFindString:(NSString *)setFindString unconditionally:(BOOL)unconditionally {
     _viewController.findString = setFindString;
-    [self loadFindStringFromSharedPasteboard:nil];
+    [self loadFindStringIntoSharedPasteboard:setFindString
+                              userOriginated:unconditionally];
 }
 
 - (NSString *)findString {
@@ -121,6 +140,7 @@ static NSString *gSearchString;
 }
 
 - (void)saveState {
+    DLog(@"save mode=%@ string=%@", @(_savedState.mode), _savedState.string);
     _savedState = _state;
     _state = [[FindState alloc] init];
     _state.mode = _savedState.mode;
@@ -143,11 +163,17 @@ static NSString *gSearchString;
     [self.viewController open];
 }
 
+- (void)setDelegate:(id<iTermFindDriverDelegate>)delegate {
+    _delegate = delegate;
+    _searchEngine = [_delegate findDriverSearchEngine];
+}
+
 - (void)close {
     BOOL wasHidden = _viewController.view.isHidden;
     if (!wasHidden) {
-        [_timer invalidate];
-        _timer = nil;
+        DLog(@"Remove timer");
+        [_searchEngine.timer invalidate];
+        _searchEngine.timer = nil;
     }
     [self updateDelayState];
 
@@ -162,18 +188,69 @@ static NSString *gSearchString;
     [self.viewController makeVisible];
 }
 
-- (void)closeViewAndDoTemporarySearchForString:(NSString *)string mode:(iTermFindMode)mode {
+- (void)closeViewAndDoTemporarySearchForString:(NSString *)string
+                                          mode:(iTermFindMode)mode
+                                      progress:(void (^)(NSRange linesSearched))progress {
+    DLog(@"begin %@", self);
     [_viewController close];
     if (!_savedState) {
         [self saveState];
     }
     _state.mode = mode;
     _state.string = string;
+    _state.progress = progress;
     _viewController.findString = string;
+    DLog(@"delegate=%@ state=%@ state.mode=%@ state.string=%@", self.delegate, _state, @(_state.mode), _state.string);
+    [self.delegate findViewControllerClearSearch];
     [self doSearch];
 }
 
-- (void)userDidEditSearchQuery:(NSString *)updatedQuery {
+- (void)userDidEditFilter:(NSString *)updatedFilter
+              fieldEditor:(NSTextView *)fieldEditor {
+    [_delegate findDriverSetFilter:updatedFilter withSideEffects:YES];
+}
+
+- (void)setFilterWithoutSideEffects:(NSString *)filter {
+    [self.viewController setFilter:filter];
+    [_delegate findDriverSetFilter:filter withSideEffects:NO];
+}
+
+- (void)highlightWithoutSelectingSearchResultsForQuery:(NSString *)string {
+    self.findString = string;
+    if (string.length == 0) {
+        DLog(@"clear search");
+        [_delegate findViewControllerClearSearch];
+        return;
+    }
+    [[iTermSearchHistory sharedInstance] addQuery:string];
+    [self setSearchDefaults];
+    [self findSubString:string
+       forwardDirection:![iTermAdvancedSettingsModel swapFindNextPrevious]
+                   mode:_state.mode
+             withOffset:-1
+    scrollToFirstResult:NO
+                  force:YES];
+}
+
+- (void)bottomUpPerformFindPanelAction:(id)sender {
+    [self.delegate findDriverBottomUpPerformFindPanelAction:sender];
+}
+
+- (BOOL)bottomUpValidateMenuItem:(NSMenuItem *)menuItem {
+    return [self.delegate findDriverBottomUpValidateMenuItem:menuItem];
+}
+
+- (BOOL)shouldSearchAutomatically {
+    return [_viewController shouldSearchAutomatically];
+}
+
+- (void)userDidEditSearchQuery:(NSString *)updatedQuery
+                   fieldEditor:(NSTextView *)fieldEditor {
+    if (!_savedState) {
+        [self loadFindStringIntoSharedPasteboard:_viewController.findString
+                                  userOriginated:YES];
+    }
+
     // A query becomes stale when it is 1 or 2 chars long and it hasn't been edited in 3 seconds (or
     // the search field has lost focus since the last char was entered).
     static const CGFloat kStaleTime = 3;
@@ -181,6 +258,10 @@ static NSString *gSearchString;
                     updatedQuery.length > 0 &&
                     [self queryIsShort:updatedQuery]);
 
+    void (^search)(void) = ^{
+        [[iTermSearchHistory sharedInstance] addQuery:updatedQuery];
+        [self doSearch];
+    };
     // This state machine implements a delay before executing short (1 or 2 char) queries. The delay
     // is incurred again when a 5+ char query becomes short. It's kind of complicated so the delay
     // gets inserted at appropriate but minimally annoying times. Plug this into graphviz to see the
@@ -235,7 +316,7 @@ static NSString *gSearchString;
                 break;
             }
 
-            [self doSearch];
+            search();
             if ([self queryIsLong:updatedQuery]) {
                 _delayState = kFindViewDelayStateActiveLong;
             } else if (![self queryIsShort:updatedQuery]) {
@@ -255,21 +336,21 @@ static NSString *gSearchString;
             }
             // This state intentionally does not transition to ActiveShort. If you backspace over
             // the whole query, the delay must be done again.
-            [self doSearch];
+            search();
             break;
 
         case kFindViewDelayStateActiveLong:
             if (updatedQuery.length == 0) {
                 _delayState = kFindViewDelayStateEmpty;
-                [self doSearch];
+                search();
             } else if ([self queryIsShort:updatedQuery]) {
                 // long->short transition. Common when select-all followed by typing.
                 [self startDelay];
             } else if (![self queryIsLong:updatedQuery]) {
                 _delayState = kFindViewDelayStateActiveMedium;
-                [self doSearch];
+                search();
             } else {
-                [self doSearch];
+                search();
             }
             break;
     }
@@ -280,7 +361,7 @@ static NSString *gSearchString;
     if (!self.needsUpdateOnFocus) {
         return;
     }
-    if (!self.isVisible) {
+    if (!self.isVisible || ![self shouldSearchAutomatically]) {
         self.needsUpdateOnFocus = NO;
         return;
     }
@@ -291,30 +372,37 @@ static NSString *gSearchString;
        forwardDirection:![iTermAdvancedSettingsModel swapFindNextPrevious]
                    mode:_state.mode
              withOffset:-1
-    scrollToFirstResult:NO];
+    scrollToFirstResult:NO
+                  force:NO];
+}
+
+- (NSInteger)numberOfResults {
+    return [self.delegate findDriverNumberOfSearchResults];
+}
+
+- (NSInteger)currentIndex {
+    return [self.delegate findDriverCurrentIndex];
 }
 
 #pragma mark - Notifications
 
-- (void)loadFindStringFromSharedPasteboard:(NSNotification *)notification {
-    if (![iTermAdvancedSettingsModel loadFromFindPasteboard]) {
+- (void)loadFindStringFromSharedPasteboard:(NSString *)value {
+    DLog(@"[%p loadFindStringFromSharedPasteboard:%@] in window with frame %@", self, value, NSStringFromRect(_viewController.view.window.frame));
+    if (![iTermAdvancedSettingsModel synchronizeQueryWithFindPasteboard]) {
         return;
     }
-    if (!_viewController.searchBarIsFirstResponder) {
-        NSPasteboard* findBoard = [NSPasteboard pasteboardWithName:NSFindPboard];
-        if ([[findBoard types] containsObject:NSStringPboardType]) {
-            NSString *value = [findBoard stringForType:NSStringPboardType];
-            if (value && [value length] > 0) {
-                if (_savedState && ![value isEqualTo:_savedState.string]) {
-                    [self setNeedsUpdateOnFocus:YES];
-                    [self restoreState];
-                }
-                if (![value isEqualToString:_viewController.findString]) {
-                    _viewController.findString = value;
-                    self.needsUpdateOnFocus = YES;
-                }
-            }
-        }
+    if (!_viewController.view.window.isKeyWindow) {
+        DLog(@"Not in key window");
+        return;
+    }
+    if (_savedState && ![value isEqualTo:_savedState.string]) {
+        [self setNeedsUpdateOnFocus:YES];
+        [self restoreState];
+    }
+    if (![value isEqualToString:_viewController.findString]) {
+        DLog(@"%@ setFindString:%@", self, value);
+        _viewController.findString = value;
+        self.needsUpdateOnFocus = self.needsUpdateOnFocus || _viewController.shouldSearchAutomatically;
     }
 }
 
@@ -324,6 +412,9 @@ static NSString *gSearchString;
     if (visible != _isVisible) {
         _isVisible = visible;
         [self.delegate findViewControllerVisibilityDidChange:self.viewController];
+        if (!visible && self.viewController.filterIsVisible) {
+            [self.delegate findDriverFilterVisibilityDidChange:NO];
+        }
     }
 }
 
@@ -331,15 +422,23 @@ static NSString *gSearchString;
     [self.delegate findViewControllerDidCeaseToBeMandatory:self.viewController];
 }
 
-- (void)loadFindStringIntoSharedPasteboard:(NSString *)stringValue {
+- (void)setFilter:(NSString *)filter {
+    [self.delegate findDriverSetFilter:filter withSideEffects:YES];
+}
+
+- (BOOL)loadFindStringIntoSharedPasteboard:(NSString *)stringValue
+                            userOriginated:(BOOL)userOriginated {
+    DLog(@"begin %@", self);
     if (_savedState) {
-        return;
+        DLog(@"Have no saved state, doing nothing");
+        return YES;
     }
-    // Copy into the NSFindPboard
-    NSPasteboard *findPB = [NSPasteboard pasteboardWithName:NSFindPboard];
-    if (findPB) {
-        [findPB declareTypes:[NSArray arrayWithObject:NSStringPboardType] owner:nil];
-        [findPB setString:stringValue forType:NSStringPboardType];
+    // Copy into the NSPasteboardNameFind
+    if (userOriginated) {
+        [[iTermFindPasteboard sharedInstance] setStringValueUnconditionally:stringValue];
+        return YES;
+    } else {
+        return [[iTermFindPasteboard sharedInstance] setStringValueIfAllowed:stringValue];
     }
 }
 
@@ -349,7 +448,8 @@ static NSString *gSearchString;
         if (text) {
             [_delegate copySelection];
             _viewController.findString = text;
-            [self loadFindStringIntoSharedPasteboard:_viewController.findString];
+            [self loadFindStringIntoSharedPasteboard:_viewController.findString
+                                      userOriginated:YES];
             [_viewController deselectFindBarTextField];
         }
     }
@@ -361,7 +461,7 @@ static NSString *gSearchString;
     if (text) {
         [_delegate copySelection];
         _viewController.findString = text;
-        [self loadFindStringIntoSharedPasteboard:text];
+        [self loadFindStringIntoSharedPasteboard:text userOriginated:YES];
         [_viewController deselectFindBarTextField];
     }
 }
@@ -374,28 +474,41 @@ static NSString *gSearchString;
 }
 
 - (void)didLoseFocus {
+    if (_searchEngine.timer == nil) {
+        [_viewController setProgress:0];
+        _state.progress = nil;
+    }
     _lastEditTime = 0;
 }
 
 #pragma mark - Private
 
 - (BOOL)continueSearch {
+    DLog(@"begin self=%@", self);
     BOOL more = NO;
     if ([self.delegate findInProgress]) {
+        DLog(@"Find is in progress");
         double progress;
-        more = [self.delegate continueFind:&progress];
+        NSRange range;
+        more = [self.delegate continueFind:&progress range:&range];
+        if (_state.progress) {
+            _state.progress(range);
+        }
         [_viewController setProgress:progress];
     }
     if (!more) {
-        [_timer invalidate];
-        _timer = nil;
+        [_searchEngine.timer invalidate];
+        _searchEngine.timer = nil;
+        DLog(@"Remove timer");
         [_viewController setProgress:1];
     }
     return more;
 }
 
 - (void)setSearchString:(NSString *)s {
+    DLog(@"begin self=%@ s=%@", self, s);
     if (!_savedState) {
+        DLog(@"Have no saved state so updating gSearchString and _state.string");
         gSearchString = [s copy];
         _state.string = [s copy];
     }
@@ -411,7 +524,12 @@ static NSString *gSearchString;
 }
 
 - (void)setSearchDefaults {
-    [self setSearchString:_viewController.findString];
+    DLog(@"begin %@", self);
+    if (_viewController) {
+        [self setSearchString:_viewController.findString];
+    } else {
+        [self setSearchString:[[iTermFindPasteboard sharedInstance] stringValue]];
+    }
     [self setGlobalMode:_state.mode];
 }
 
@@ -419,35 +537,48 @@ static NSString *gSearchString;
      forwardDirection:(BOOL)direction
                  mode:(iTermFindMode)mode
            withOffset:(int)offset
-  scrollToFirstResult:(BOOL)scrollToFirstResult {
+  scrollToFirstResult:(BOOL)scrollToFirstResult
+                force:(BOOL)force {
+    DLog(@"begin self=%@ subString=%@ direction=%@ mode=%@ offset=%@ scrollToFirstResult=%@",
+         self, subString, @(direction), @(mode), @(offset), @(scrollToFirstResult));
     BOOL ok = NO;
     if ([_delegate canSearch]) {
+        DLog(@"delegate can search %@", _delegate);
         if ([subString length] <= 0) {
+            DLog(@"Clear search");
             [_delegate findViewControllerClearSearch];
         } else {
             [_delegate findString:subString
                  forwardDirection:direction
                              mode:mode
                        withOffset:offset
-              scrollToFirstResult:scrollToFirstResult];
+              scrollToFirstResult:scrollToFirstResult
+                            force:force];
             ok = YES;
         }
     }
 
-    if (ok && !_timer) {
+    DLog(@"ok=%@ timer=%@", @(ok), _searchEngine.timer);
+    if (ok && !_searchEngine.timer) {
         [_viewController setProgress:0];
         if ([self continueSearch]) {
-            _timer = [NSTimer scheduledTimerWithTimeInterval:0.01
-                                                      target:self
-                                                    selector:@selector(continueSearch)
-                                                    userInfo:nil
-                                                     repeats:YES];
-            [[NSRunLoop currentRunLoop] addTimer:_timer forMode:NSRunLoopCommonModes];
+            _searchEngine.timer = [NSTimer scheduledTimerWithTimeInterval:0.01
+                                                                   target:self
+                                                                 selector:@selector(continueSearch)
+                                                                 userInfo:nil
+                                                                  repeats:YES];
+            DLog(@"Set timer");
+            [[NSRunLoop currentRunLoop] addTimer:_searchEngine.timer
+                                         forMode:NSRunLoopCommonModes];
         }
-    } else if (!ok && _timer) {
-        [_timer invalidate];
-        _timer = nil;
+    } else if (!ok && _searchEngine.timer) {
+        DLog(@"Remove timer");
+        [_searchEngine.timer invalidate];
+        _searchEngine.timer = nil;
         [_viewController setProgress:1];
+        if (_state.progress) {
+            _state.progress(NSMakeRange(0, NSUIntegerMax));
+        }
     }
 }
 
@@ -457,7 +588,8 @@ static NSString *gSearchString;
        forwardDirection:YES
                    mode:_state.mode
              withOffset:1
-    scrollToFirstResult:YES];
+    scrollToFirstResult:YES
+                  force:NO];
 }
 
 - (void)searchPrevious {
@@ -466,7 +598,8 @@ static NSString *gSearchString;
        forwardDirection:NO
                    mode:_state.mode
              withOffset:1
-    scrollToFirstResult:YES];
+    scrollToFirstResult:YES
+                  force:NO];
 }
 
 - (void)startDelay {
@@ -505,11 +638,11 @@ static NSString *gSearchString;
 }
 
 - (void)doSearch {
+    DLog(@"begin %@ _state.string=%@ _viewController.findString=%@", self, _state.string, _viewController.findString);
     NSString *theString = _savedState ? _state.string : _viewController.findString;
     if (!_savedState) {
-        [self loadFindStringIntoSharedPasteboard:_viewController.findString];
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"iTermLoadFindStringFromSharedPasteboard"
-                                                            object:nil];
+        DLog(@"Have no saved state. Load find string into shared pasteboard: %@", _viewController.findString);
+        [self loadFindStringIntoSharedPasteboard:_viewController.findString userOriginated:YES];
     }
     // Search.
     [self setSearchDefaults];
@@ -517,7 +650,65 @@ static NSString *gSearchString;
        forwardDirection:![iTermAdvancedSettingsModel swapFindNextPrevious]
                    mode:_state.mode
              withOffset:-1
-    scrollToFirstResult:YES];
+    scrollToFirstResult:YES
+                  force:NO];
+}
+
+- (NSArray<NSString *> *)completionsForText:(NSString *)text
+                                      range:(NSRange)range {
+    NSArray<NSString *> *history = [[iTermSearchHistory sharedInstance] queries];
+    if (text.length == 0) {
+        return history;
+    }
+    if (range.location == NSNotFound) {
+        return history;
+    }
+    NSString *prefix = [[text substringWithRange:range] localizedLowercaseString];
+    return [[history flatMapWithBlock:^NSArray *(NSString *line) {
+        return [line componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    }] filteredArrayUsingBlock:^BOOL(NSString *word) {
+        return [[word localizedLowercaseString] it_hasPrefix:prefix];
+    }];
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+    if ([self respondsToSelector:selector]) {
+        [self it_performNonObjectReturningSelector:selector withObject:nil];
+    }
+}
+
+- (void)moveDown:(id)sender {
+    NSTextView *fieldEditor = [NSTextView castFrom:[_viewController.view.window fieldEditor:YES
+                                                                                  forObject:_viewController.view]];
+    [fieldEditor complete:nil];
+}
+
+- (void)searchFieldWillBecomeFirstResponder:(NSSearchField *)searchField {
+    [[iTermSearchHistory sharedInstance] coalescingFence];
+}
+
+- (void)eraseSearchHistory {
+    [[iTermSearchHistory sharedInstance] eraseHistory];
+}
+
+- (void)toggleFilter {
+    [self.viewController toggleFilter];
+}
+
+- (void)setFilterHidden:(BOOL)hidden {
+    [self.viewController setFilterHidden:hidden];
+}
+
+- (void)invalidateFrame {
+    [self.delegate findDriverInvalidateFrame];
+}
+
+- (void)filterVisibilityDidChange {
+    [self.delegate findDriverFilterVisibilityDidChange:self.viewController.filterIsVisible];
+}
+
+- (void)setFilterProgress:(double)progress {
+    [self.filterViewController ?: self.viewController setFilterProgress:progress];
 }
 
 @end

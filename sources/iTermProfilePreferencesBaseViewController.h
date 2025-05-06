@@ -10,6 +10,7 @@
 #import "ProfileModel.h"
 
 @class iTermSizeRememberingView;
+@class iTermProfilePreferencesBaseViewController;
 
 @protocol iTermProfilePreferencesBaseViewControllerDelegate <NSObject>
 
@@ -17,7 +18,9 @@
 - (ProfileModel *)profilePreferencesCurrentModel;
 - (void)profilePreferencesContentViewSizeDidChange:(iTermSizeRememberingView *)view;
 - (BOOL)editingTmuxSession;
-
+- (void)profilePreferencesViewController:(iTermProfilePreferencesBaseViewController *)viewController
+                    willSetObjectWithKey:(NSString *)key;
+- (BOOL)profilePreferencesRevealViewController:(iTermProfilePreferencesBaseViewController *)viewController;
 @end
 
 @interface iTermProfilePreferencesBaseViewController : iTermPreferencesBaseViewController

@@ -8,15 +8,23 @@
 #import "iTermStandardKeyMapper.h"
 
 #import "DebugLogging.h"
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermKeyboardHandler.h"
 #import "NSData+iTerm.h"
+#import "NSEvent+iTerm.h"
+#import "NSStringITerm.h"
 #import "VT100Output.h"
 
 @implementation iTermStandardKeyMapper {
     NSEvent *_event;
 }
 
+- (BOOL)keyMapperWantsKeyUp {
+    return NO;
+}
+
 - (void)updateConfigurationWithEvent:(NSEvent *)event {
+    DLog(@"Load configuration for event %@", event);
     _event = event;
     [self.delegate standardKeyMapperWillMapKey:self];
 }
@@ -25,10 +33,30 @@
     return nil;
 }
 
+// At the very least, control-shift-arrow and control-arrow need this method to
+// return YES.
+// Philosophically, PTYTextView doesn't have any key equivalents and the
+// standard key mapper can handle many kinds of keypresses. If you get here
+// it should just handle them. I don't know if it's possible to reach this code
+// when Cmd is pressed, but those keypresses are definitely none of our
+// business.
+- (BOOL)keyMapperWantsKeyEquivalent:(NSEvent *)event {
+    const BOOL cmdPressed = !!(event.modifierFlags & NSEventModifierFlagCommand);
+    DLog(@"!cmdPressed=%@", @(!cmdPressed));
+    return !cmdPressed;
+}
+
 #pragma mark - Pre-Cocoa
 
 - (NSString *)preCocoaString {
-    const unsigned int modflag = [_event modifierFlags];
+    if ([_event it_isNumericKeypadKey]) {
+        DLog(@"PTYSession keyDown numeric keypad");
+        NSData *data = [_configuration.outputFactory keypadDataForString:_event.characters
+                                                               modifiers:_event.it_modifierFlags];
+        return [[NSString alloc] initWithData:data encoding:_configuration.encoding];
+    }
+
+    const unsigned int modflag = [_event it_modifierFlags];
     NSString *charactersIgnoringModifiers = _event.charactersIgnoringModifiers;
     const unichar characterIgnoringModifiers = [charactersIgnoringModifiers length] > 0 ? [charactersIgnoringModifiers characterAtIndex:0] : 0;
     const BOOL shiftPressed = !!(modflag & NSEventModifierFlagShift);
@@ -66,24 +94,49 @@
 
     NSString *const characters = event.characters;
     const unichar character = characters.length > 0 ? [characters characterAtIndex:0] : 0;
-    const BOOL shiftPressed = !!(event.modifierFlags & NSEventModifierFlagShift);
-    if (character == '/' && shiftPressed) {
+    const BOOL shiftPressed = !!(event.it_modifierFlags & NSEventModifierFlagShift);
+
+    return [iTermStandardKeyMapper codeForSpecialControlCharacter:character
+                                       characterIgnoringModifiers:characterIgnoringModifiers
+                                                     shiftPressed:shiftPressed];
+}
+
++ (unichar)codeForSpecialControlCharacter:(unichar)character
+               characterIgnoringModifiers:(unichar)characterIgnoringModifiers
+                             shiftPressed:(BOOL)shiftPressed {
+    if (character == '|') {
+        // This is necessary to handle Japanese keyboards correctly. Pressing Control+backslash
+        // generates characters=@"|" and charactersIgnoringModifiers=@"¥". This code path existed
+        // in iTerm 0.1.
+        DLog(@"C-backslash");
+        return 28;  // Control-backslash
+    } else if (character == '/' && shiftPressed) {
+        // This was in the original iTerm code. It's the normal path for US keyboards for ^-?.
+        DLog(@"C-?");
         return 127;
+    } else if (character == 0x7f) {
+        DLog(@"C-h");
+        return 8;  // Control-backspace -> ^H
     }
 
+    DLog(@"Checking characterIgnoringModifiers %@", @(characterIgnoringModifiers));
+    // control-number comes from xterm.
     switch (characterIgnoringModifiers) {
         case ' ':
         case '2':
         case '@':
             return 0;
 
+        case '3':
         case '[':
             return 27;
 
+        case '4':
         case '\\':
         case '|':
             return 28;
 
+        case '5':
         case ']':
             return 29;
 
@@ -91,10 +144,14 @@
         case '6':
             return 30;
 
+        case '7':
         case '-':
         case '_':
         case '/':
             return 31;
+
+        case '8':
+            return 127;
     }
 
     return 0xffff;
@@ -103,8 +160,17 @@
 #pragma mark - Post-Cocoa
 
 - (NSData *)postCocoaData {
-    if (_event.modifierFlags & NSEventModifierFlagFunction) {
+    if (_event.it_modifierFlags & NSEventModifierFlagFunction) {
         return [self dataForFunctionKeyPress];
+    }
+
+    const NSEventModifierFlags mask = NSEventModifierFlagOption | NSEventModifierFlagControl | NSEventModifierFlagShift;
+    if ([_event.characters isEqual:@"\x7f"]) {
+        if ((_event.it_modifierFlags & mask) == (NSEventModifierFlagOption | NSEventModifierFlagControl)) {
+            // This is an odd edge case that I noticed in xterm. Control-option-backspace is the only
+            // collection of modifiers+backspace that gets you a CSI ~ sequence that I could find.
+            return [[NSString stringWithFormat:@"%c[3;7~", 27] dataUsingEncoding:NSUTF8StringEncoding];
+        }
     }
 
     if ([self shouldSendOptionModifiedKeypress]) {
@@ -123,7 +189,7 @@
     const unichar character = _event.characters.length > 0 ? [_event.characters characterAtIndex:0] : 0;
     NSString *const charactersIgnoringModifiers = [_event charactersIgnoringModifiers];
     const unichar characterIgnoringModifier = [charactersIgnoringModifiers length] > 0 ? [charactersIgnoringModifiers characterAtIndex:0] : 0;
-    NSEventModifierFlags mutableModifiers = _event.modifierFlags;
+    NSEventModifierFlags mutableModifiers = _event.it_modifierFlags;
 
     if (character == NSEnterCharacter && characterIgnoringModifier == NSEnterCharacter) {
         mutableModifiers |= NSEventModifierFlagNumericPad;
@@ -140,10 +206,10 @@
         return nil;
     }
 
-    const BOOL isNumericKeypadKey = !!(mutableModifiers & NSEventModifierFlagNumericPad);
-    if (isNumericKeypadKey || [self keycodeShouldHaveNumericKeypadFlag:_event.keyCode]) {
+    if ([_event it_isNumericKeypadKey]) {
         DLog(@"PTYSession keyDown numeric keypad");
-        return [_configuration.outputFactory keypadData:character keystr:characters];
+        return [_configuration.outputFactory keypadDataForString:characters
+                                                       modifiers:_event.it_modifierFlags];
     }
 
     if (characters.length != 1 || [characters characterAtIndex:0] > 0x7f) {
@@ -151,6 +217,11 @@
         return [characters dataUsingEncoding:_configuration.encoding];
     }
 
+    if ([characters isEqualToString:@"\x7f"] && !!(mutableModifiers & NSEventModifierFlagControl)) {
+        // Control+(any mods)+backspace -> ^H
+        const unichar ch = 8;
+        return [NSData dataWithBytes:&ch length:1];
+    }
     DLog(@"PTYSession keyDown ascii");
     // Commit a00a9385b2ed722315ff4d43e2857180baeac2b4 in old-iterm suggests this is
     // necessary for some Japanese input sources, but is vague.
@@ -158,7 +229,7 @@
 }
 
 - (iTermOptionKeyBehavior)optionKeyBehavior {
-    const NSEventModifierFlags modflag = _event.modifierFlags;
+    const NSEventModifierFlags modflag = _event.it_modifierFlags;
     const BOOL rightAltPressed = (modflag & NSRightAlternateKeyMask) == NSRightAlternateKeyMask;
     const BOOL leftAltPressed = (modflag & NSEventModifierFlagOption) == NSEventModifierFlagOption && !rightAltPressed;
     assert(leftAltPressed || rightAltPressed);
@@ -172,8 +243,18 @@
 
 - (NSData *)dataWhenOptionPressed {
     const unichar unicode = _event.characters.length > 0 ? [_event.characters characterAtIndex:0] : 0;
-    const BOOL controlPressed = !!(_event.modifierFlags & NSEventModifierFlagControl);
-    if (controlPressed && unicode > 0) {
+    const BOOL controlPressed = !!(_event.it_modifierFlags & NSEventModifierFlagControl);
+    if (controlPressed && _event.characters.length > 0) {
+        const BOOL shiftPressed = !!(_event.it_modifierFlags & NSEventModifierFlagShift);
+        NSString *charactersIgnoringModifiers = _event.charactersIgnoringModifiers;
+        const unichar characterIgnoringModifiers = [charactersIgnoringModifiers length] > 0 ? [charactersIgnoringModifiers characterAtIndex:0] : 0;
+        const unichar specialCode = [iTermStandardKeyMapper codeForSpecialControlCharacter:unicode
+                                                                characterIgnoringModifiers:characterIgnoringModifiers
+                                                                              shiftPressed:shiftPressed];
+        if (specialCode != 0xffff) {
+            // e.g., control-2. This lets control-meta-2 send ^[^@
+            return [[NSString stringWithCharacters:&specialCode length:1] dataUsingEncoding:_configuration.encoding];
+        }
         return [_event.characters dataUsingEncoding:_configuration.encoding];
     } else {
         return [_event.charactersIgnoringModifiers dataUsingEncoding:_configuration.encoding];
@@ -221,7 +302,7 @@
 }
 
 - (BOOL)shouldSendOptionModifiedKeypress {
-    const NSEventModifierFlags modifiers = _event.modifierFlags;
+    const NSEventModifierFlags modifiers = _event.it_modifierFlags;
     const BOOL rightAltPressed = (modifiers & NSRightAlternateKeyMask) == NSRightAlternateKeyMask;
     const BOOL leftAltPressed = (modifiers & NSEventModifierFlagOption) == NSEventModifierFlagOption && !rightAltPressed;
 
@@ -237,9 +318,9 @@
 
 - (NSData *)dataForFunctionKeyPress {
     NSString *const characters = _event.characters;
-    const NSEventModifierFlags modifiers = _event.modifierFlags;
+    const NSEventModifierFlags modifiers = _event.it_modifierFlags;
     const unichar unicode = [characters length] > 0 ? [characters characterAtIndex:0] : 0;
-    DLog(@"PTYSession keyDown is a function key");
+    DLog(@"PTYSession keyDown is a function key. unicode=%@", @(unicode));
 
     // Handle all "special" keys (arrows, etc.)
     switch (unicode) {
@@ -260,7 +341,7 @@
             break;
         case NSDeleteFunctionKey:
             // This is forward delete, not backspace.
-            return [_configuration.outputFactory keyDelete];
+            return [_configuration.outputFactory keyDelete:modifiers];
             break;
         case NSHomeFunctionKey:
             return [_configuration.outputFactory keyHome:modifiers screenlikeTerminal:_configuration.screenlike];
@@ -312,7 +393,8 @@
         case NSF33FunctionKey:
         case NSF34FunctionKey:
         case NSF35FunctionKey:
-            return [_configuration.outputFactory keyFunction:unicode - NSF1FunctionKey + 1];
+            return [_configuration.outputFactory keyFunction:unicode - NSF1FunctionKey + 1
+                                                   modifiers:modifiers];
     }
 
     return [characters dataUsingEncoding:_configuration.encoding];
@@ -320,31 +402,7 @@
 
 // In issue 4039 we see that in some cases the numeric keypad mask isn't set properly.
 - (BOOL)keycodeShouldHaveNumericKeypadFlag:(unsigned short)keycode {
-    switch (keycode) {
-        case kVK_ANSI_KeypadDecimal:
-        case kVK_ANSI_KeypadMultiply:
-        case kVK_ANSI_KeypadPlus:
-        case kVK_ANSI_KeypadClear:
-        case kVK_ANSI_KeypadDivide:
-        case kVK_ANSI_KeypadEnter:
-        case kVK_ANSI_KeypadMinus:
-        case kVK_ANSI_KeypadEquals:
-        case kVK_ANSI_Keypad0:
-        case kVK_ANSI_Keypad1:
-        case kVK_ANSI_Keypad2:
-        case kVK_ANSI_Keypad3:
-        case kVK_ANSI_Keypad4:
-        case kVK_ANSI_Keypad5:
-        case kVK_ANSI_Keypad6:
-        case kVK_ANSI_Keypad7:
-        case kVK_ANSI_Keypad8:
-        case kVK_ANSI_Keypad9:
-            DLog(@"Key code 0x%x forced to have numeric keypad mask set", (int)keycode);
-            return YES;
-
-        default:
-            return NO;
-    }
+    return [NSEvent it_keycodeShouldHaveNumericKeypadFlag:keycode];
 }
 
 - (BOOL)shouldSquelchKeystrokeWithString:(NSString *)keystr
@@ -372,6 +430,26 @@
 
 #pragma mark - iTermKeyMapper
 
+- (BOOL)shouldHandleBuckyBits {
+    return NO;
+}
+
+- (NSString *)handleKeyDownWithBuckyBits:(NSEvent *)event {
+    return nil;
+}
+
+- (NSString *)handleKeyUpWithBuckyBits:(NSEvent *)event {
+    return nil;
+}
+
+- (NSString *)handleFlagsChangedWithBuckyBits:(NSEvent *)event {
+    return nil;
+}
+
+- (void)keyMapperSetEvent:(NSEvent *)event {
+    [self updateConfigurationWithEvent:event];
+}
+
 - (NSString *)keyMapperStringForPreCocoaEvent:(NSEvent *)event {
     if (event.type != NSEventTypeKeyDown) {
         return nil;
@@ -389,26 +467,48 @@
 }
 
 - (BOOL)keyMapperShouldBypassPreCocoaForEvent:(NSEvent *)event {
-    const NSEventModifierFlags modifiers = event.modifierFlags;
+    const NSEventModifierFlags modifiers = event.it_modifierFlags;
     const BOOL isSpecialKey = !!(modifiers & (NSEventModifierFlagNumericPad | NSEventModifierFlagFunction));
     if (isSpecialKey) {
         // Arrow key, function key, etc.
+        DLog(@"isSpecialKey: %@ -> bypass pre-cocoa", event);
         return YES;
     }
 
-    const BOOL isNonEmpty = [[event charactersIgnoringModifiers] length] > 0;  // Dead keys have length 0
-    const BOOL rightAltPressed = (modifiers & NSRightAlternateKeyMask) == NSRightAlternateKeyMask;
-    const BOOL leftAltPressed = (modifiers & NSEventModifierFlagOption) == NSEventModifierFlagOption && !rightAltPressed;
-    const BOOL leftOptionModifiesKey = (leftAltPressed && _configuration.leftOptionKey != OPT_NORMAL);
-    const BOOL rightOptionModifiesKey = (rightAltPressed && _configuration.rightOptionKey != OPT_NORMAL);
-    const BOOL optionModifiesKey = (leftOptionModifiesKey || rightOptionModifiesKey);
-    const BOOL willSendOptionModifiedKey = (isNonEmpty && optionModifiesKey);
-    if (willSendOptionModifiedKey) {
+    if ([event it_shouldSendOptionModifiedKeyWithLeftOptionConfig:_configuration.leftOptionKey
+                                                rightOptionConfig:_configuration.rightOptionKey]) {
         // Meta+key or Esc+ key
         return YES;
     }
 
+    DLog(@"Not bypassing pre-cocoa");
     return NO;
 }
 
+- (NSDictionary *)keyMapperDictionaryValue {
+    [self.delegate standardKeyMapperWillMapKey:self];
+    return iTermStandardKeyMapperConfigurationDictionaryValue(_configuration);
+}
+
+- (BOOL)wouldReportControlReturn {
+    return NO;
+}
+
+- (NSString *)transformedTextToInsert:(NSString *)text {
+    return text;
+}
+
 @end
+
+NSDictionary *iTermStandardKeyMapperConfigurationDictionaryValue(iTermStandardKeyMapperConfiguration *config) {
+    return @{ @"output": config.outputFactory.configDictionary ?: @{},
+              @"encoding": @(config.encoding),
+              @"leftOptionKey": @(config.leftOptionKey),
+              @"rightOptionKey": @(config.rightOptionKey),
+              @"screenlike": @(config.screenlike)
+    };
+}
+
+@implementation iTermStandardKeyMapperConfiguration
+@end
+

@@ -7,6 +7,7 @@
 //
 
 #import "VT100XtermParser.h"
+#import "DebugLogging.h"
 #import "NSData+iTerm.h"
 
 static NSString *const kXtermParserSavedStateDataKey = @"kXtermParserSavedStateDataKey";
@@ -28,6 +29,9 @@ static const int kAPCMode = -2;
 typedef enum {
     // Reading the mode at the start. Either a number followed by a semicolon, or the letter P.
     kXtermParserParsingModeState,
+
+    // Accept only ST (ESC+backslash or BEL). Happens when there is a mode but no parameter.
+    kTermParserParsingStateST,
 
     // Reading the 7 digits after mode letter P.
     kXtermParserParsingPState,
@@ -59,7 +63,12 @@ typedef enum {
 
 // Read either an integer followed by a semicolon or letter "P".
 + (iTermXtermParserState)parseModeFromContext:(iTermParserContext *)context mode:(int *)mode {
-    if (iTermParserConsumeInteger(context, mode)) {
+    BOOL overflow = NO;
+    iTermParserContext saved = *context;
+    if (iTermParserConsumeInteger(context, mode, &overflow)) {
+        if (overflow) {
+            return kXtermParserFailingState;
+        }
         // Read an integer. Either out of data or a semicolon should follow; anything else is
         // a malformed input.
         if (iTermParserCanAdvance(context)) {
@@ -68,11 +77,13 @@ typedef enum {
                 iTermParserAdvance(context);
                 return kXtermParserParsingStringState;
             } else {
-                // Malformed
-                return kXtermParserFailingState;
+                // Could be an ST exactly after the mode (e.g., for OSC 110 through 119).
+                return kTermParserParsingStateST;
             }
         } else {
-            // Out of data.
+            // Out of data. Backtrack to the start of the int because when this is resumed later
+            // with more data, we must begin parsing the mode all over again.
+            *context = saved;
             return kXtermParserOutOfDataState;
         }
     } else {
@@ -102,6 +113,25 @@ typedef enum {
     }
 }
 
++ (iTermXtermParserState)parseSTFromContext:(iTermParserContext *)context {
+    const unsigned char c = iTermParserConsume(context);
+    if (c == VT100CC_BEL) {
+        return kXtermParserFinishedState;
+    }
+    if (c != VT100CC_ESC) {
+        return kXtermParserFailedState;
+    }
+    unsigned char c2 = 0;
+    if (!iTermParserTryConsume(context, &c2)) {
+        iTermParserBacktrackBy(context, 1);
+        return kXtermParserOutOfDataState;
+    }
+    if (c2 != '\\') {
+        return kXtermParserFailingState;
+    }
+    return kXtermParserFinishedState;
+}
+
 // Read seven characters and append them to 'data'.
 + (iTermXtermParserState)parsePFromContext:(iTermParserContext *)context data:(NSMutableData *)data {
     for (int i = 0; i < 7; i++) {
@@ -120,8 +150,14 @@ typedef enum {
 //   ESC <anything else>  Fails
 //   File= KVP code       Finish prior to true end of OSC
 //   CAN or SUB           Fails
+//
+// When 8-bit control sequences are supported, the following behaviors are added:
+//   C1 ST                Finished parsing
+//   C1 OSC               This is ignored
+//   Other C1 codes       Fails
 // Other characters are appended to |data|.
 + (iTermXtermParserState)parseNextCharsInStringFromContext:(iTermParserContext *)context
+                              support8BitControlCharacters:(BOOL)support8BitControlCharacters
                                                       data:(NSMutableData *)data
                                                       mode:(int)mode {
     iTermXtermParserState nextState = kXtermParserParsingStringState;
@@ -172,12 +208,50 @@ typedef enum {
                     nextState = kXtermParserFinishedState;
                     break;
 
+                case VT100CC_C1_ST:
+                    if (support8BitControlCharacters) {
+                        nextState = kXtermParserFinishedState;
+                        break;
+                    }
+                    // fall through
+                case VT100CC_C1_OSC:
+                    if (support8BitControlCharacters) {
+                        append = NO;
+                        nextState = kXtermParserParsingStringState;
+                        break;
+                    }
+                    // fall through
+                case VT100CC_C1_IND:
+                case VT100CC_C1_NEL:
+                case VT100CC_C1_HTS:
+                case VT100CC_C1_RI:
+                case VT100CC_C1_SS2:
+                case VT100CC_C1_SS3:
+                case VT100CC_C1_DCS:
+                case VT100CC_C1_SPA:
+                case VT100CC_C1_EPA:
+                case VT100CC_C1_SOS:
+                case VT100CC_C1_DECID:
+                case VT100CC_C1_CSI:
+                case VT100CC_C1_PM:
+                case VT100CC_C1_APC:
+                    if (support8BitControlCharacters) {
+                        nextState = kXtermParserFailedState;
+                        break;
+                    }
+                    // fall through
+
                 default:
                     nextState = kXtermParserParsingStringState;
                     break;
             }
             if (append && nextState == kXtermParserParsingStringState) {
                 [data appendBytes:&c length:1];
+                const NSUInteger maxLength = 1048576;
+                if (data.length >= maxLength) {
+                    DLog(@"Truncate very long OSC");
+                    nextState = kXtermParserFinishedState;
+                }
             }
         }
     } while (nextState == kXtermParserParsingStringState);
@@ -191,7 +265,7 @@ typedef enum {
     dispatch_once(&onceToken, ^{
         theMap =
             @{
-               @(kAPCMode): @(XTERMCC_WIN_TITLE),  // tmux treats APC like OSC 2. We must as well for tmux integration.
+               @(kAPCMode): @(VT100_APC),
                @(kLinuxSetPaletteMode): @(XTERMCC_SET_PALETTE),
                @0: @(XTERMCC_WINICON_TITLE),
                @1: @(XTERMCC_ICON_TITLE),
@@ -201,14 +275,29 @@ typedef enum {
                @7: @(XTERMCC_PWD_URL),
                @8: @(XTERMCC_LINK),
                @9: @(ITERM_USER_NOTIFICATION),
+
+               // See -[VT100Terminal xtermIndexForTerminalColorIndex:], which has the inverse map.
                @10: @(XTERMCC_TEXT_FOREGROUND_COLOR),
                @11: @(XTERMCC_TEXT_BACKGROUND_COLOR),
+               @12: @(XTERMCC_SET_TEXT_CURSOR_COLOR),
+               @17: @(XTERMCC_SET_HIGHLIGHT_COLOR),
+               @19: @(XTERMCC_SET_HIGHLIGHT_FOREGROUND_COLOR),
+               @22: @(XTERMCC_SET_POINTER_SHAPE),
+
                // 50 is a nonstandard escape code implemented by Konsole.
                // xterm since started using it for setting the font, so 1337 is the preferred code
                // for this in iTerm2.
                @50: @(XTERMCC_SET_KVP),
                @52: @(XTERMCC_PASTE64),
+               @104: @(XTERMCC_RESET_COLOR),
+               
+               @(110): @(XTERMCC_RESET_VT100_TEXT_FOREGROUND_COLOR),
+               @(111): @(XTERMCC_RESET_VT100_TEXT_BACKGROUND_COLOR),
+               @(112): @(XTERMCC_RESET_TEXT_CURSOR_COLOR),
+               @(117): @(XTERMCC_RESET_HIGHLIGHT_COLOR),
+               @(119): @(XTERMCC_RESET_HIGHLIGHT_FOREGROUND_COLOR),
                @133: @(XTERMCC_FINAL_TERM),
+               @134: @(XTERMCC_FRAMER_WRAPPER),
                @1337: @(XTERMCC_SET_KVP),
            };
         [theMap retain];
@@ -232,6 +321,7 @@ typedef enum {
                                                 encoding:encoding] autorelease];
     [self parseKeyValuePairInToken:headerToken];
     [headerToken retain];
+    // The analyzer thinks this leaks but it does not.
     CVectorAppend(vector, headerToken);
 }
 
@@ -243,6 +333,7 @@ typedef enum {
     token.string = [[[NSString alloc] initWithData:data
                                           encoding:encoding] autorelease];
     [token retain];
+    // The analyzer thinks this leaks but it does not.
     CVectorAppend(vector, token);
 }
 
@@ -256,6 +347,7 @@ typedef enum {
     int mode = 0;
     iTermXtermParserState state = kXtermParserParsingModeState;
     BOOL multitokenHeaderEmitted = NO;
+    BOOL support8BitControlCharacters = (encoding == NSASCIIStringEncoding || encoding == NSISOLatin1StringEncoding);
 
     if (savedState.count) {
         data = savedState[kXtermParserSavedStateDataKey];
@@ -265,9 +357,22 @@ typedef enum {
         state = [savedState[kXtermParserSavedStateStateKey] intValue];
         multitokenHeaderEmitted = [savedState[kXtermParserMultitokenHeaderEmittedkey] boolValue];
     } else {
-        iTermParserConsumeOrDie(context, VT100CC_ESC);
-        // 99% of the time the next byte is a ], but it could be a _ which is APC (used by tmux).
-        if (iTermParserConsume(context) == '_') {
+        unsigned char peek = iTermParserPeek(context);
+        BOOL apc = NO;
+        if (support8BitControlCharacters && (peek == VT100CC_C1_OSC ||
+                                             peek == VT100CC_C1_APC)) {
+            if (peek == VT100CC_C1_APC) {
+                apc = YES;
+            }
+            iTermParserConsume(context);
+        } else {
+            iTermParserConsumeOrDie(context, VT100CC_ESC);
+            // 99% of the time the next byte is a ], but it could be a _ which is APC (used by tmux).
+            if (iTermParserConsume(context) == '_') {
+                apc = YES;
+            }
+        }
+        if (apc) {
             mode = kAPCMode;
             state = kXtermParserParsingStringState;
         }
@@ -275,6 +380,9 @@ typedef enum {
 
     iTermXtermParserState previousState = state;
 
+    if (iTermParserLength(context) + iTermParserNumberOfBytesConsumed(context) > 0x7f000000) {
+        state = kXtermParserFailedState;
+    }
     // Run the state machine.
     while (1) {
         iTermXtermParserState stateSwitchedOn = state;
@@ -283,12 +391,18 @@ typedef enum {
                 state = [self parseModeFromContext:context mode:&mode];
                 break;
 
+            case kTermParserParsingStateST:
+                state = [self parseSTFromContext:context];
+                break;
+
             case kXtermParserParsingPState:
                 state = [self parsePFromContext:context data:data];
                 break;
 
             case kXtermParserParsingStringState:
-                state = [self parseNextCharsInStringFromContext:context data:data mode:mode];
+                state = [self parseNextCharsInStringFromContext:context
+                                   support8BitControlCharacters:support8BitControlCharacters
+                                                           data:data mode:mode];
                 break;
 
             case kXtermParserHeaderEndState:
@@ -304,7 +418,10 @@ typedef enum {
                 break;
 
             case kXtermParserFailingState:
-                state = [self parseNextCharsInStringFromContext:context data:nil mode:0];
+                state = [self parseNextCharsInStringFromContext:context
+                                   support8BitControlCharacters:support8BitControlCharacters
+                                                           data:nil
+                                                           mode:0];
 
                 // Convert success states into failure states.
                 if (state == kXtermParserFinishedState) {
@@ -368,7 +485,7 @@ typedef enum {
     NSString* key;
     NSString* value;
     if (eqRange.location != NSNotFound) {
-        key = [argument substringToIndex:eqRange.location];;
+        key = [argument substringToIndex:eqRange.location];
         value = [argument substringFromIndex:eqRange.location+1];
     } else {
         key = argument;

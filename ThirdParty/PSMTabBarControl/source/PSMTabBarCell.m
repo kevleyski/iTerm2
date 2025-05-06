@@ -12,6 +12,8 @@
 #import "PSMProgressIndicator.h"
 #import "PSMTabDragAssistant.h"
 
+extern void AppendPinnedDebugLogMessage(NSString *key, NSString *value, ...);
+
 @interface PSMTabBarCell()<PSMProgressIndicatorDelegate>
 - (NSView<PSMTabBarControlProtocol> *)psmTabControlView;
 @end
@@ -107,9 +109,9 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
 }
 
 - (BOOL)accessibilityPerformPress {
-        PSMTabBarCell *cell = self.cell;
-    [cell.psmTabControlView closeTabClick:cell];
-    return YES; // we don't actually know if -closeTabClick: succeeded, but for now, let's pretend it did
+    PSMTabBarCell *cell = self.cell;
+    [cell.psmTabControlView closeTabClick:cell button:0];
+    return YES; // we don't actually know if -closeTabClick:button: succeeded, but for now, let's pretend it did
 }
 
 @end
@@ -119,7 +121,7 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
 // should invoke -invalidate from its -dealloc method and release the timer to
 // avoid getting called posthumously.
 @interface PSMWeakTimer : NSObject
-@property(nonatomic, assign) id target;
+@property(nonatomic, weak) id target;
 @property(nonatomic, assign) SEL selector;
 
 - (instancetype)initWithTimeInterval:(NSTimeInterval)timeInterval
@@ -159,7 +161,11 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
 }
 
 - (void)timerDidFire:(NSTimer *)timer {
-    [_target performSelector:_selector withObject:timer];
+    IMP imp = [_target methodForSelector:_selector];
+    if (imp) {
+        void (*func)(id, SEL, id) = (void *)imp;
+        func(_target, _selector, timer);
+    }
     if (!_repeats) {
         _timer = nil;
     }
@@ -175,6 +181,10 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
     BOOL _hasIcon;
     BOOL _highlighted;
     NSAccessibilityElement *_element;
+    NSMutableArray<PSMCachedTitle *> *_titleCache;
+    NSMutableArray<PSMCachedTitle *> *_subtitleCache;
+    NSTrackingArea *_cellTrackingArea;
+    NSTrackingArea *_closeButtonTrackingArea;
 }
 
 #pragma mark - Creation/Destruction
@@ -213,8 +223,6 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
             }
         }
         [self setFrame:frame];
-        _closeButtonTrackingTag = 0;
-        _cellTrackingTag = 0;
         _closeButtonOver = NO;
         _closeButtonPressed = NO;
         _indicator = nil;
@@ -235,14 +243,6 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
 
 - (void)dealloc {
     [_delayedStringValueTimer invalidate];
-    [_delayedStringValueTimer release];
-
-    [_modifierString release];
-    _indicator.delegate = nil;
-    [_indicator release];
-    [_tabColor release];
-    [_element release];
-    [super dealloc];
 }
 
 - (NSString *)description {
@@ -265,6 +265,47 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
 
 #pragma mark - Accessors
 
+- (PSMCachedTitle *)cachedTitle {
+    if (!_titleCache) {
+        _titleCache = [[NSMutableArray alloc] init];
+    }
+    return [self cachedTitleUsingStorage:_titleCache
+                                  inputs:[self cachedTitleInputs]];
+}
+
+- (PSMCachedTitle *)cachedSubtitle {
+    PSMCachedTitleInputs *inputs = [self cachedSubtitleInputs];
+    if (!inputs) {
+        return nil;
+    }
+    if (!_subtitleCache) {
+        _subtitleCache = [[NSMutableArray alloc] init];
+    }
+    return [self cachedTitleUsingStorage:_subtitleCache
+                                  inputs:inputs];
+}
+
+- (PSMCachedTitle *)cachedTitleUsingStorage:(NSMutableArray<PSMCachedTitle *> *)cache
+                                     inputs:(PSMCachedTitleInputs *)inputs {
+    NSInteger index = [cache indexOfObjectPassingTest:^BOOL(PSMCachedTitle * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        return [obj.inputs isEqual:inputs];
+    }];
+    if (index != NSNotFound) {
+        PSMCachedTitle *title = cache[index];
+        if (index > 0) {
+            [cache removeObjectAtIndex:index];
+            [cache insertObject:title atIndex:0];
+        }
+        return title;
+    }
+    PSMCachedTitle *title = [[PSMCachedTitle alloc] initWith:inputs];
+    [cache insertObject:title atIndex:0];
+    while (cache.count > 2) {
+        [cache removeLastObject];
+    }
+    return title;
+}
+
 - (BOOL)closeButtonVisible {
     return !_isCloseButtonSuppressed || [self highlightAmount] > 0;
 }
@@ -278,8 +319,24 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
 }
 
 - (void)setStringValue:(NSString *)aString {
+    const NSRange newlineRange = [aString rangeOfString:@"\n"];
+    if (newlineRange.location != NSNotFound) {
+        if (![[self psmTabControlView] supportsMultiLineLabels]) {
+            [self reallySetStringValue:[aString stringByReplacingCharactersInRange:newlineRange withString:@" "]];
+            return;
+        }
+        NSString *firstLine = [aString substringToIndex:newlineRange.location];
+        NSString *subtitle = [aString substringFromIndex:NSMaxRange(newlineRange)];
+        [self reallySetStringValue:firstLine];
+        [self setSubtitleString:subtitle];
+        return;
+    }
+    [self reallySetStringValue:aString];
+}
+
+- (void)reallySetStringValue:(NSString *)aString {
     [super setStringValue:aString];
-    
+
     if (!_delayedStringValueTimer) {
         static const NSTimeInterval kStringValueSettingDelay = 0.1;
         _delayedStringValueTimer =
@@ -291,9 +348,8 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
 }
 
 - (void)updateStringValue:(NSTimer *)timer {
-    [_delayedStringValueTimer release];
     _delayedStringValueTimer = nil;
-    _stringSize = [[self attributedStringValue] size];
+    _stringSize = [[self cachedTitle] size];
     // need to redisplay now - binding observation was too quick.
     [[self psmTabControlView] update:[[self psmTabControlView] automaticallyAnimates]];
 }
@@ -302,10 +358,16 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
     return _stringSize;
 }
 
-- (NSAttributedString *)attributedStringValue {
+- (PSMCachedTitleInputs *)cachedTitleInputs {
     id<PSMTabBarControlProtocol> control = [self psmTabControlView];
     id <PSMTabStyle> tabStyle = [control style];
-    return [tabStyle attributedStringValueForTabCell:self];
+    return [tabStyle cachedTitleInputsForTabCell:self];
+}
+
+- (PSMCachedTitleInputs *)cachedSubtitleInputs {
+    id<PSMTabBarControlProtocol> control = [self psmTabControlView];
+    id <PSMTabStyle> tabStyle = [control style];
+    return [tabStyle cachedSubtitleInputsForTabCell:self];
 }
 
 - (PSMProgressIndicator *)indicator {
@@ -337,6 +399,25 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
     }
 
     _currentStep = value;
+}
+
+- (BOOL)hasCloseButton {
+    if (self.frame.size.width > 85) {
+        return _hasCloseButton;
+    }
+    id control = [self controlView];
+    if (![control respondsToSelector:@selector(tabView)]) {
+        // Shouldn't happen.
+        return _hasCloseButton;
+    }
+    NSTabView *tabView = [control tabView];
+    if (!tabView) {
+        return _hasCloseButton;
+    }
+    if ([tabView selectedTabViewItem] == self.representedObject) {
+        return _hasCloseButton;
+    }
+    return NO;
 }
 
 #pragma mark - Bindings
@@ -400,10 +481,10 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
 
 - (void)mouseEntered:(NSEvent *)theEvent {
     // check for which tag
-    if ([theEvent trackingNumber] == _closeButtonTrackingTag) {
+    if (theEvent.trackingArea == _closeButtonTrackingArea) {
         _closeButtonOver = YES;
     }
-    if ([theEvent trackingNumber] == _cellTrackingTag) {
+    if (theEvent.trackingArea == _cellTrackingArea) {
         [self setHighlighted:YES];
         [[self psmTabControlView] setNeedsDisplay:NO];
     }
@@ -414,17 +495,70 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
 
 - (void)mouseExited:(NSEvent *)theEvent {
     // check for which tag
-    if ([theEvent trackingNumber] == _closeButtonTrackingTag) {
+    if (theEvent.trackingArea == _closeButtonTrackingArea) {
         _closeButtonOver = NO;
     }
 
-    if ([theEvent trackingNumber] == _cellTrackingTag) {
+    if (theEvent.trackingArea == _cellTrackingArea) {
         [self setHighlighted:NO];
         [[self psmTabControlView] setNeedsDisplay:NO];
     }
 
     //tell the control we only need to redraw the affected tab
     [[self psmTabControlView] setNeedsDisplayInRect:NSInsetRect([self frame], -2, -2)];
+}
+
+- (void)removeCloseButtonTrackingRectFrom:(NSView *)view {
+    [self removeTrackingArea:&_closeButtonTrackingArea from:view];
+}
+
+- (void)removeCellTrackingRectFrom:(NSView *)view {
+    [self removeTrackingArea:&_cellTrackingArea from:view];
+}
+
+- (void)removeTrackingArea:(NSTrackingArea * __strong *)areaPtr from:(NSView *)view {
+    NSTrackingArea *area = *areaPtr;
+    if (!area) {
+        return;
+    }
+    if (![view.trackingAreas containsObject:area]) {
+        return;
+    }
+    @try {
+        [view removeTrackingArea:area];
+    } @catch (NSException *exception) {
+    }
+    *areaPtr = nil;
+}
+
+- (void)setCellTrackingRect:(NSRect)rect
+                   userData:(NSDictionary *)userData
+               assumeInside:(BOOL)flag
+                       view:(NSView *)view {
+    const NSTrackingAreaOptions options = (NSTrackingMouseEnteredAndExited |
+                                           NSTrackingActiveAlways |
+                                           NSTrackingCursorUpdate);
+    NSTrackingArea *area = [[NSTrackingArea alloc] initWithRect:rect
+                                                        options:options
+                                                          owner:self
+                                                       userInfo:userData];
+    [view addTrackingArea:area];
+    _cellTrackingArea = area;
+}
+
+- (void)setCloseButtonTrackingRect:(NSRect)rect
+                          userData:(NSDictionary *)userData
+                      assumeInside:(BOOL)flag
+                              view:(NSView *)view {
+    const NSTrackingAreaOptions options = (NSTrackingMouseEnteredAndExited |
+                                           NSTrackingActiveAlways |
+                                           NSTrackingCursorUpdate);
+    NSTrackingArea *area = [[NSTrackingArea alloc] initWithRect:rect
+                                                        options:options
+                                                          owner:self
+                                                       userInfo:userData];
+    [view addTrackingArea:area];
+    _closeButtonTrackingArea = area;
 }
 
 #pragma mark - Drag Support
@@ -435,18 +569,14 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
                                                  orientation:[[self psmTabControlView] orientation]];
 
     NSBitmapImageRep *rep;
-    if (@available(macOS 10.14, *)) {
-        rep = [self.psmTabControlView bitmapImageRepForCachingDisplayInRect:cellFrame];
-        [self.psmTabControlView cacheDisplayInRect:cellFrame toBitmapImageRep:rep];
-    } else {
-        [[self psmTabControlView] lockFocus];
-        rep = [[[NSBitmapImageRep alloc] initWithFocusedViewRect:cellFrame] autorelease];
-        [[self psmTabControlView] unlockFocus];
-    }
-    NSImage *image = [[[NSImage alloc] initWithSize:[rep size]] autorelease];
+    rep = [self.psmTabControlView bitmapImageRepForCachingDisplayInRect:cellFrame];
+    [self.psmTabControlView cacheDisplayInRect:cellFrame toBitmapImageRep:rep];
+    NSImage *image = [[NSImage alloc] initWithSize:[rep size]];
     [image addRepresentation:rep];
-    NSImage *returnImage = [[[NSImage alloc] initWithSize:[rep size]] autorelease];
+    NSImage *returnImage = [[NSImage alloc] initWithSize:[rep size]];
     [returnImage lockFocus];
+    [[NSColor windowBackgroundColor] set];
+    NSRectFill(NSMakeRect(0, 0, returnImage.size.width, returnImage.size.height));
     [image drawAtPoint:NSZeroPoint
               fromRect:NSZeroRect
              operation:NSCompositingOperationSourceOver
@@ -462,7 +592,6 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
                    operation:NSCompositingOperationSourceOver
                     fraction:1.0];
         [returnImage unlockFocus];
-        [piImage release];
     }
     return returnImage;
 }
@@ -477,8 +606,6 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
         [aCoder encodeInt:_currentStep forKey:@"currentStep"];
         [aCoder encodeBool:_isPlaceholder forKey:@"isPlaceholder"];
         [aCoder encodeInt:_tabState forKey:@"tabState"];
-        [aCoder encodeInt:_closeButtonTrackingTag forKey:@"closeButtonTrackingTag"];
-        [aCoder encodeInt:_cellTrackingTag forKey:@"cellTrackingTag"];
         [aCoder encodeBool:_closeButtonOver forKey:@"closeButtonOver"];
         [aCoder encodeBool:_closeButtonPressed forKey:@"closeButtonPressed"];
         [aCoder encodeObject:_indicator forKey:@"indicator"];
@@ -500,11 +627,9 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
             _currentStep = [aDecoder decodeIntForKey:@"currentStep"];
             _isPlaceholder = [aDecoder decodeBoolForKey:@"isPlaceholder"];
             _tabState = [aDecoder decodeIntForKey:@"tabState"];
-            _closeButtonTrackingTag = [aDecoder decodeIntForKey:@"closeButtonTrackingTag"];
-            _cellTrackingTag = [aDecoder decodeIntForKey:@"cellTrackingTag"];
             _closeButtonOver = [aDecoder decodeBoolForKey:@"closeButtonOver"];
             _closeButtonPressed = [aDecoder decodeBoolForKey:@"closeButtonPressed"];
-            _indicator = [[aDecoder decodeObjectForKey:@"indicator"] retain];
+            _indicator = [aDecoder decodeObjectForKey:@"indicator"];
             _isInOverflowMenu = [aDecoder decodeBoolForKey:@"isInOverflowMenu"];
             _hasCloseButton = [aDecoder decodeBoolForKey:@"hasCloseButton"];
             _isCloseButtonSuppressed = [aDecoder decodeBoolForKey:@"isCloseButtonSuppressed"];
@@ -524,7 +649,6 @@ static NSRect PSMConvertAccessibilityFrameToScreen(NSView *view, NSRect frame) {
             PSMTabCloseButtonAccessibilityElement *closeButtonElement = [[PSMTabCloseButtonAccessibilityElement alloc] initWithCell:self role:NSAccessibilityButtonRole];
             if (closeButtonElement) {
                 _element.accessibilityChildren = @[ closeButtonElement ];
-                [closeButtonElement release];
             }
         }
     }

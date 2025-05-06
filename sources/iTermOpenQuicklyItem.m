@@ -4,15 +4,6 @@
 #import "NSImage+iTerm.h"
 
 @implementation iTermOpenQuicklyItem
-
-- (void)dealloc {
-    [_identifier release];
-    [_title release];
-    [_detail release];
-    [_view release];
-    [super dealloc];
-}
-
 @end
 
 @implementation iTermOpenQuicklySessionItem
@@ -25,13 +16,16 @@
     return self;
 }
 
-- (void)dealloc {
-    [_logoGenerator release];
-    [super dealloc];
-}
-
 - (NSImage *)icon {
     return [_logoGenerator generatedImage];
+}
+
+@end
+
+@implementation iTermOpenQuicklyWindowItem
+
+- (NSImage *)icon {
+    return [NSImage it_imageNamed:@"Window" forClass:self.class];
 }
 
 @end
@@ -60,12 +54,6 @@
         _logoGenerator = [[iTermLogoGenerator alloc] init];
     }
     return self;
-}
-
-- (void)dealloc {
-    [_logoGenerator release];
-    [_presetName release];
-    [super dealloc];
 }
 
 - (NSImage *)icon {
@@ -98,3 +86,53 @@
 
 @end
 
+@implementation iTermOpenQuicklyActionItem : iTermOpenQuicklyItem
+
+- (NSImage *)icon {
+    return [NSImage it_imageNamed:@"OpenQuicklyActionIcon" forClass:self.class];
+}
+
+@end
+
+@implementation iTermOpenQuicklySnippetItem : iTermOpenQuicklyItem
+
+- (NSImage *)icon {
+    return [NSImage it_imageNamed:@"OpenQuicklySnippetIcon" forClass:self.class];
+}
+
+// This can be the sender to -sendSnippet:
+- (id)representedObject {
+    return self.snippet;
+}
+
+@end
+
+@implementation iTermOpenQuicklyInvocationItem
+
+- (NSImage *)icon {
+    return [NSImage it_imageForSymbolName:@"function" accessibilityDescription:nil];
+}
+
+@end
+
+@implementation iTermOpenQuicklyNamedMarkItem
+
+- (NSImage *)icon {
+    return [NSImage it_imageNamed:@"OpenQuicklyNamedMark" forClass:self.class];
+}
+
+@end
+
+@implementation iTermOpenQuicklyMenuItem
+
+- (NSImage *)icon {
+    NSImage *image = [NSImage it_imageNamed:@"OpenQuicklyMenuItem" forClass:self.class];
+    image.template = YES;
+    return image;
+}
+
+- (BOOL)valid {
+    return self.menuItem.isEnabled && !self.menuItem.isHidden;
+}
+
+@end

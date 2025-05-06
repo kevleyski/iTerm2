@@ -41,9 +41,12 @@ extern NSString *const kNonTerminalWindowBecameKeyNotification;
 
 extern NSString *const kMarkAlertActionModalAlert;
 extern NSString *const kMarkAlertActionPostNotification;
+extern NSString *const kMarkAlertActionRingBell;
 extern NSString *const kShowFullscreenTabsSettingDidChange;
 extern NSString *const iTermApplicationWillTerminate;
-extern NSString *const iTermDidToggleSecureInputNotification;
+extern NSString *const iTermDidToggleAlertOnMarksInOffscreenSessionsNotification;
+
+void TurnOnDebugLoggingAutomatically(void);
 
 @interface iTermApplicationDelegate : NSObject<iTermApplicationDelegate>
 
@@ -62,6 +65,7 @@ extern NSString *const iTermDidToggleSecureInputNotification;
 @property(nonatomic, readonly) NSMenu *downloadsMenu;
 @property(nonatomic, readonly) NSMenu *uploadsMenu;
 @property(nonatomic, readonly) iTermScriptsMenuController *scriptsMenuController;
+@property(nonatomic, readonly) BOOL toggleFullScreenHasCmdEnterShortcut;
 
 - (void)updateMaximizePaneMenuItem;
 - (void)updateUseTransparencyMenuItem;
@@ -72,8 +76,9 @@ extern NSString *const iTermDidToggleSecureInputNotification;
 - (void)userDidInteractWithASession;
 
 - (void)openPasswordManagerToAccountName:(NSString *)name inSession:(PTYSession *)session;
-- (void)updateBuriedSessionsMenu;
 - (void)didToggleTraditionalFullScreenMode;
+- (void)willRestoreWindow;
+- (void)newTabAtIndex:(NSNumber *)index;
 
 #pragma mark - Actions
 

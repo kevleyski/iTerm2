@@ -6,7 +6,6 @@
 *.pbxuser
 *.perspective
 *.perspectivev3
-iTerm2.xcodeproj/project.xcworkspace
 build/
 .DS_Store
 canary.xml
@@ -21,7 +20,13 @@ iTerm2.xcodeproj/xcuserdata/*
 ColorPicker/ColorPicker.xcodeproj/project.xcworkspace/xcuserdata/
 ColorPicker/ColorPicker.xcodeproj/xcuserdata/
 iTerm2.xcodeproj/project.xcworkspace/contents.xcworkspacedata
+iTerm2.xcodeproj/project.xcworkspace/xcuserdata/gnachman.xcuserdatad/
+iTerm2.xcodeproj/project.xcworkspace/xcuserdata/gnachman.xcuserdatad/UserInterfaceState.xcuserstate
 api/library/python/iterm2/docs/_build/
+ThirdParty/libsixel-arm
+ThirdParty/libsixel/lib/libsixel-arm.a
+ThirdParty/libsixel/lib/libsixel-x86.a
+plists/iTerm2.plist
 
 # Compiled python modules.
 *.pyc
@@ -32,4 +37,19 @@ api/library/python/iterm2/dist
 
 # Python egg metadata, regenerated from source files by setuptools.
 api/library/python/iterm2/*.egg-info
+api/library/python/iterm2/.mypy_cache
+api/library/python/iterm2/_unstubbed
+api/library/python/iterm2/docs/_build
 
+# Better font picker
+BetterFontPicker/BetterFontPicker.xcodeproj/project.xcworkspace/xcuserdata/gnachman.xcuserdatad/UserInterfaceState.xcuserstate
+BetterFontPicker/BetterFontPicker.xcodeproj/xcuserdata
+BetterFontPicker/BetterFontPicker.xcodeproj/project.xcworkspace/xcuserdata/
+
+# AI Plugin
+iTermAI/iTermAI.xcodeproj/project.xcworkspace/xcuserdata/
+iTermAI/iTermAI.xcodeproj/xcuserdata/
+
+SignPlugin/SignPlugin.xcodeproj/project.xcworkspace/xcuserdata/gnachman.xcuserdatad/UserInterfaceState.xcuserstate
+SignPlugin/SignPlugin.xcodeproj/project.xcworkspace/xcuserdata/gnachman.xcuserdatad/UserInterfaceState.xcuserstate
+SignPlugin/SignPlugin.xcodeproj/xcuserdata/gnachman.xcuserdatad/xcschemes/xcschememanagement.plist

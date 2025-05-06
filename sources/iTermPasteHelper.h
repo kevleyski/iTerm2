@@ -12,9 +12,11 @@
 extern const int kNumberOfSpacesPerTabCancel;
 extern const int kNumberOfSpacesPerTabNoConversion;
 extern const int kNumberOfSpacesPerTabOpenAdvancedPaste;
+extern const NSInteger iTermQuickPasteBytesPerCallDefaultValue;
 
 @class iTermStatusBarViewController;
 @class iTermVariableScope;
+@class PasteContext;
 
 @protocol iTermPasteHelperDelegate <NSObject>
 
@@ -51,9 +53,14 @@ extern const int kNumberOfSpacesPerTabOpenAdvancedPaste;
 
 @interface iTermPasteHelper : NSObject
 
-@property(nonatomic, assign) id<iTermPasteHelperDelegate> delegate;
+@property(nonatomic, weak) id<iTermPasteHelperDelegate> delegate;
 @property(nonatomic, readonly) BOOL isPasting;
 @property(nonatomic, readonly) BOOL dropDownPasteViewIsVisible;
+@property(nonatomic, readonly) BOOL isWaitingForPrompt;
+@property(nonatomic, readonly) PasteContext *pasteContext;
+
++ (BOOL)promptToConvertTabsToSpacesWhenPasting;
++ (void)togglePromptToConvertTabsToSpacesWhenPasting;
 
 + (NSMutableCharacterSet *)unsafeControlCodeSet;
 
@@ -66,6 +73,7 @@ extern const int kNumberOfSpacesPerTabOpenAdvancedPaste;
              slowly:(BOOL)slowly
    escapeShellChars:(BOOL)escapeShellChars
            isUpload:(BOOL)isUpload
+    allowBracketing:(BOOL)allowBracketing
        tabTransform:(iTermTabTransformTags)tabTransform
        spacesPerTab:(int)spacesPerTab;
 
@@ -73,6 +81,7 @@ extern const int kNumberOfSpacesPerTabOpenAdvancedPaste;
              slowly:(BOOL)slowly
    escapeShellChars:(BOOL)escapeShellChars
            isUpload:(BOOL)isUpload
+    allowBracketing:(BOOL)allowBracketing
        tabTransform:(iTermTabTransformTags)tabTransform
        spacesPerTab:(int)spacesPerTab
            progress:(void (^)(NSInteger))progress;
@@ -96,6 +105,7 @@ extern const int kNumberOfSpacesPerTabOpenAdvancedPaste;
 - (void)unblock;
 
 - (void)showAdvancedPasteWithFlags:(PTYSessionPasteFlags)flags;
+- (void)temporaryRightStatusBarComponentDidBecomeAvailable;
 
 #pragma mark - Testing
 
@@ -105,5 +115,15 @@ extern const int kNumberOfSpacesPerTabOpenAdvancedPaste;
                                    selector:(SEL)aSelector
                                    userInfo:(id)userInfo
                                     repeats:(BOOL)yesOrNo;
+
+- (PasteEvent *)pasteEventWithString:(NSString *)theString
+                              slowly:(BOOL)slowly
+                    escapeShellChars:(BOOL)escapeShellChars
+                            isUpload:(BOOL)isUpload
+                     allowBracketing:(BOOL)allowBracketing  // if true respect delegate's wishes.
+                        tabTransform:(iTermTabTransformTags)tabTransform
+                        spacesPerTab:(int)spacesPerTab
+                            progress:(void (^)(NSInteger))progress;
+- (void)tryToPasteEvent:(PasteEvent *)pasteEvent;
 
 @end

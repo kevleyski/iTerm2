@@ -10,15 +10,22 @@
 #import "iTermSwiftyString.h"
 #import "iTermVariableScope.h"
 #import "iTermWarning.h"
+#import "NSArray+iTerm.h"
 #import "NSStringITerm.h"
 #import "RegexKitLite.h"
 #import "ScreenChar.h"
 #import <CommonCrypto/CommonDigest.h>
+#import "iTerm2SharedARC-Swift.h"
 
 NSString * const kTriggerRegexKey = @"regex";
 NSString * const kTriggerActionKey = @"action";
 NSString * const kTriggerParameterKey = @"parameter";
 NSString * const kTriggerPartialLineKey = @"partial";
+NSString * const kTriggerDisabledKey = @"disabled";
+NSString * const kTriggerNameKey = @"name";
+
+@interface Trigger()
+@end
 
 @implementation Trigger {
     // The last absolute line number on which this trigger fired for a partial
@@ -26,25 +33,43 @@ NSString * const kTriggerPartialLineKey = @"partial";
     long long _lastLineNumber;
     NSString *regex_;
     id param_;
-    iTermSwiftyString *_cachedSwiftyString;
+    iTermSwiftyStringWithBackreferencesEvaluator *_evaluator;
+    NSRegularExpression *_compiledRegex;
 }
 
 @synthesize regex = regex_;
 @synthesize param = param_;
 
++ (NSSet<NSString *> *)synonyms {
+    return [NSSet set];
+}
+
+// The purpose of this is to re-encode colors that were previously key-value encoded into hex so that the Python APi can consume them.
++ (NSDictionary *)sanitizedTriggerDictionary:(NSDictionary *)dict {
+    Trigger *trigger = [self triggerFromDict:dict];
+    [trigger sanitize];
+    return trigger.dictionaryValue;
+}
+
++ (nullable Trigger *)triggerFromUntrustedDict:(NSDictionary *)dict {
+    NSString *className = [dict objectForKey:kTriggerActionKey];
+    Class class = NSClassFromString(className);
+    if (![class isSubclassOfClass:[Trigger class]] || class == [Trigger class]) {
+        return nil;
+    }
+    return [self triggerFromDict:dict];
+}
+
 + (Trigger *)triggerFromDict:(NSDictionary *)dict
 {
     NSString *className = [dict objectForKey:kTriggerActionKey];
-    if ([className isEqualToString:@"iTermUserNotificationTrigger"]) {
-        // I foolishly renamed the class in 3.2.1, which broke everyone's triggers. It got renamed
-        // back in 3.2.2. If someone created a new trigger in 3.2.1 it would have the bogus name.
-        className = @"GrowlTrigger";
-    }
     Class class = NSClassFromString(className);
     Trigger *trigger = [[class alloc] init];
     trigger.regex = dict[kTriggerRegexKey];
     trigger.param = dict[kTriggerParameterKey];
     trigger.partialLine = [dict[kTriggerPartialLineKey] boolValue];
+    trigger.disabled = [dict[kTriggerDisabledKey] boolValue];
+    trigger->_name = [NSString castFrom:dict[kTriggerNameKey]];
     return trigger;
 }
 
@@ -57,8 +82,8 @@ NSString * const kTriggerPartialLineKey = @"partial";
 }
 
 - (NSString *)description {
-    return [NSString stringWithFormat:@"<%@: %p regex=%@ param=%@>",
-               NSStringFromClass(self.class), self, self.regex, self.param];
+    return [NSString stringWithFormat:@"<%@: %p name=%@ regex=%@ param=%@>",
+            NSStringFromClass(self.class), self, self.name, self.regex, self.param];
 }
 
 - (NSString *)action {
@@ -66,6 +91,15 @@ NSString * const kTriggerPartialLineKey = @"partial";
 }
 
 - (void)setAction:(NSString *)action {
+    assert(false);
+}
+
+- (void)sanitize {
+    // Do nothing by default because most triggers don't neet sanitization.
+}
+
++ (NSString *)title {
+    // Subclasses must override this
     assert(false);
 }
 
@@ -95,29 +129,44 @@ NSString * const kTriggerPartialLineKey = @"partial";
     return NO;
 }
 
+- (BOOL)paramIsTwoStrings {
+    return NO;
+}
+
 - (NSDictionary *)menuItemsForPoupupButton
 {
     return nil;
 }
 
+- (BOOL)isIdempotent {
+    return NO;
+}
+
+- (BOOL)detectsPrompt {
+    return NO;
+}
+
+- (NSString *)helpText {
+    return nil;
+}
+
 - (NSArray *)groupedMenuItemsForPopupButton
 {
-  NSDictionary *menuItems = [self menuItemsForPoupupButton];
-  if (menuItems) {
-    return @[ menuItems ];
-  } else {
-    return nil;
-  }
+    NSDictionary *menuItems = [self menuItemsForPoupupButton];
+    if (menuItems) {
+        return @[ menuItems ];
+    } else {
+        return nil;
+    }
 }
 
-- (id<NSTextFieldDelegate>)newParameterDelegateWithPassthrough:(id<NSTextFieldDelegate>)passthrough {
+- (id<iTermFocusReportingTextFieldDelegate>)newParameterDelegateWithPassthrough:(id<NSTextFieldDelegate>)passthrough {
     return nil;
 }
 
-- (BOOL)performActionWithCapturedStrings:(NSString *const *)capturedStrings
+- (BOOL)performActionWithCapturedStrings:(NSArray<NSString *> *)stringArray
                           capturedRanges:(const NSRange *)capturedRanges
-                            captureCount:(NSInteger)captureCount
-                               inSession:(PTYSession *)aSession
+                               inSession:(id<iTermTriggerSession>)aSession
                                 onString:(iTermStringLine *)stringLine
                     atAbsoluteLineNumber:(long long)lineNumber
                         useInterpolation:(BOOL)useInterpolation
@@ -126,12 +175,62 @@ NSString * const kTriggerPartialLineKey = @"partial";
     return NO;
 }
 
+- (BOOL)instantTriggerCanFireMultipleTimesPerLine {
+    return NO;
+}
+
+- (void)setRegex:(NSString *)regex {
+    regex_ = [regex copy];
+    _compiledRegex = [NSRegularExpression regularExpressionWithPattern:regex_ options:0 error:nil];
+}
+
+- (void)enumerateMatchesInString:(NSString *)string
+                           block:(void (^)(NSArray<NSString *> *capturedStrings,
+                                           const NSRange *capturedRanges,
+                                           BOOL *stop))block {
+    const size_t maxStaticRangeCount = 16;
+    __block size_t rangeCapacity = maxStaticRangeCount;
+    NSRange rangeStorage[maxStaticRangeCount];
+    __block NSRange *ranges = rangeStorage;
+    __block NSRange *dynamicRangeStorage = NULL;
+    [_compiledRegex enumerateMatchesInString:string options:0 range:NSMakeRange(0, string.length) usingBlock:^(NSTextCheckingResult * _Nullable result, NSMatchingFlags flags, BOOL * _Nonnull stop) {
+        NSMutableArray<NSString *> *captures = [NSMutableArray arrayWithCapacity:result.numberOfRanges];
+        if (result.numberOfRanges > rangeCapacity) {
+            dynamicRangeStorage = iTermRealloc(dynamicRangeStorage, result.numberOfRanges, sizeof(NSRange));
+            ranges = dynamicRangeStorage;
+            rangeCapacity = result.numberOfRanges;
+        }
+
+        for (NSInteger i = 0; i < result.numberOfRanges; i++) {
+            const NSRange range = [result rangeAtIndex:i];
+            NSString *substring;
+            if (range.length == 0) {
+                substring = @"";
+            } else {
+                substring = [string substringWithRange:range];
+            }
+            [captures addObject:substring];
+            ranges[i] = [result rangeAtIndex:i];
+        }
+        block(captures, ranges, stop);
+
+    }];
+    if (ranges != rangeStorage) {
+        free(ranges);
+    }
+}
+
 - (BOOL)tryString:(iTermStringLine *)stringLine
-        inSession:(PTYSession *)aSession
+        inSession:(id<iTermTriggerSession>)aSession
       partialLine:(BOOL)partialLine
        lineNumber:(long long)lineNumber
  useInterpolation:(BOOL)useInterpolation {
-    if (_partialLine && _lastLineNumber == lineNumber) {
+    if (self.disabled) {
+        return NO;
+    }
+    if (_partialLine &&
+        !self.instantTriggerCanFireMultipleTimesPerLine &&
+        _lastLineNumber == lineNumber) {
         // Already fired a on a partial line on this line.
         if (!partialLine) {
             _lastLineNumber = -1;
@@ -142,67 +241,85 @@ NSString * const kTriggerPartialLineKey = @"partial";
         // This trigger doesn't support partial lines.
         return NO;
     }
-
+    
     __block BOOL stopFutureTriggersFromRunningOnThisLine = NO;
     NSString *s = stringLine.stringValue;
-    [s enumerateStringsMatchedByRegex:regex_
-                           usingBlock:^(NSInteger captureCount,
-                                        NSString *const __unsafe_unretained *capturedStrings,
-                                        const NSRange *capturedRanges,
-                                        volatile BOOL *const stopEnumerating) {
-                               self->_lastLineNumber = lineNumber;
-                               DLog(@"Trigger %@ matched string %@", self, s);
-                               if (![self performActionWithCapturedStrings:capturedStrings
-                                                            capturedRanges:capturedRanges
-                                                              captureCount:captureCount
-                                                                 inSession:aSession
-                                                                  onString:stringLine
-                                                      atAbsoluteLineNumber:lineNumber
-                                                          useInterpolation:useInterpolation
-                                                                      stop:&stopFutureTriggersFromRunningOnThisLine]) {
-                                   *stopEnumerating = YES;
-                               }
-                           }];
+    DLog(@"Search for regex %@ in string %@", regex_, s);
+    if (![iTermAdvancedSettingsModel fastTriggerRegexes]) {
+        DLog(@"Use RegexKitLite");
+        [s enumerateStringsMatchedByRegex:regex_
+                               usingBlock:^(NSInteger captureCount,
+                                            NSString *const __unsafe_unretained *capturedStrings,
+                                            const NSRange *capturedRanges,
+                                            volatile BOOL *const stopEnumerating) {
+            self->_lastLineNumber = lineNumber;
+            DLog(@"Trigger %@ matched string %@", self, s);
+            NSArray<NSString *> *stringArray = [[NSArray alloc] initWithObjects:capturedStrings
+                                                                          count:captureCount];
+            if (![self performActionWithCapturedStrings:stringArray
+                                         capturedRanges:capturedRanges
+                                              inSession:aSession
+                                               onString:stringLine
+                                   atAbsoluteLineNumber:lineNumber
+                                       useInterpolation:useInterpolation
+                                                   stop:&stopFutureTriggersFromRunningOnThisLine]) {
+                *stopEnumerating = YES;
+            }
+        }];
+    } else if (s != nil) {
+        DLog(@"Use NSRegularExpression");
+        [self enumerateMatchesInString:s block:^(NSArray<NSString *> *stringArray,
+                                                 const NSRange *capturedRanges,
+                                                 BOOL *stopEnumerating) {
+            self->_lastLineNumber = lineNumber;
+            DLog(@"Trigger %@ matched string %@", self, s);
+            if (![self performActionWithCapturedStrings:stringArray
+                                         capturedRanges:capturedRanges
+                                              inSession:aSession
+                                               onString:stringLine
+                                   atAbsoluteLineNumber:lineNumber
+                                       useInterpolation:useInterpolation
+                                                   stop:&stopFutureTriggersFromRunningOnThisLine]) {
+                *stopEnumerating = YES;
+            }
+        }];
+    }
     if (!partialLine) {
         _lastLineNumber = -1;
     }
     return stopFutureTriggersFromRunningOnThisLine;
 }
 
-- (void)paramWithBackreferencesReplacedWithValues:(NSArray *)strings
-                                            scope:(iTermVariableScope *)scope
-                                 useInterpolation:(BOOL)useInterpolation
-                                       completion:(void (^)(NSString *))completion {
-    NSString *temp[10];
-    int i;
-    for (i = 0; i < strings.count; i++) {
-        temp[i] = strings[i];
-    }
-    [self paramWithBackreferencesReplacedWithValues:temp
-                                              count:i
+- (iTermPromise<NSString *> *)paramWithBackreferencesReplacedWithValues:(NSArray *)stringArray
+                                                                absLine:(long long)absLine
+                                                                  scope:(id<iTermTriggerScopeProvider>)scopeProvider
+                                                       useInterpolation:(BOOL)useInterpolation {
+    NSString *p = [NSString castFrom:self.param] ?: @"";
+    if (useInterpolation && [p interpolatedStringContainsNonliteral]) {
+        return [iTermPromise promise:^(id<iTermPromiseSeal>  _Nonnull seal) {
+            [scopeProvider performBlockWithScope:^(iTermVariableScope * _Nonnull scope, id<iTermObject> _Nonnull object) {
+                assert([NSThread isMainThread]);
+                [self evaluateSwiftyStringParameter:p
+                                     backreferences:stringArray
+                                            absLine:absLine
                                               scope:scope
-                                   useInterpolation:useInterpolation
-                                         completion:completion];
-}
-
-- (void)paramWithBackreferencesReplacedWithValues:(NSString * const*)strings
-                                            count:(NSInteger)count
-                                            scope:(iTermVariableScope *)scope
-                                 useInterpolation:(BOOL)useInterpolation
-                                       completion:(void (^)(NSString *))completion {
-    if (useInterpolation) {
-        [self evaluateSwiftyStringParameter:self.param
-                             backreferences:[[NSArray alloc] initWithObjects:strings count:count]
-                                      scope:scope
-                                 completion:completion];
-        return;
+                                              owner:object
+                                         completion:^(NSString *value) {
+                    if (value) {
+                        [seal fulfill:value];
+                    } else {
+                        [seal reject:[NSError errorWithDomain:@"com.iterm2.trigger" code:0 userInfo:nil]];
+                    }
+                }];
+            }];
+        }];
     }
-    NSString *p = self.param;
-
+    
+    const NSUInteger count = stringArray.count;
     for (int i = 0; i < 9; i++) {
         NSString *rep = @"";
         if (count > i) {
-            rep = strings[i];
+            rep = stringArray[i];
         }
         p = [p stringByReplacingBackreference:i withString:rep];
     }
@@ -214,40 +331,54 @@ NSString * const kTriggerPartialLineKey = @"partial";
     p = [p stringByReplacingEscapedChar:'t' withString:@"\t"];
     p = [p stringByReplacingEscapedChar:'\\' withString:@"\\"];
     p = [p stringByReplacingEscapedHexValuesWithChars];
-    completion(p);
+
+    return [iTermPromise promise:^(id<iTermPromiseSeal>  _Nonnull seal) {
+        [seal fulfill:p];
+    }];
 }
 
 - (iTermVariableScope *)variableScope:(iTermVariableScope *)scope byAddingBackreferences:(NSArray<NSString *> *)backreferences {
-    iTermVariables *matchesFrame = [[iTermVariables alloc] initWithContext:iTermVariablesSuggestionContextNone owner:self];
-    iTermVariableScope *myScope = [scope copy];
-    [myScope addVariables:matchesFrame toScopeNamed:nil];
-    [myScope setValue:backreferences forVariableNamed:@"matches"];
-    return myScope;
+    return [scope variableScopeByAddingBackreferences:backreferences owner:self];
 }
 
 - (void)evaluateSwiftyStringParameter:(NSString *)expression
                        backreferences:(NSArray<NSString *> *)backreferences
+                              absLine:(long long)absLine
                                 scope:(iTermVariableScope *)scope
+                                owner:(id<iTermObject>)owner
                            completion:(void (^)(NSString *))completion {
-    iTermVariableScope *myScope = [self variableScope:scope byAddingBackreferences:backreferences];;
-    if (![_cachedSwiftyString.swiftyString isEqualToString:expression]) {
-        _cachedSwiftyString = [[iTermSwiftyString alloc] initWithString:expression scope:myScope observer:nil];
+    if (!_evaluator) {
+        _evaluator = [[iTermSwiftyStringWithBackreferencesEvaluator alloc] initWithExpression:expression];
+    } else {
+        _evaluator.expression = expression;
     }
-
-    [_cachedSwiftyString evaluateSynchronously:NO withScope:myScope completion:^(NSString * _Nonnull value, NSError * _Nonnull error, NSSet<NSString *> * _Nonnull missing) {
+    __weak __typeof(self) weakSelf = self;
+    [_evaluator evaluateWithAdditionalContext:@{ @"matches": backreferences, @"line": @(absLine) }
+                                        scope:scope
+                                        owner:owner
+                                   completion:^(NSString * _Nullable value, NSError * _Nullable error) {
         if (error) {
-            [iTermWarning showWarningWithTitle:[NSString stringWithFormat:@"The following parameter for a “%@” trigger could not be evaluated:\n\n%@\n\nThe error was:\n\n%@",
-                                                [[self class] title], self->_cachedSwiftyString.swiftyString, error.localizedDescription]
-                                       actions:@[ @"OK" ]
-                                     accessory:nil
-                                    identifier:@"NoSyncErrorInTriggerParameter"
-                                   silenceable:kiTermWarningTypeTemporarilySilenceable
-                                       heading:@"Error in Trigger Parameter"
-                                        window:nil];
+            [weakSelf evaluationDidFailWithError:error];
             completion(nil);
+        } else {
+            completion(value);
         }
-        completion(value);
     }];
+}
+
+- (void)evaluationDidFailWithError:(NSError *)error {
+    NSString *title =
+    [NSString stringWithFormat:@"The following parameter for a “%@” trigger could not be evaluated:\n\n%@\n\nThe error was:\n\n%@",
+     [[self class] title],
+     _evaluator.expression,
+     error.localizedDescription];
+    [iTermWarning showWarningWithTitle:title
+                               actions:@[ @"OK" ]
+                             accessory:nil
+                            identifier:@"NoSyncErrorInTriggerParameter"
+                           silenceable:kiTermWarningTypeTemporarilySilenceable
+                               heading:@"Error in Trigger Parameter"
+                                window:nil];
 }
 
 - (NSComparisonResult)compareTitle:(Trigger *)other
@@ -280,18 +411,24 @@ NSString * const kTriggerPartialLineKey = @"partial";
 - (void)reloadData {
 }
 
-- (NSData *)digest {
-    NSDictionary *triggerDictionary = @{ kTriggerActionKey: NSStringFromClass(self.class),
-                                         kTriggerRegexKey: self.regex ?: @"",
-                                         kTriggerParameterKey: self.param ?: @"",
-                                         kTriggerPartialLineKey: @(self.partialLine) };
+- (NSDictionary *)dictionaryValue {
+    return [@{ kTriggerActionKey: NSStringFromClass(self.class),
+               kTriggerRegexKey: self.regex ?: @"",
+               kTriggerParameterKey: self.param ?: @"",
+               kTriggerPartialLineKey: @(self.partialLine),
+               kTriggerDisabledKey: @(self.disabled),
+               kTriggerNameKey: self.name ?: [NSNull null] } dictionaryByRemovingNullValues];
+}
 
+- (NSData *)digest {
+    NSDictionary *triggerDictionary = [self dictionaryValue];
+    
     // Glom all the data together as key=value\nkey=value\n...
     NSMutableString *temp = [NSMutableString string];
     for (NSString *key in [[triggerDictionary allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
         [temp appendFormat:@"%@=%@\n", key, triggerDictionary[key]];
     }
-
+    
     NSData *data = [temp dataUsingEncoding:NSUTF8StringEncoding];
     unsigned char hash[CC_SHA1_DIGEST_LENGTH];
     if (CC_SHA1([data bytes], [data length], hash) ) {
@@ -300,6 +437,119 @@ NSString * const kTriggerPartialLineKey = @"partial";
     } else {
         return data;
     }
+}
+
++ (NSDictionary *)triggerNormalizedDictionary:(NSDictionary *)dict {
+    NSMutableDictionary *temp = [dict mutableCopy];
+    if (!temp[kTriggerPartialLineKey]) {
+        temp[kTriggerPartialLineKey] = @NO;
+    }
+    if (!temp[kTriggerDisabledKey]) {
+        temp[kTriggerDisabledKey] = @NO;
+    }
+    if (!temp[kTriggerParameterKey]) {
+        temp[kTriggerParameterKey] = @"";
+    }
+    return temp;
+}
+
+- (NSAttributedString *)titleAttributedString {
+    NSMutableParagraphStyle *paragraphStyle = [[NSParagraphStyle defaultParagraphStyle] mutableCopy];
+    NSDictionary *boldAttributes = @{
+        NSParagraphStyleAttributeName: paragraphStyle,
+        NSFontAttributeName: [NSFont systemFontOfSize:[NSFont systemFontSize] weight:NSFontWeightSemibold]
+    };
+    return [[NSAttributedString alloc] initWithString:[self.class.title stringByRemovingSuffix:@"…"] attributes:boldAttributes];
+}
+
+- (NSAttributedString *)attributedString {
+    NSAttributedString *newline = [[NSAttributedString alloc] initWithString:@"\n" attributes:self.regularAttributes];
+    id regexAttributedString = self.regex.length > 0 ? [self regexAttributedString] : [NSNull null];
+    NSArray *lines = nil;
+    NSString *instantEmoji = self.partialLine ? @"⚡︎ " : nil;
+    if ([self.name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length > 0) {
+        NSString *name = self.name;
+        if (instantEmoji) {
+            name = [instantEmoji stringByAppendingString:name];
+        }
+        NSAttributedString *nameAttributedString = [[NSAttributedString alloc] initWithString:name
+                                                                                   attributes:self.nameAttributes];
+        NSAttributedString *functionAttributedString = [self functionAttributedString];
+        lines = @[nameAttributedString, regexAttributedString, functionAttributedString];
+    } else {
+        NSAttributedString *line2;
+        if (instantEmoji) {
+            NSAttributedString *instant = [[NSAttributedString alloc] initWithString:instantEmoji attributes:self.regularAttributes];
+            line2 = [instant attributedStringByAppendingAttributedString:self.functionAttributedString];
+        } else {
+            line2 = self.functionAttributedString;
+        }
+        lines = @[regexAttributedString, line2];
+    }
+    lines = [lines filteredArrayUsingBlock:^BOOL(id anObject) {
+        return [anObject isKindOfClass:[NSAttributedString class]];
+    }];
+    return [lines it_componentsJoinedBySeparator:newline];
+}
+
+- (NSAttributedString *)regexAttributedString {
+    NSMutableParagraphStyle *paragraphStyle = [[NSParagraphStyle defaultParagraphStyle] mutableCopy];
+    NSDictionary *attributes = @{
+        NSParagraphStyleAttributeName: paragraphStyle,
+        NSFontAttributeName: [NSFont monospacedSystemFontOfSize:[NSFont systemFontSize] weight:NSFontWeightRegular]
+    };
+    return [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"/%@/", self.regex ?: @""]
+                                           attributes:attributes];
+}
+
+- (NSAttributedString *)functionAttributedString {
+    NSAttributedString *paramAttributedString = [self paramAttributedString];
+    if (!paramAttributedString) {
+        return [self titleAttributedString];
+    }
+
+    NSAttributedString *space = [[NSAttributedString alloc] initWithString:@" " attributes:self.regularAttributes];
+
+    return [[self.titleAttributedString attributedStringByAppendingAttributedString:space] attributedStringByAppendingAttributedString:paramAttributedString];
+}
+
+- (NSDictionary *)regularAttributes {
+    NSMutableParagraphStyle *paragraphStyle = [[NSParagraphStyle defaultParagraphStyle] mutableCopy];
+    paragraphStyle.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSDictionary *attributes = @{
+        NSParagraphStyleAttributeName: paragraphStyle,
+        NSFontAttributeName: [NSFont systemFontOfSize:[NSFont systemFontSize]]
+    };
+    return attributes;
+}
+
+- (NSDictionary *)nameAttributes {
+    NSMutableParagraphStyle *paragraphStyle = [[NSParagraphStyle defaultParagraphStyle] mutableCopy];
+    paragraphStyle.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSDictionary *attributes = @{
+        NSParagraphStyleAttributeName: paragraphStyle,
+        NSFontAttributeName: [NSFont boldSystemFontOfSize:[NSFont systemFontSize] + 2]
+    };
+    return attributes;
+}
+
+- (NSAttributedString *)paramAttributedString {
+    NSString *string = [NSString castFrom:self.param];
+    if (!string) {
+        return nil;
+    }
+    return [[NSAttributedString alloc] initWithString:string
+                                           attributes:self.regularAttributes];
+}
+
+#pragma mark - iTermObject
+
+- (iTermBuiltInFunctions *)objectMethodRegistry {
+    return nil;
+}
+
+- (iTermVariableScope *)objectScope {
+    return nil;
 }
 
 @end

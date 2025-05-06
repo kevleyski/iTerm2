@@ -7,6 +7,7 @@
 
 #import "iTermStatusBarSetupElement.h"
 #import "iTermStatusBarComponent.h"
+#import "NSData+iTerm.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -17,6 +18,10 @@ NSString *const iTermStatusBarElementPasteboardType = @"com.iterm2.status-bar-el
 
 @implementation iTermStatusBarSetupElement {
     id<iTermStatusBarComponent> _component;
+}
+
++ (BOOL)supportsSecureCoding {
+    return YES;
 }
 
 - (instancetype)initWithComponent:(id<iTermStatusBarComponent>)component {
@@ -107,12 +112,7 @@ NSString *const iTermStatusBarElementPasteboardType = @"com.iterm2.status-bar-el
 
 
 - (nullable id)pasteboardPropertyListForType:(NSString *)type {
-    // I am using the bundleID as a type
-    if (![type isEqualToString:iTermStatusBarElementPasteboardType]) {
-        return nil;
-    }
-
-    return [NSKeyedArchiver archivedDataWithRootObject:self];
+    return [NSData it_dataWithArchivedObject:self];
 }
 
 #pragma mark - NSPasteboardReading
@@ -122,14 +122,18 @@ NSString *const iTermStatusBarElementPasteboardType = @"com.iterm2.status-bar-el
 }
 
 - (nullable instancetype)initWithPasteboardPropertyList:(id)propertyList ofType:(NSString *)type {
-    NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingWithData:propertyList];
+    // I haven't tested this because I think it's unreachable. If it breaks then it's because
+    // whatever this decodes doesn't conform to secure coding.
+    NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:propertyList
+                                                                                error:nil];
     return [self initWithCoder:unarchiver];
 }
 
 #pragma mark - iTermStatusBarComponentDelegate
 
-- (void)statusBarComponentKnobsDidChange:(id<iTermStatusBarComponent>)component {
-    [self.delegate itermStatusBarSetupElementDidChange:self];
+- (void)statusBarComponentKnobsDidChange:(id<iTermStatusBarComponent>)component
+                             updatedKeys:(NSSet<NSString *> *)updatedKeys {
+    [self.delegate itermStatusBarSetupElementDidChange:self updatedKeys:updatedKeys];
 }
 
 - (BOOL)statusBarComponentIsInSetupUI:(id<iTermStatusBarComponent>)component {
@@ -155,10 +159,74 @@ NSString *const iTermStatusBarElementPasteboardType = @"com.iterm2.status-bar-el
 - (void)statusBarComponent:(id<iTermStatusBarComponent>)component writeString:(NSString *)string {
 }
 
-
 - (BOOL)statusBarComponentTerminalBackgroundColorIsDark:(id<iTermStatusBarComponent>)component {
     return NO;
 }
+
+- (NSColor * _Nullable)statusBarComponentEffectiveBackgroundColor:(id<iTermStatusBarComponent>)component {
+    return nil;
+}
+
+- (void)statusBarComponentOpenStatusBarPreferences:(id<iTermStatusBarComponent>)component {
+    assert(NO);
+}
+
+- (void)statusBarComponentPerformAction:(iTermAction *)action {
+    assert(NO);
+}
+
+- (void)statusBarComponentEditActions:(id<iTermStatusBarComponent>)component {
+    assert(NO);
+}
+
+- (void)statusBarComponentEditSnippets:(id<iTermStatusBarComponent>)component {
+    assert(NO);
+}
+
+- (void)statusBarComponentResignFirstResponder:(id<iTermStatusBarComponent>)component {
+    assert(NO);
+}
+
+- (BOOL)statusBarComponentComposerShouldUsePopover:(id<iTermStatusBarComponent>)component {
+    assert(NO);
+    return NO;
+}
+
+- (void)statusBarComponent:(id<iTermStatusBarComponent>)component
+      reportScriptingError:(NSError *)error
+             forInvocation:(NSString *)invocation
+                    origin:(NSString *)origin {
+    assert(NO);
+}
+
+- (void)statusBarComponentComposerRevealComposer:(id<iTermStatusBarComponent>)component { 
+    assert(NO);
+}
+
+- (void)statusBarComponent:(id<iTermStatusBarComponent>)component performNaturalLanguageQuery:(NSString *)query {
+    assert(NO);
+}
+
+- (iTermActivityInfo)statusBarComponentActivityInfo:(id<iTermStatusBarComponent>)component {
+    assert(NO);
+}
+
+- (id<iTermTriggersDataSource>)statusBarComponentTriggersDataSource:(id<iTermStatusBarComponent>)component {
+    assert(NO);
+}
+
+- (void)statusBarRemoveTemporaryComponent:(nonnull id<iTermStatusBarComponent>)component {
+    assert(NO);
+}
+
+- (void)statusBarSetFilter:(NSString * _Nullable)query {
+    assert(NO);
+}
+
+- (id<ProcessInfoProvider> _Nullable)statusBarComponentProcessInfoProvider {
+    return nil;
+}
+
 
 
 @end

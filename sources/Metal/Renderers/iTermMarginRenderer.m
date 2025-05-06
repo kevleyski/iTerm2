@@ -77,12 +77,20 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)drawWithFrameData:(nonnull iTermMetalFrameData *)frameData
            transientState:(__kindof iTermMetalRendererTransientState *)transientState {
     iTermMarginRendererTransientState *tState = transientState;
-    vector_float4 color = tState.color;
-    color.x *= color.w;
-    color.y *= color.w;
-    color.z *= color.w;
+    [self drawWithFrameData:frameData tState:tState];
+}
+
+- (void)drawWithFrameData:(nonnull iTermMetalFrameData *)frameData
+                   tState:(nonnull iTermMarginRendererTransientState *)tState {
+    [self initializeRegularVertexBuffer:tState];
+    vector_float4 regularColor = tState.regularColor;
+    if (iTermTextIsMonochrome()) {
+        regularColor.x *= regularColor.w;
+        regularColor.y *= regularColor.w;
+        regularColor.z *= regularColor.w;
+    }
     id<MTLBuffer> colorBuffer = [_colorPool requestBufferFromContext:tState.poolContext
-                                                           withBytes:&color
+                                                           withBytes:&regularColor
                                                       checkIfChanged:YES];
     iTermMetalCellRenderer *cellRenderer = [self rendererForConfiguration:tState.cellConfiguration];
     [cellRenderer drawWithTransientState:tState
@@ -90,6 +98,35 @@ NS_ASSUME_NONNULL_BEGIN
                         numberOfVertices:6 * 4
                             numberOfPIUs:0
                            vertexBuffers:@{ @(iTermVertexInputIndexVertices): tState.vertexBuffer }
+                         fragmentBuffers:@{ @(iTermFragmentBufferIndexMarginColor): colorBuffer }
+                                textures:@{}];
+}
+
+- (void)drawWithRenderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder
+                        color:(vector_float4)nonPremultipliedColor
+                  poolContext:(iTermMetalBufferPoolContext *)poolContext
+                 cellRenderer:(iTermMetalCellRenderer *)cellRenderer
+                 vertexBuffer:(id<MTLBuffer>)vertexBuffer
+                     numQuads:(int)numQuads
+               transientState:(iTermMetalRendererTransientState *)transientState {
+    if (numQuads == 0) {
+        return;
+    }
+    vector_float4 color = nonPremultipliedColor;
+    if (iTermTextIsMonochrome()) {
+        color.x *= color.w;
+        color.y *= color.w;
+        color.z *= color.w;
+    }
+    id<MTLBuffer> colorBuffer = [_colorPool requestBufferFromContext:poolContext
+                                                           withBytes:&color
+                                                      checkIfChanged:YES];
+
+    [cellRenderer drawWithTransientState:transientState
+                           renderEncoder:renderEncoder
+                        numberOfVertices:6 * numQuads
+                            numberOfPIUs:0
+                           vertexBuffers:@{ @(iTermVertexInputIndexVertices): vertexBuffer }
                          fragmentBuffers:@{ @(iTermFragmentBufferIndexMarginColor): colorBuffer }
                                 textures:@{}];
 }
@@ -104,7 +141,6 @@ NS_ASSUME_NONNULL_BEGIN
     __kindof iTermMetalRendererTransientState * _Nonnull transientState =
         [renderer createTransientStateForCellConfiguration:configuration
                                              commandBuffer:commandBuffer];
-    [self initializeTransientState:transientState];
     return transientState;
 }
 
@@ -120,7 +156,7 @@ NS_ASSUME_NONNULL_BEGIN
     return v;
 }
 
-- (void)initializeTransientState:(iTermMarginRendererTransientState *)tState {
+- (void)initializeRegularVertexBuffer:(iTermMarginRendererTransientState *)tState {
     CGSize size = CGSizeMake(tState.configuration.viewportSize.x,
                              tState.configuration.viewportSize.y);
     const NSEdgeInsets margins = tState.margins;
@@ -161,6 +197,58 @@ NS_ASSUME_NONNULL_BEGIN
     tState.vertexBuffer = [_verticesPool requestBufferFromContext:tState.poolContext
                                                         withBytes:vertices
                                                    checkIfChanged:YES];
+}
+
+- (int)initializeVertexBuffer:(iTermMarginRendererTransientState *)tState {
+    CGSize size = CGSizeMake(tState.configuration.viewportSize.x,
+                             tState.configuration.viewportSize.y);
+    const NSEdgeInsets margins = tState.margins;
+    vector_float2 vertices[6 * 8];
+    vector_float2 *v = &vertices[0];
+    const VT100GridRange visibleRange = VT100GridRangeMake(0, MAX(0, tState.cellConfiguration.gridSize.height));
+
+    int count = 0;
+
+    // Top
+    v = [self appendVerticesForQuad:CGRectMake(0,
+                                               size.height - margins.bottom,
+                                               size.width,
+                                               margins.bottom)
+                           vertices:v];
+    count += 1;
+
+    // Bottom
+    v = [self appendVerticesForQuad:CGRectMake(0,
+                                               0,
+                                               size.width,
+                                               margins.top)
+                           vertices:v];
+    count += 1;
+
+    const CGFloat gridWidth = tState.cellConfiguration.gridSize.width * tState.cellConfiguration.cellSize.width;
+    const CGFloat rightGutterWidth = tState.configuration.viewportSize.x - margins.left - margins.right - gridWidth;
+
+    // Left/Right
+    CGFloat y = margins.top;
+
+    CGFloat h = visibleRange.length * tState.cellConfiguration.cellSize.height;
+    v = [self appendVerticesForQuad:CGRectMake(0,
+                                               y,
+                                               margins.left,
+                                               h)
+                           vertices:v];
+    v = [self appendVerticesForQuad:CGRectMake(size.width - margins.right - rightGutterWidth,
+                                               y,
+                                               margins.right + rightGutterWidth,
+                                               h)
+                           vertices:v];
+    count += 2;
+    y += h;
+
+    tState.vertexBuffer = [_verticesPool requestBufferFromContext:tState.poolContext
+                                                        withBytes:vertices
+                                                   checkIfChanged:YES];
+    return count;
 }
 
 @end

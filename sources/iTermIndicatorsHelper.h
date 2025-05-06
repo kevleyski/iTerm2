@@ -19,12 +19,20 @@ extern NSString *const kiTermIndicatorAlert;
 extern NSString *const kiTermIndicatorAllOutputSuppressed;
 extern NSString *const kiTermIndicatorZoomedIn;
 extern NSString *const kiTermIndicatorCopyMode;
+extern NSString *const kiTermIndicatorDebugLogging;
+extern NSString *const kiTermIndicatorFilter;
+extern NSString *const kiTermIndicatorSecureKeyboardEntry_Forced;
+extern NSString *const kiTermIndicatorSecureKeyboardEntry_User;
+extern NSString *const kiTermIndicatorPinned;
+extern NSString *const kiTermIndicatorAIChatLinked;
+extern NSString *const kiTermIndicatorAIChatStreaming;
+extern NSString *const kiTermIndicatorChannel;
 
 extern CGFloat kiTermIndicatorStandardHeight;
 
 @protocol iTermIndicatorsHelperDelegate <NSObject>
 
-- (void)setNeedsDisplay:(BOOL)needsDisplay;
+- (void)indicatorNeedsDisplay;
 - (NSColor *)indicatorFullScreenFlashColor;
 
 @end
@@ -37,8 +45,8 @@ extern CGFloat kiTermIndicatorStandardHeight;
 // Alpha value for fullscreen flash.
 @property(nonatomic, readonly) CGFloat fullScreenAlpha;
 
-- (void)setIndicator:(NSString *)identifier visible:(BOOL)visible;
-- (void)beginFlashingIndicator:(NSString *)identifier;
+- (void)setIndicator:(NSString *)identifier visible:(BOOL)visible darkBackground:(BOOL)darkBackground;
+- (void)beginFlashingIndicator:(NSString *)identifier darkBackground:(BOOL)darkBackground;
 - (void)beginFlashingFullScreen;
 
 // Use this from drawRect:
@@ -47,7 +55,9 @@ extern CGFloat kiTermIndicatorStandardHeight;
 // Use this with Metal
 - (void)didDraw;
 
-- (void)enumerateTopRightIndicatorsInFrame:(NSRect)frame andDraw:(BOOL)shouldDraw block:(void (^)(NSString *, NSImage *, NSRect))block;
-- (void)enumerateCenterIndicatorsInFrame:(NSRect)frame block:(void (^)(NSString *, NSImage *, NSRect, CGFloat))block;
+- (void)enumerateTopRightIndicatorsInFrame:(NSRect)frame andDraw:(BOOL)shouldDraw block:(void (^)(NSString *, NSImage *, NSRect, BOOL))block;
+- (void)enumerateCenterIndicatorsInFrame:(NSRect)frame block:(void (^)(NSString *, NSImage *, NSRect, CGFloat, BOOL))block;
+
+- (NSString *)helpTextForIndicatorAt:(NSPoint)point sessionID:(NSString *)sessionID;
 
 @end

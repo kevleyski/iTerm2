@@ -13,14 +13,11 @@ static NSString *const kMarkGuidKey = @"Guid";
 
 @implementation iTermCapturedOutputMark
 
-- (void)dealloc {
-    [_guid release];
-    [super dealloc];
-}
+@synthesize guid = _guid;
 
 - (NSString *)guid {
     if (!_guid) {
-        self.guid = [NSString uuid];
+        _guid = [NSString uuid];
     }
     return _guid;
 }
@@ -33,12 +30,8 @@ static NSString *const kMarkGuidKey = @"Guid";
     return self;
 }
 
-- (BOOL)isVisible {
-    return NO;
-}
-
 - (NSDictionary *)dictionaryValue {
-    NSMutableDictionary *dict = [[[super dictionaryValue] mutableCopy] autorelease];
+    NSMutableDictionary *dict = [[super dictionaryValue] mutableCopy];
     dict[kMarkGuidKey] = self.guid;
     return dict;
 }

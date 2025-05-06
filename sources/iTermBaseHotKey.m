@@ -5,14 +5,9 @@
 #import "iTermCarbonHotKeyController.h"
 #import "iTermEventTap.h"
 #import "NSArray+iTerm.h"
+#import "iTerm2SharedARC-Swift.h"
 
-static const CGEventFlags kCGEventHotKeyModifierMask = (kCGEventFlagMaskShift |
-                                                        kCGEventFlagMaskAlternate |
-                                                        kCGEventFlagMaskCommand |
-                                                        kCGEventFlagMaskControl);
-
-
-@interface iTermBaseHotKey()<iTermEventTapObserver, iTermWeaklyReferenceable>
+@interface iTermBaseHotKey()<iTermEventTapObserver>
 
 // Override this to do a thing that needs to be done. `siblings` are other hotkeys (besides the one
 // this call was made for) that have the same keypress.
@@ -23,8 +18,7 @@ static const CGEventFlags kCGEventHotKeyModifierMask = (kCGEventFlagMaskShift |
 @implementation iTermBaseHotKey {
     // The registered carbon hotkey that listens for hotkey presses.
     NSMutableArray<iTermHotKey *> *_carbonHotKeys;
-    NSTimeInterval _lastModifierTapTime;
-    BOOL _modifierWasPressed;
+    iTermDoubleTapHotkeyStateMachine *_doubleTapHotkeyStateMachine;
     BOOL _registered;
 }
 
@@ -37,32 +31,14 @@ static const CGEventFlags kCGEventHotKeyModifierMask = (kCGEventFlagMaskShift |
         _hasModifierActivation = hasModifierActivation;
         _modifierActivation = modifierActivation;
         _carbonHotKeys = [[NSMutableArray alloc] init];
+        _doubleTapHotkeyStateMachine = [[iTermDoubleTapHotkeyStateMachine alloc] init];
     }
     return self;
-}
-
-ITERM_WEAKLY_REFERENCEABLE
-
-- (void)iterm_dealloc {
-    [_shortcuts release];
-    [_carbonHotKeys release];
-    [super dealloc];
 }
 
 - (NSString *)description {
     return [NSString stringWithFormat:@"<%@: %p shortcuts=%@ modifierActivation=%@,%@>",
             NSStringFromClass([self class]), self, _shortcuts, @(self.hasModifierActivation), @(self.modifierActivation)];
-}
-
-// isEqual: uses pointer equality. Sigh. I really need to just use ARC.
-- (BOOL)isEqual:(id)object {
-    if ([self respondsToSelector:@selector(weaklyReferencedObject)]) {
-        return [[(iTermWeakReference *)self weaklyReferencedObject] isEqual:object];
-    }
-    if ([object respondsToSelector:@selector(weaklyReferencedObject)]) {
-        return [self isEqual:[(iTermWeakReference *)object weaklyReferencedObject]];
-    }
-    return [super isEqual:object];
 }
 
 - (NSArray<iTermHotKeyDescriptor *> *)hotKeyDescriptors {
@@ -92,6 +68,7 @@ ITERM_WEAKLY_REFERENCEABLE
     }
     if (_hasModifierActivation && !_registered) {
         [[iTermFlagsChangedEventTap sharedInstance] addObserver:self];
+        [[iTermKeyDownEventTap sharedInstance] addObserver:self];
     }
     _registered = YES;
 }
@@ -107,10 +84,10 @@ ITERM_WEAKLY_REFERENCEABLE
         }
 
         iTermHotKey *newHotkey =
-            [[[iTermCarbonHotKeyController sharedInstance] registerShortcut:shortcut
-                                                                     target:self
-                                                                   selector:@selector(carbonHotkeyPressed:siblings:)
-                                                                   userData:nil] retain];
+        [[iTermCarbonHotKeyController sharedInstance] registerShortcut:shortcut
+                                                                target:self
+                                                              selector:@selector(carbonHotkeyPressed:siblings:)
+                                                              userData:nil];
         [_carbonHotKeys addObject:newHotkey];
     }
 
@@ -123,6 +100,7 @@ ITERM_WEAKLY_REFERENCEABLE
     }
     if (_registered) {
         [[iTermFlagsChangedEventTap sharedInstance] removeObserver:self];
+        [[iTermKeyDownEventTap sharedInstance] removeObserver:self];
     }
     _registered = NO;
 }
@@ -130,8 +108,8 @@ ITERM_WEAKLY_REFERENCEABLE
 - (void)setShortcuts:(NSArray<iTermShortcut *> *)shortcuts
     hasModifierActivation:(BOOL)hasModifierActivation
        modifierActivation:(iTermHotKeyModifierActivation)modifierActivation {
-    NSSet<iTermShortcut *> *newShortcuts = [[[NSSet alloc] initWithArray:shortcuts] autorelease];
-    NSSet<iTermShortcut *> *oldShortcuts = [[[NSSet alloc] initWithArray:self.shortcuts] autorelease];
+    NSSet<iTermShortcut *> *newShortcuts = [[NSSet alloc] initWithArray:shortcuts];
+    NSSet<iTermShortcut *> *oldShortcuts = [[NSSet alloc] initWithArray:self.shortcuts];
 
     // NOTE:
     // It's important to detect changes to charactersIgnoringModifiers because if it's not up-to-date
@@ -152,7 +130,6 @@ ITERM_WEAKLY_REFERENCEABLE
         [self unregister];
     }
 
-    [_shortcuts release];
     _shortcuts = [newShortcuts.allObjects copy];
     _hasModifierActivation = hasModifierActivation;
     _modifierActivation = modifierActivation;
@@ -176,64 +153,31 @@ ITERM_WEAKLY_REFERENCEABLE
     return nil;
 }
 
-- (BOOL)activationModifierPressIsDoubleTap {
-    NSTimeInterval time = [NSDate timeIntervalSinceReferenceDate];
-    DLog(@"You pressed the modifier key. dt=%@", @(time - _lastModifierTapTime));
-    const NSTimeInterval kMaxTimeBetweenTaps = [iTermAdvancedSettingsModel hotKeyDoubleTapMaxDelay];
-    const NSTimeInterval kMinTimeBetweenTabs = [iTermAdvancedSettingsModel hotKeyDoubleTapMinDelay];
-    const NSTimeInterval elapsedTime = time - _lastModifierTapTime;
-    BOOL result = (kMinTimeBetweenTabs <= elapsedTime && elapsedTime < kMaxTimeBetweenTaps);
-    _lastModifierTapTime = time;
-    return result;
-}
-
-- (void)handleActivationModifierPress {
-    if ([self activationModifierPressIsDoubleTap]) {
-        NSArray *siblings = [[[iTermFlagsChangedEventTap sharedInstance] observers] mapWithBlock:^id(iTermWeakReference<id<iTermEventTapObserver>> *anObject) {
-            if (![anObject.weaklyReferencedObject isKindOfClass:[self class]]) {
-                return nil;
-            }
-            iTermBaseHotKey *other = (iTermBaseHotKey *)anObject;
-            if (other.hasModifierActivation && other.modifierActivation == self.modifierActivation) {
-                return anObject.weaklyReferencedObject;
-            } else {
-                return nil;
-            }
-        }];
+- (void)didDoublePressActivationModifier {
+    DLog(@"is double tap");
+    NSArray *siblings = [[[iTermFlagsChangedEventTap sharedInstance] weakObservers] mapWithBlock:^id(iTermWeakBox<id<iTermEventTapObserver>> *box) {
+        id<iTermEventTapObserver> anObject = box.object;
+        if (![anObject isKindOfClass:[self class]]) {
+            return nil;
+        }
+        iTermBaseHotKey *other = (iTermBaseHotKey *)anObject;
+        if (other.hasModifierActivation && other.modifierActivation == self.modifierActivation) {
+            return anObject;
+        } else {
+            return nil;
+        }
+    }];
+    dispatch_async(dispatch_get_main_queue(), ^{
         [self hotKeyPressedWithSiblings:siblings];
-    }
-}
-
-- (BOOL)activationModifierPressedInFlags:(CGEventFlags)flags {
-    if (!self.hasModifierActivation) {
-        return NO;
-    }
-    CGEventFlags maskedFlags = (flags & kCGEventHotKeyModifierMask);
-
-    switch (self.modifierActivation) {
-        case iTermHotKeyModifierActivationShift:
-            return maskedFlags == kCGEventFlagMaskShift;
-
-        case iTermHotKeyModifierActivationOption:
-            return maskedFlags == kCGEventFlagMaskAlternate;
-
-        case iTermHotKeyModifierActivationCommand:
-            return maskedFlags == kCGEventFlagMaskCommand;
-
-        case iTermHotKeyModifierActivationControl:
-            return maskedFlags == kCGEventFlagMaskControl;
-    }
-    assert(false);
-}
-
-- (void)cancelDoubleTap {
-    _lastModifierTapTime = 0;
+    });
 }
 
 #pragma mark - Actions
 
 - (NSArray<iTermBaseHotKey *> *)carbonHotkeyPressed:(NSDictionary *)userInfo siblings:(NSArray<iTermHotKey *> *)siblings {
+    DLog(@"carbonHotkeyPressed running");
     if (![[[iTermApplication sharedApplication] delegate] workspaceSessionActive]) {
+        DLog(@"workspace session inactive");
         return nil;
     }
     if ([NSApp modalWindow]) {
@@ -253,7 +197,7 @@ ITERM_WEAKLY_REFERENCEABLE
     }];
 
     NSArray<iTermBaseHotKey *> *handledBaseHotkeys = [self hotKeyPressedWithSiblings:siblingBaseHotKeys];
-
+    DLog(@"sibs are %@", siblingHotkeys);
     // Return iTermHotkey's that correspond to the handledBaseHotkeys
     return [siblingHotkeys filteredArrayUsingBlock:^BOOL(iTermHotKey *anObject) {
         return [handledBaseHotkeys containsObject:anObject.target];
@@ -263,21 +207,29 @@ ITERM_WEAKLY_REFERENCEABLE
 #pragma mark - iTermEventTapObserver
 
 - (void)eventTappedWithType:(CGEventType)type event:(CGEventRef)event {
+    DLog(@"eventTappedWithType:%@ event:%@", @(type), [NSEvent eventWithCGEvent:event]);
     if (![[[iTermApplication sharedApplication] delegate] workspaceSessionActive]) {
+        DLog(@"give up because workspace session is not active");
         return;
     }
 
-    if (type == kCGEventFlagsChanged) {
-        CGEventFlags flags = CGEventGetFlags(event);
-        BOOL modifierIsPressed = [self activationModifierPressedInFlags:flags];
-        if (!_modifierWasPressed && modifierIsPressed) {
-            [self handleActivationModifierPress];
-        } else if (_modifierWasPressed && (flags & kCGEventHotKeyModifierMask)) {
-            [self cancelDoubleTap];
-        }
-        _modifierWasPressed = modifierIsPressed;
-    } else {
-        [self cancelDoubleTap];
+    if (type != kCGEventFlagsChanged) {
+        // The purpose is to cancel double tap if you do modifier - letter - modifier.
+        [_doubleTapHotkeyStateMachine reset];
+        return;
+    }
+
+    [self updateDoubleTapState:event];
+}
+
+- (void)updateDoubleTapState:(CGEventRef)event {
+    if (!self.hasModifierActivation) {
+        DLog(@"modifier activation disabled");
+        [_doubleTapHotkeyStateMachine reset];
+        return;
+    }
+    if ([_doubleTapHotkeyStateMachine handleEvent:event activationModifier:self.modifierActivation]) {
+        [self didDoublePressActivationModifier];
     }
 }
 

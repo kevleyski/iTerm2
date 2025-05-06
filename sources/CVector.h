@@ -8,6 +8,8 @@
 
 #import <Foundation/Foundation.h>
 
+#import "iTermMalloc.h"
+
 // A vector of pointers that is fast and simple.
 typedef struct {
     int capacity;
@@ -17,7 +19,7 @@ typedef struct {
 
 NS_INLINE void CVectorCreate(CVector *vector, int capacity) {
     vector->capacity = capacity;
-    vector->elements = (void **)malloc(vector->capacity * sizeof(void *));
+    vector->elements = (void **)iTermMalloc(vector->capacity * sizeof(void *));
     vector->count = 0;
 }
 
@@ -43,8 +45,9 @@ NS_INLINE void CVectorSet(const CVector *vector, int index, void *value) {
 
 NS_INLINE void CVectorAppend(CVector *vector, void *value) {
     if (vector->count + 1 == vector->capacity) {
+        assert(vector->capacity >= 0 && vector->capacity < (1 << 27));
         vector->capacity *= 2;
-        vector->elements = realloc(vector->elements, sizeof(void *) * vector->capacity);
+        vector->elements = (void **)iTermRealloc(vector->elements, vector->capacity, sizeof(void *));
     }
     vector->elements[vector->count++] = value;
 }
@@ -55,6 +58,9 @@ NS_INLINE id CVectorLastObject(const CVector *vector) {
     }
     return (__bridge id)(CVectorGet(vector, vector->count - 1));
 }
+
+// Call -release on all objects in `vector`.
+void CVectorReleaseObjects(const CVector *vector);
 
 // Hacky but fast templates in C.
 //
@@ -93,7 +99,7 @@ do { \
   __typeof(__vector) __v = __vector; \
   \
   __v->capacity = __capacity; \
-  __v->elements = (__typeof(__v->elements))malloc(__v->capacity * sizeof(*__v->elements)); \
+  __v->elements = (__typeof(__v->elements))iTermMalloc(__v->capacity * sizeof(*__v->elements)); \
   __v->count = 0; \
 } while(0)
 
@@ -105,8 +111,9 @@ do { \
   __typeof(__vector) __v = (__vector); \
   \
   while (__v->count + 1 >= __v->capacity) { \
+    assert(__v->capacity >= 0 && __v->capacity < (1 << 27)); \
     __v->capacity *= 2; \
-    __v->elements = realloc(__v->elements, sizeof(*__v->elements) * __v->capacity); \
+    __v->elements = iTermRealloc(__v->elements, __v->capacity, sizeof(*__v->elements)); \
   } \
   __v->elements[__v->count++] = (__value); \
 } while(0)
@@ -122,4 +129,16 @@ CTVectorDefine(char);
 CTVectorDefine(NSInteger);
 CTVectorDefine(NSUInteger);
 
+#define CTVectorGetData(__v) \
+[NSData dataWithBytes:(void *)(__v)->elements length:(__v)->count * sizeof(*(__v)->elements)]
+
+#define CTVectorCreateFromData(__vector, __data) \
+do { \
+  __typeof(__vector) __v = __vector; \
+  \
+  __v->count = __data.length / sizeof(*__v->elements); \
+  __v->capacity = __v->count; \
+  __v->elements = (__typeof(__v->elements))iTermMalloc(__data.length); \
+  memmove((void *)__v->elements, (void *)__data.bytes, __data.length); \
+} while(0)
 

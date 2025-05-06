@@ -32,6 +32,7 @@
                                tablePtr:nil
                                   model:[[[PopupModel alloc] init] autorelease]];
     if (self) {
+        [self window];
         [self setTableView:_tableView];
     }
 
@@ -44,7 +45,7 @@
     [super dealloc];
 }
 
-- (void)loadDirectoriesForHost:(VT100RemoteHost *)host {
+- (void)loadDirectoriesForHost:(id<VT100RemoteHostReading>)host {
     [[self unfilteredModel] removeAllObjects];
     for (iTermRecentDirectoryMO *entry in [[iTermShellHistoryController sharedInstance] directoriesSortedByScoreOnHost:host]) {
         DirectoriesPopupEntry *popupEntry = [[[DirectoriesPopupEntry alloc] init] autorelease];
@@ -71,7 +72,7 @@
 - (void)rowSelected:(id)sender {
     if ([_tableView selectedRow] >= 0) {
         DirectoriesPopupEntry* entry = [[self model] objectAtIndex:[self convertIndex:[_tableView selectedRow]]];
-        [self.delegate popupInsertText:entry.entry.path];
+        [self.delegate popupInsertText:entry.entry.path popup:self];
         [super rowSelected:sender];
     }
 }
@@ -90,6 +91,10 @@
 - (NSString *)truncatedMainValueForEntry:(DirectoriesPopupEntry *)entry {
     // Don't allow truncation because directories shouldn't be unreasonably big.
     return entry.entry.path;
+}
+
+- (BOOL)shouldEscapeShellCharacters {
+    return YES;
 }
 
 @end

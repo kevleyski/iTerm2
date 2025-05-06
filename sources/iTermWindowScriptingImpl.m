@@ -38,16 +38,24 @@
     NSDictionary *args = [scriptCommand evaluatedArguments];
     NSString *command = args[@"command"];
     Profile *profile = [[ProfileModel sharedInstance] defaultBookmark];
-    PTYSession *session =
-        [[iTermController sharedInstance] launchBookmark:profile
-                                              inTerminal:(PseudoTerminal *)self.ptyDelegate
-                                                 withURL:nil
-                                        hotkeyWindowType:iTermHotkeyWindowTypeNone
-                                                 makeKey:YES
-                                             canActivate:NO
-                                                 command:command
-                                                   block:nil];
-    return [self.ptyDelegate tabForSession:session];
+    [scriptCommand suspendExecution];
+    [iTermSessionLauncher launchBookmark:profile
+                              inTerminal:(PseudoTerminal *)self.ptyDelegate
+                                 withURL:nil
+                        hotkeyWindowType:iTermHotkeyWindowTypeNone
+                                 makeKey:YES
+                             canActivate:NO
+                      respectTabbingMode:NO
+                                   index:nil
+                                 command:command
+                             makeSession:nil
+                          didMakeSession:nil
+                              completion:^(PTYSession *session, BOOL ok) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [scriptCommand resumeExecutionWithResult:[self.ptyDelegate tabForSession:session]];
+        });
+    }];
+    return nil;
 }
 
 - (id)handleCreateTabCommand:(NSScriptCommand *)scriptCommand {
@@ -61,16 +69,24 @@
                                              profileName]];
         return nil;
     }
-    PTYSession *session =
-        [[iTermController sharedInstance] launchBookmark:profile
-                                              inTerminal:(PseudoTerminal *)self.ptyDelegate
-                                                 withURL:nil
-                                        hotkeyWindowType:iTermHotkeyWindowTypeNone
-                                                 makeKey:YES
-                                             canActivate:NO
-                                                 command:command
-                                                   block:nil];
-    return [self.ptyDelegate tabForSession:session];
+    [scriptCommand suspendExecution];
+    [iTermSessionLauncher launchBookmark:profile
+                              inTerminal:(PseudoTerminal *)self.ptyDelegate
+                                 withURL:nil
+                        hotkeyWindowType:iTermHotkeyWindowTypeNone
+                                 makeKey:YES
+                             canActivate:NO
+                      respectTabbingMode:NO
+                                   index:nil
+                                 command:command
+                             makeSession:nil
+                          didMakeSession:nil
+                              completion:^(PTYSession *session, BOOL ok) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [scriptCommand resumeExecutionWithResult:[self.ptyDelegate tabForSession:session]];
+        });
+    }];
+    return nil;
 }
 
 - (id)handleRevealHotkeyWindowCommand:(NSScriptCommand *)scriptCommand {

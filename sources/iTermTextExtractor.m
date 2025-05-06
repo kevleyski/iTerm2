@@ -8,10 +8,14 @@
 
 #import "iTermTextExtractor.h"
 #import "DebugLogging.h"
+#import "iTerm2SharedARC-Swift.h"
+#import "iTermAdvancedSettingsModel.h"
 #import "iTermImageInfo.h"
+#import "iTermLocatedString.h"
 #import "iTermPreferences.h"
 #import "iTermSystemVersion.h"
 #import "iTermURLStore.h"
+#import "iTermWordExtractor.h"
 #import "NSStringITerm.h"
 #import "NSMutableAttributedString+iTerm.h"
 #import "RegexKitLite.h"
@@ -19,37 +23,35 @@
 #import "SmartMatch.h"
 #import "SmartSelectionController.h"
 
-typedef NS_ENUM(NSUInteger, iTermAlphaNumericDefinition) {
-    iTermAlphaNumericDefinitionNarrow,
-    iTermAlphaNumericDefinitionUserDefined,
-    iTermAlphaNumericDefinitionUnixCommands,
-};
-
 // Must find at least this many divider chars in a row for it to count as a divider.
 static const int kNumCharsToSearchForDivider = 8;
 
 const NSInteger kReasonableMaximumWordLength = 1000;
 const NSInteger kLongMaximumWordLength = 100000;
 
+@interface iTermTextExtractor()<iTermWordExtractorDataSource>
+@end
+
 @implementation iTermTextExtractor {
-    id<iTermTextDataSource> _dataSource;
     VT100GridRange _logicalWindow;
 
     BOOL _shouldCacheLines;
     int _cachedLineNumber;
-    screen_char_t *_cachedLine;
+    const screen_char_t *_cachedLine;
+    int _cachedExternalAttributeLineNumber;
+    id<iTermExternalAttributeIndexReading> _cachedExternalAttributeIndex;
 }
 
 + (instancetype)textExtractorWithDataSource:(id<iTermTextDataSource>)dataSource {
-    return [[[self alloc] initWithDataSource:dataSource] autorelease];
+    return [[self alloc] initWithDataSource:dataSource];
 }
 
 + (NSCharacterSet *)wordSeparatorCharacterSet
 {
-    NSMutableCharacterSet *charset = [[[NSMutableCharacterSet alloc] init] autorelease];
+    NSMutableCharacterSet *charset = [[NSMutableCharacterSet alloc] init];
     [charset formUnionWithCharacterSet:[NSCharacterSet whitespaceCharacterSet]];
 
-    NSMutableCharacterSet *complement = [[[NSMutableCharacterSet alloc] init] autorelease];
+    NSMutableCharacterSet *complement = [[NSMutableCharacterSet alloc] init];
     [complement formUnionWithCharacterSet:[NSCharacterSet alphanumericCharacterSet]];
     [complement addCharactersInString:[iTermPreferences stringForKey:kPreferenceKeyCharactersConsideredPartOfAWordForSelection]];
     [complement addCharactersInRange:NSMakeRange(DWC_RIGHT, 1)];
@@ -94,128 +96,35 @@ const NSInteger kLongMaximumWordLength = 100000;
 }
 
 - (NSString *)fastWordAt:(VT100GridCoord)location {
-    location = [self coordLockedToWindow:location];
-    iTermTextExtractorClass theClass =
-        [self classForCharacter:[self characterAt:location]];
-    if (theClass == kTextExtractorClassDoubleWidthPlaceholder) {
-        VT100GridCoord predecessor = [self predecessorOfCoord:location];
-        if (predecessor.x != location.x || predecessor.y != location.y) {
-            return [self fastWordAt:predecessor];
-        }
-    } else if (theClass == kTextExtractorClassOther) {
-        return nil;
-    }
-
-    const int xLimit = [self xLimit];
-    const int width = [_dataSource width];
-    int numberOfLines = [_dataSource numberOfLines];
-    if (location.y >= numberOfLines) {
-        return nil;
-    }
-    __block int iterations = 0;
-    const int maxLength = 20;
-    const BOOL windowTouchesLeftMargin = (_logicalWindow.location == 0);
-    const BOOL windowTouchesRightMargin = (xLimit == width);
-    VT100GridCoordRange theRange = VT100GridCoordRangeMake(location.x,
-                                                           location.y,
-                                                           width,
-                                                           location.y + 1);
-    __block BOOL foundWord = (theClass = kTextExtractorClassWord);
-    NSMutableString *word = [NSMutableString string];
-    if (theClass == kTextExtractorClassWord) {
-        // Search forward for the end of the word if the cursor was over a letter.
-        [self enumerateCharsInRange:VT100GridWindowedRangeMake(theRange,
-                                                               _logicalWindow.location,
-                                                               _logicalWindow.length)
-                          charBlock:^BOOL(screen_char_t *currentLine, screen_char_t theChar, VT100GridCoord coord) {
-                              if (++iterations == maxLength) {
-                                  return YES;
-                              }
-                              iTermTextExtractorClass newClass = [self classForCharacter:theChar definitionOfAlphanumeric:iTermAlphaNumericDefinitionUnixCommands];
-                              if (newClass == kTextExtractorClassWord) {
-                                  foundWord = YES;
-                                  if (theChar.complexChar ||
-                                      theChar.code < ITERM2_PRIVATE_BEGIN ||
-                                      theChar.code > ITERM2_PRIVATE_END) {
-                                      NSString *s = [self stringForCharacter:theChar];
-                                      [word appendString:s];
-                                  }
-                                  return NO;
-                              } else {
-                                  return foundWord;
-                              }
-                          }
-                           eolBlock:^BOOL(unichar code, int numPrecedingNulls, int line) {
-                               return [self shouldStopEnumeratingWithCode:code
-                                                                 numNulls:numPrecedingNulls
-                                                  windowTouchesLeftMargin:windowTouchesLeftMargin
-                                                 windowTouchesRightMargin:windowTouchesRightMargin
-                                                         ignoringNewlines:NO];
-                           }];
-    }
-    if (iterations == maxLength) {
-        return nil;
-    }
-
-    // Search backward for the beginning of the word
-    theRange = VT100GridCoordRangeMake(0, 0, location.x, location.y);
-    [self enumerateInReverseCharsInRange:VT100GridWindowedRangeMake(theRange,
-                                                                    _logicalWindow.location,
-                                                                    _logicalWindow.length)
-                               charBlock:^BOOL(screen_char_t theChar, VT100GridCoord coord) {
-                                   if (++iterations == maxLength) {
-                                       return YES;
-                                   }
-                                   iTermTextExtractorClass newClass = [self classForCharacter:theChar definitionOfAlphanumeric:iTermAlphaNumericDefinitionUnixCommands];
-                                   if (newClass == kTextExtractorClassWord) {
-                                       foundWord = YES;
-                                       if (theChar.complexChar ||
-                                           theChar.code < ITERM2_PRIVATE_BEGIN ||
-                                           theChar.code > ITERM2_PRIVATE_END) {
-                                           NSString *s = [self stringForCharacter:theChar];
-                                           [word insertString:s atIndex:0];
-                                       }
-                                       return NO;
-                                   } else {
-                                       return foundWord;
-                                   }
-
-                               }
-                                eolBlock:^BOOL(unichar code, int numPrecedingNulls, int line) {
-                                    return [self shouldStopEnumeratingWithCode:code
-                                                                      numNulls:numPrecedingNulls
-                                                       windowTouchesLeftMargin:windowTouchesLeftMargin
-                                                      windowTouchesRightMargin:windowTouchesRightMargin
-                                                              ignoringNewlines:NO];
-                                }];
-    if (iterations == maxLength) {
-        return nil;
-    }
-    if (foundWord && word.length) {
-        return word;
-    } else {
-        return nil;
-    }
+    iTermWordExtractor *wordExtractor = [[iTermWordExtractor alloc] initWithLocation:location maximumLength:-1 big:NO];
+    wordExtractor.dataSource = self;
+    return [wordExtractor fastString];
 }
 
 - (NSURL *)urlOfHypertextLinkAt:(VT100GridCoord)coord urlId:(out NSString **)urlId {
-    screen_char_t c = [self characterAt:coord];
-    *urlId = [[iTermURLStore sharedInstance] paramWithKey:@"id" forCode:c.urlCode];
-    return [[iTermURLStore sharedInstance] urlForCode:c.urlCode];
+    iTermExternalAttribute *ea = [self externalAttributesAt:coord];
+    if (urlId) {
+        *urlId = ea.url.identifier;
+    }
+    return ea.url.url;
 }
 
 - (VT100GridWindowedRange)rangeOfCoordinatesAround:(VT100GridCoord)origin
                                    maximumDistance:(int)maximumDistance
-                                       passingTest:(BOOL(^)(screen_char_t *c, VT100GridCoord coord))block {
+                                       passingTest:(BOOL(^)(screen_char_t *c,
+                                                            iTermExternalAttribute *ea,
+                                                            VT100GridCoord coord))block {
     VT100GridCoord coord = origin;
     VT100GridCoord previousCoord = origin;
     coord = [self predecessorOfCoord:coord];
     screen_char_t c = [self characterAt:coord];
+    iTermExternalAttribute *ea = [self externalAttributesAt:coord];
     int distanceLeft = maximumDistance;
-    while (distanceLeft > 0 && !VT100GridCoordEquals(coord, previousCoord) && block(&c, coord)) {
+    while (distanceLeft > 0 && !VT100GridCoordEquals(coord, previousCoord) && block(&c, ea, coord)) {
         previousCoord = coord;
         coord = [self predecessorOfCoord:coord];
         c = [self characterAt:coord];
+        ea = [self externalAttributesAt:coord];
         distanceLeft--;
     }
 
@@ -227,11 +136,13 @@ const NSInteger kLongMaximumWordLength = 100000;
     previousCoord = origin;
     coord = [self successorOfCoord:coord];
     c = [self characterAt:coord];
+    ea = [self externalAttributesAt:coord];
     distanceLeft = maximumDistance;
-    while (distanceLeft > 0 && !VT100GridCoordEquals(coord, previousCoord) && block(&c, coord)) {
+    while (distanceLeft > 0 && !VT100GridCoordEquals(coord, previousCoord) && block(&c, ea, coord)) {
         previousCoord = coord;
         coord = [self successorOfCoord:coord];
         c = [self characterAt:coord];
+        ea = [self externalAttributesAt:coord];
         distanceLeft--;
     }
 
@@ -240,13 +151,35 @@ const NSInteger kLongMaximumWordLength = 100000;
     return range;
 }
 
+- (int)startOfIndentationOnAbsLine:(long long)absLine {
+    const long long overflow = [_dataSource totalScrollbackOverflow];
+    if (absLine < overflow) {
+        return 0;
+    }
+    if (absLine - overflow > INT_MAX) {
+        return 0;
+    }
+    return [self startOfIndentationOnLine:absLine - overflow];
+}
+
 - (int)startOfIndentationOnLine:(int)line {
     if (line >= [_dataSource numberOfLines]) {
         return 0;
     }
     __block int result = 0;
-    [self enumerateCharsInRange:VT100GridWindowedRangeMake(VT100GridCoordRangeMake(0, line, [_dataSource width], line), _logicalWindow.location, _logicalWindow.length) charBlock:^BOOL(screen_char_t *currentLine, screen_char_t theChar, VT100GridCoord coord) {
-        if (!theChar.complexChar && (theChar.code == ' ' || theChar.code == '\t' || theChar.code == 0 || theChar.code == TAB_FILLER)) {
+    [self enumerateCharsInRange:VT100GridWindowedRangeMake(VT100GridCoordRangeMake(0,
+                                                                                   line,
+                                                                                   [_dataSource width], line),
+                                                           _logicalWindow.location, _logicalWindow.length)
+                    supportBidi:NO
+                      charBlock:^BOOL(const screen_char_t *currentLine,
+                                      screen_char_t theChar,
+                                      iTermExternalAttribute *ea,
+                                      VT100GridCoord logicalCoord,
+                                      VT100GridCoord coord) {
+        if (!theChar.complexChar &&
+            !theChar.image &&
+            (theChar.code == ' ' || theChar.code == '\t' || theChar.code == 0 || theChar.code == TAB_FILLER)) {
             result++;
             return NO;
         } else {
@@ -258,308 +191,126 @@ const NSInteger kLongMaximumWordLength = 100000;
     return result;
 }
 
-// The maximum length is a rough guideline. You might get a word up to twice as long.
+- (int)cellCountInWrappedLineWithAbsY:(long long)absY {
+    int y = absY - self.dataSource.totalScrollbackOverflow;
+    if (y < 0) {
+        return self.dataSource.width;
+    }
+    if ([self.dataSource screenCharArrayForLine:y].eol == EOL_DWC) {
+        return self.dataSource.width - 1;
+    } else {
+        return self.dataSource.width;
+    }
+}
+
+- (int)rowCountForRawLineEncompassingWithAbsY:(long long)absY {
+    const long long offset = self.dataSource.totalScrollbackOverflow;
+    const VT100GridCoordRange lineRange =
+    [self rangeForWrappedLineEncompassing:VT100GridCoordMake(0, absY - offset)
+                          respectContinuations:NO
+                                      maxChars:-1].coordRange;
+    return lineRange.end.y - absY + 1;
+}
+
+- (VT100GridAbsWindowedRange)rangeForWordAtAbsCoord:(VT100GridAbsCoord)absLocation
+                                      maximumLength:(NSInteger)maximumLength {
+    return VT100GridAbsWindowedRangeFromWindowedRange([self rangeForWordAt:[self coordFromAbsolute:absLocation]
+                                                             maximumLength:maximumLength],
+                                                      [_dataSource totalScrollbackOverflow]);
+}
+
 - (VT100GridWindowedRange)rangeForWordAt:(VT100GridCoord)location
                            maximumLength:(NSInteger)maximumLength {
-    ITBetaAssert(location.y >= 0, @"Location has negative Y");
-    if (location.y < 0) {
-        return VT100GridWindowedRangeMake(VT100GridCoordRangeMake(-1, -1, -1, -1),
-                                          _logicalWindow.location, _logicalWindow.length);
-    }
+    return [self rangeForWordAt:location maximumLength:maximumLength big:NO];
+}
 
-    DLog(@"Compute range for word at %@, max length %@", VT100GridCoordDescription(location), @(maximumLength));
-    DLog(@"These special chars will be treated as alphanumeric: %@", [iTermPreferences stringForKey:kPreferenceKeyCharactersConsideredPartOfAWordForSelection]);
+- (VT100GridAbsWindowedRange)rangeForBigWordAtAbsCoord:(VT100GridAbsCoord)location
+                                         maximumLength:(NSInteger)maximumLength {
+    return VT100GridAbsWindowedRangeFromWindowedRange([self rangeForBigWordAt:[self coordFromAbsolute:location]
+                                                                maximumLength:maximumLength],
+                                                      [_dataSource totalScrollbackOverflow]);
+}
 
-    location = [self coordLockedToWindow:location];
-    iTermTextExtractorClass theClass =
-        [self classForCharacter:[self characterAt:location]];
-    DLog(@"Initial class for '%@' at %@ is %@",
-         [self stringForCharacter:[self characterAt:location]], VT100GridCoordDescription(location), @(theClass));
-    if (theClass == kTextExtractorClassDoubleWidthPlaceholder) {
-        DLog(@"Location is a DWC placeholder. Try again with predecessor");
-        VT100GridCoord predecessor = [self predecessorOfCoord:location];
-        if (predecessor.x != location.x || predecessor.y != location.y) {
-            return [self rangeForWordAt:predecessor maximumLength:maximumLength];
+- (VT100GridWindowedRange)rangeForBigWordAt:(VT100GridCoord)unsafeLocation
+                              maximumLength:(NSInteger)maximumLength {
+    iTermWordExtractor *wordExtractor = [[iTermWordExtractor alloc] initWithLocation:unsafeLocation
+                                                                       maximumLength:maximumLength
+                                                                                 big:YES];
+    wordExtractor.dataSource = self;
+    return [wordExtractor windowedRangeForBigWord];
+}
+
+// The maximum length is a rough guideline. You might get a word up to twice as long.
+- (VT100GridWindowedRange)rangeForWordAt:(VT100GridCoord)visualLocation
+                           maximumLength:(NSInteger)maximumLength
+                                     big:(BOOL)big {
+    VT100GridCoord location = visualLocation;
+    iTermBidiDisplayInfo *bidi = nil;
+    if (_supportBidi) {
+        ScreenCharArray *sca = [_dataSource screenCharArrayForLine:visualLocation.y];
+        bidi = sca.bidiInfo;
+        if (bidi) {
+            location.x = [bidi logicalForVisual:visualLocation.x];
         }
     }
-
-    if (theClass == kTextExtractorClassOther) {
-        DLog(@"Character class is other, select one character.");
-        return [self windowedRangeWithRange:VT100GridCoordRangeMake(location.x,
-                                                                    location.y,
-                                                                    location.x + 1,
-                                                                    location.y)];
+    iTermWordExtractor *wordExtractor = [[iTermWordExtractor alloc] initWithLocation:location
+                                                                       maximumLength:maximumLength
+                                                                                 big:big];
+    wordExtractor.dataSource = self;
+    VT100GridWindowedRange range = [wordExtractor windowedRange];
+    if (bidi) {
+#warning TODO: This is wrong. When a word wraps, we need to select characters from the left side of the start line and the right side of the end line. Selections don't know how to do this currently.
+        return [self visualWindowedRangeForLogical:range];
     }
+    return range;
+}
 
-    // String composed of the characters found to be in the word, excluding private range characters.
-    NSMutableString *stringFromLocation = [NSMutableString string];
-    NSMutableArray *coords = [NSMutableArray array];
+- (VT100GridCoordRange)visualRangeForLogical:(VT100GridCoordRange)logical {
+    VT100GridCoordRange visual;
 
-    // Has one entry for each cell in the word before `location`. Stores the
-    // length of the string at that cell. Typically 1, but can be long for
-    // surrogate pair and composed characters.
-    NSMutableArray<NSNumber *> *stringLengthsInPrefix = [NSMutableArray array];
+    VT100GridCoord a = [self visualCoordForLogical:logical.start];
+    VT100GridCoord b = [self visualCoordForLogical:[self predecessorOfCoord:logical.end]];
 
-    // Has one entry for each cell in the word after `location`. Stores the
-    // index into `stringFromLocation` where that cell's string begins.
-    NSMutableArray<NSNumber *> *indexesInSuffix = [NSMutableArray array];
-
-    const int xLimit = [self xLimit];
-    const int width = [_dataSource width];
-    const BOOL windowTouchesLeftMargin = (_logicalWindow.location == 0);
-    const BOOL windowTouchesRightMargin = (xLimit == width);
-    int numberOfLines = [_dataSource numberOfLines];
-    if (location.y >= numberOfLines) {
-        return VT100GridWindowedRangeMake(VT100GridCoordRangeMake(-1, -1, -1, -1),
-                                          _logicalWindow.location, _logicalWindow.length);
+    // Convert back to half-open range with start <= end.
+    if (VT100GridCoordCompare(a, b) == NSOrderedDescending) {
+        visual.start = b;
+        a.x += 1;
+        visual.end = a;
+    } else {
+        visual.start = a;
+        b.x += 1;
+        visual.end = b;
     }
-    VT100GridCoordRange theRange = VT100GridCoordRangeMake(location.x,
-                                                           location.y,
-                                                           width,
-                                                           [_dataSource numberOfLines] - 1);
-    __block NSInteger iterations = 0;
-    // Search forward for the end of the word.
-    DLog(@"** Begin searching forward for the end of the word");
-    [self enumerateCharsInRange:VT100GridWindowedRangeMake(theRange,
-                                                           _logicalWindow.location,
-                                                           _logicalWindow.length)
-                      charBlock:^BOOL(screen_char_t *currentLine, screen_char_t theChar, VT100GridCoord coord) {
-                          DLog(@"Character at %@ is '%@'", VT100GridCoordDescription(coord), [self stringForCharacter:theChar]);
-                          ++iterations;
-                          if (iterations > maximumLength) {
-                              DLog(@"Max length hit when searching forwards");
-                              return YES;
-                          }
-                          iTermTextExtractorClass newClass = [self classForCharacter:theChar];
-                          DLog(@"Class is %@", @(newClass));
+    return visual;
+}
 
-                          BOOL isInWord = (newClass == kTextExtractorClassDoubleWidthPlaceholder ||
-                                           newClass == theClass);
-                          if (isInWord) {
-                              DLog(@"Is in word");
-                              if (theChar.complexChar ||
-                                  theChar.code < ITERM2_PRIVATE_BEGIN ||
-                                  theChar.code > ITERM2_PRIVATE_END) {
-                                  [indexesInSuffix addObject:@(stringFromLocation.length)];
-                                  [stringFromLocation appendString:(ScreenCharToStr(&theChar) ?: @"")];
-                                  [coords addObject:[NSValue valueWithGridCoord:coord]];
-                              }
-                          }
-                          return !isInWord;
-                      }
-                       eolBlock:^BOOL(unichar code, int numPrecedingNulls, int line) {
-                           return [self shouldStopEnumeratingWithCode:code
-                                                             numNulls:numPrecedingNulls
-                                              windowTouchesLeftMargin:windowTouchesLeftMargin
-                                             windowTouchesRightMargin:windowTouchesRightMargin
-                                                     ignoringNewlines:NO];
-                       }];
+- (VT100GridWindowedRange)visualWindowedRangeForLogical:(VT100GridWindowedRange)logical {
+    VT100GridWindowedRange visual = logical;
+    visual.coordRange = [self visualRangeForLogical:logical.coordRange];
+    return visual;
+}
 
-    // Search backward for the start of the word.
-    theRange = VT100GridCoordRangeMake(0, 0, location.x, location.y);
-
-    // We want to iterate backward over the string and concatenate characters in reverse order.
-    // Appending to the start of a NSMutableString is very slow, but appending to the start of
-    // a NSMutableArray is fast. So we build an array of tiny strings in the reverse order of how
-    // they appear and then concatenate them after the enumeration.
-    NSMutableArray *substrings = [NSMutableArray array];
-    DLog(@"** Begin searching backward for the end of the word");
-    iterations = 0;
-    [self enumerateInReverseCharsInRange:VT100GridWindowedRangeMake(theRange,
-                                                                    _logicalWindow.location,
-                                                                    _logicalWindow.length)
-                               charBlock:^BOOL(screen_char_t theChar, VT100GridCoord coord) {
-                                   DLog(@"Character at %@ is '%@'", VT100GridCoordDescription(coord), [self stringForCharacter:theChar]);
-                                   ++iterations;
-                                   if (iterations > maximumLength) {
-                                       DLog(@"Max length hit when searching backwards");
-                                       return YES;
-                                   }
-                                   iTermTextExtractorClass newClass = [self classForCharacter:theChar];
-                                   DLog(@"Class is %@", @(newClass));
-                                   BOOL isInWord = (newClass == kTextExtractorClassDoubleWidthPlaceholder ||
-                                                    newClass == theClass);
-                                   if (isInWord) {
-                                       DLog(@"Is in word");
-                                       if (theChar.complexChar ||
-                                           theChar.code < ITERM2_PRIVATE_BEGIN || theChar.code > ITERM2_PRIVATE_END) {
-                                           NSString *theString = ScreenCharToStr(&theChar);
-                                           [substrings insertObject:theString atIndex:0];
-                                           [coords insertObject:[NSValue valueWithGridCoord:coord] atIndex:0];
-                                           [stringLengthsInPrefix insertObject:@(theString.length) atIndex:0];
-                                       }
-                                   }
-                                   return !isInWord;
-                               }
-                                eolBlock:^BOOL(unichar code, int numPrecedingNulls, int line) {
-                                    return [self shouldStopEnumeratingWithCode:code
-                                                                      numNulls:numPrecedingNulls
-                                                       windowTouchesLeftMargin:windowTouchesLeftMargin
-                                                      windowTouchesRightMargin:windowTouchesRightMargin
-                                                              ignoringNewlines:NO];
-
-                                }];
-    NSString *stringBeforeLocation = [substrings componentsJoinedByString:@""];
-
-    if (!coords.count) {
-        DLog(@"Found no coords");
-        return [self windowedRangeWithRange:VT100GridCoordRangeMake(location.x,
-                                                                    location.y,
-                                                                    location.x,
-                                                                    location.y)];
+- (VT100GridCoord)visualCoordForLogical:(VT100GridCoord)logical {
+    if (!_supportBidi) {
+        return logical;
     }
-
-    if (theClass != kTextExtractorClassWord) {
-        DLog(@"Not word class");
-        VT100GridCoord start = [[coords firstObject] gridCoordValue];
-        VT100GridCoord end = [[coords lastObject] gridCoordValue];
-        return [self windowedRangeWithRange:VT100GridCoordRangeMake(start.x,
-                                                                    start.y,
-                                                                    end.x + 1,
-                                                                    end.y)];
+    ScreenCharArray *sca = [_dataSource screenCharArrayForLine:logical.y];
+    iTermBidiDisplayInfo *bidi = sca.bidiInfo;
+    if (!bidi) {
+        return logical;
     }
-
-    __block VT100GridWindowedRange result;
-    [self performBlockWithLineCache:^{
-        DLog(@"An alphanumeric character was selected. Begin language-specific logic");
-
-        // An alphanumeric character was selected. This is where it gets interesting.
-
-        // We have now retrieved the longest possible string that could have a word. This is because we
-        // are more permissive than the OS about what can be in a word (the user can add punctuation,
-        // for example, making foo/bar a word if / belongs to the “characters considered part of a
-        // word.”) Now we want to shrink the range. For non-English languages, there is an added
-        // wrinkle: in issue 4325 we see that 翻真的 consists of two words: 翻 and 真的. The OS
-        // (presumably by using ICU's text boundary analysis code) knows how to do the segmentation.
-
-        NSString *string = [stringBeforeLocation stringByAppendingString:stringFromLocation];
-        NSAttributedString *attributedString = [[[NSAttributedString alloc] initWithString:string attributes:@{}] autorelease];
-
-        // Will be in 1:1 correspondence with `coords`.
-        // The string in the cell at `coords[i]` starts at index `indexes[i]`.
-        NSMutableArray<NSNumber *> *indexes = [NSMutableArray array];
-        NSInteger prefixLength = 0;
-        for (NSNumber *length in stringLengthsInPrefix) {
-            [indexes addObject:@(prefixLength)];
-            prefixLength += length.integerValue;
-        }
-        for (NSNumber *index in indexesInSuffix) {
-            [indexes addObject:@(prefixLength + index.integerValue)];
-        }
-
-        DLog(@"indexes: %@", indexes);
-
-        // Set end to an index that is not in the middle of an OS-defined-word. It will be at the start
-        // of a word or on a whitelisted character.
-        BOOL previousCharacterWasWhitelisted = YES;
-
-        // `end` can index into `coords` and `indexes`.
-        NSInteger end = stringLengthsInPrefix.count;
-        while (end < coords.count) {
-            DLog(@"Consider end=%@ at %@", @(end), VT100GridCoordDescription([coords[end] gridCoordValue]));
-            if ([self isWhitelistedAlphanumericAtCoord:[coords[end] gridCoordValue]]) {
-                DLog(@"Is whitelisted");
-                ++end;
-                previousCharacterWasWhitelisted = YES;
-            } else if (previousCharacterWasWhitelisted) {
-                DLog(@"Previous character was whitelisted");
-                NSInteger index = [indexes[end] integerValue];
-                NSRange range = [attributedString doubleClickAtIndex:index];
-
-                end = [self indexInSortedArray:indexes
-                     withValueGreaterOrEqualTo:NSMaxRange(range)
-                          searchingForwardFrom:end];
-                previousCharacterWasWhitelisted = NO;
-            } else {
-                DLog(@"Not whitelisted, previous character not whitelisted");
-                break;
-            }
-        }
-
-        // Same thing but in reverse.
-
-        NSInteger start;
-        const NSUInteger numberOfCellsInPrefix = stringLengthsInPrefix.count;
-
-        // `provisionalStart` is an initial place to begin looking for the start of the word. This is
-        // used to compute the initial value of `start`, later on. If there is a suffix it is the index
-        // of the first character of the suffix. Otherwise it is the index of the last character of
-        // the prefix.
-        NSUInteger provisionalStart = numberOfCellsInPrefix;
-        if (coords.count == numberOfCellsInPrefix) {
-            // Earlier, we bailed out if `coords.count` was 0. Since `coords.count` > 0 and
-            // `coords.count` equals `numberOfCellsInPrefix` and
-            // `numberOfCellsInPrefix` equals `provisionalStart`,
-           //  then transitively `provisionalStart` > 0.
-            provisionalStart -= 1;
-        }
-
-        DLog(@"Provisional start is %@", @(provisionalStart));
-
-        // First, ensure that start is either at the start of a word (as defined by the OS) or on a
-        // whitelisted character.
-        if ([self isWhitelistedAlphanumericAtCoord:[coords[provisionalStart] gridCoordValue]]) {
-            // On a whitelisted character. We'll search back past all of them.
-            DLog(@"Starting on a whitelisted character");
-            previousCharacterWasWhitelisted = YES;
-            start = provisionalStart;
-        } else {
-            // Not on a whitelisted character. Set start to the index of the cell of the first character
-            // of the word enclosing the cell indexed to by `provisionalStart`.
-            DLog(@"Not starting on a whitelisted character");
-            previousCharacterWasWhitelisted = NO;
-            NSUInteger location = [attributedString doubleClickAtIndex:[indexes[provisionalStart] integerValue]].location;
-            start = [self indexInSortedArray:indexes
-                  withValueLessThanOrEqualTo:location
-                       searchingBackwardFrom:provisionalStart];
-        }
-
-        //  Move back until two consecutive OS-defined words are found or we reach the start of the string.
-        while (start > 0) {
-            DLog(@"Consider start=%@ at %@", @(start-1), VT100GridCoordDescription([coords[start - 1] gridCoordValue]));
-            if ([self isWhitelistedAlphanumericAtCoord:[coords[start - 1] gridCoordValue]]) {
-                DLog(@"Is whitelisted");
-                --start;
-                previousCharacterWasWhitelisted = YES;
-            } else if (previousCharacterWasWhitelisted) {
-                DLog(@"Previous character was whitelisted");
-                NSUInteger location = [attributedString doubleClickAtIndex:[indexes[start - 1] integerValue]].location;
-                start = [self indexInSortedArray:indexes
-                      withValueLessThanOrEqualTo:location
-                           searchingBackwardFrom:provisionalStart];
-                previousCharacterWasWhitelisted = NO;
-            } else {
-                DLog(@"Not whitelisted, previous character not whitelisted");
-                break;
-            }
-        }
-
-        VT100GridCoord startCoord = [coords[start] gridCoordValue];
-        VT100GridCoord endCoord = [coords[end - 1] gridCoordValue];
-
-        // It's a half open interval so advance endCoord by one.
-        endCoord.x += 1;
-
-        // Make sure to include the DWC_RIGHT after the last character to be selected.
-        if (endCoord.x < [self xLimit] && [self haveDoubleWidthExtensionAt:endCoord]) {
-            endCoord.x += 1;
-        }
-            result = [self windowedRangeWithRange:VT100GridCoordRangeMake(startCoord.x,
-                                                                          startCoord.y,
-                                                                          endCoord.x,
-                                                                          endCoord.y)];
-    }];
-    return result;
+    return VT100GridCoordMake([bidi visualForLogical:logical.x], logical.y);
 }
 
 // Make characterAt: much faster when called with the same line number over and over again. Assumes
 // the line buffer won't be mutated while it's running.
-- (void)performBlockWithLineCache:(void (^)(void))block {
+- (void)performBlockWithLineCache:(void (^NS_NOESCAPE)(void))block {
     assert(!_shouldCacheLines);
     _shouldCacheLines = YES;
     block();
     _shouldCacheLines = NO;
     _cachedLine = nil;
+    _cachedExternalAttributeIndex = nil;
 }
 
 // Returns 0 if no value can be found less than or equal to `maximumValue`.
@@ -609,11 +360,6 @@ const NSInteger kLongMaximumWordLength = 100000;
     return i;
 }
 
-- (BOOL)isWhitelistedAlphanumericAtCoord:(VT100GridCoord)coord {
-    screen_char_t theChar = [self characterAt:coord];
-    return [self characterShouldBeTreatedAsAlphanumeric:ScreenCharToStr(&theChar) definitionOfAlphanumeric:iTermAlphaNumericDefinitionUserDefined];
-}
-
 - (NSString *)stringForCharacter:(screen_char_t)theChar {
     unichar temp[kMaxParts];
     int length = ExpandScreenChar(&theChar, temp);
@@ -621,18 +367,17 @@ const NSInteger kLongMaximumWordLength = 100000;
 }
 
 - (NSString *)stringForCharacterAt:(VT100GridCoord)location {
-    screen_char_t *theLine = [_dataSource getLineAtIndex:location.y];
+    const screen_char_t *theLine = [_dataSource screenCharArrayForLine:location.y].line;
     unichar temp[kMaxParts];
     int length = ExpandScreenChar(theLine + location.x, temp);
     return [NSString stringWithCharacters:temp length:length];
 }
 
 - (NSIndexSet *)indexesOnLine:(int)line containingCharacter:(unichar)c inRange:(NSRange)range {
-    screen_char_t *theLine;
-    theLine = [_dataSource getLineAtIndex:line];
+    const screen_char_t *theLine = [_dataSource screenCharArrayForLine:line].line;
     NSMutableIndexSet *indexes = [NSMutableIndexSet indexSet];
     for (int i = range.location; i < range.location + range.length; i++) {
-        if (theLine[i].code == c && !theLine[i].complexChar) {
+        if (theLine[i].code == c && !theLine[i].complexChar && !theLine[i].image) {
             [indexes addIndex:i];
         }
     }
@@ -646,10 +391,10 @@ const NSInteger kLongMaximumWordLength = 100000;
                 ignoringNewlines:(BOOL)ignoringNewlines {
     location = [self coordLockedToWindow:location];
     int targetOffset;
-    const int numLines = 2;
+    const int numLines = [iTermAdvancedSettingsModel smartSelectionRadius];
     NSMutableArray* coords = [NSMutableArray arrayWithCapacity:numLines * _logicalWindow.length];
     NSString *textWindow = [self textAround:location
-                                     radius:2
+                                     radius:numLines
                                targetOffset:&targetOffset
                                      coords:coords
                            ignoringNewlines:ignoringNewlines || [self hasLogicalWindow]];
@@ -689,7 +434,7 @@ const NSInteger kLongMaximumWordLength = 100000;
                     double score = precision * (double) temp.length;
                     SmartMatch* oldMatch = [matches objectForKey:result];
                     if (!oldMatch || score > oldMatch.score) {
-                        SmartMatch* match = [[[SmartMatch alloc] init] autorelease];
+                        SmartMatch* match = [[SmartMatch alloc] init];
                         match.score = score;
                         VT100GridCoord startCoord = [coords[i + temp.location] gridCoordValue];
                         VT100GridCoord endCoord = [coords[MIN(numCoords - 1,
@@ -750,63 +495,6 @@ const NSInteger kLongMaximumWordLength = 100000;
                                                 _logicalWindow.location, _logicalWindow.length);
         }
         return nil;
-    }
-}
-
-// Returns the class for a character.
-- (iTermTextExtractorClass)classForCharacter:(screen_char_t)theCharacter {
-    return [self classForCharacter:theCharacter definitionOfAlphanumeric:iTermAlphaNumericDefinitionUserDefined];
-}
-
-- (iTermTextExtractorClass)classForCharacter:(screen_char_t)theCharacter
-                    definitionOfAlphanumeric:(iTermAlphaNumericDefinition)definition {
-    if (!theCharacter.complexChar) {
-        if (theCharacter.code == TAB_FILLER) {
-            return kTextExtractorClassWhitespace;
-        } else if (theCharacter.code == DWC_RIGHT || theCharacter.complexChar == DWC_SKIP) {
-            return kTextExtractorClassDoubleWidthPlaceholder;
-        }
-    }
-
-    if (!theCharacter.code) {
-        return kTextExtractorClassNull;
-    }
-
-    NSString *asString = [self stringForCharacter:theCharacter];
-    NSRange range;
-    range = [asString rangeOfCharacterFromSet:[NSCharacterSet whitespaceCharacterSet]];
-    if (range.length == asString.length) {
-        return kTextExtractorClassWhitespace;
-    }
-
-    if ([self characterIsAlphanumeric:asString] ||
-        [self characterShouldBeTreatedAsAlphanumeric:asString definitionOfAlphanumeric:definition]) {
-        return kTextExtractorClassWord;
-    }
-
-    return kTextExtractorClassOther;
-}
-
-- (BOOL)characterIsAlphanumeric:(NSString *)characterAsString {
-    NSRange range = [characterAsString rangeOfCharacterFromSet:[NSCharacterSet alphanumericCharacterSet]];
-    return (range.length == characterAsString.length);
-}
-
-- (BOOL)characterShouldBeTreatedAsAlphanumeric:(NSString *)characterAsString
-                      definitionOfAlphanumeric:(iTermAlphaNumericDefinition)definition {
-    switch (definition) {
-        case iTermAlphaNumericDefinitionUserDefined: {
-            NSRange range = [[iTermPreferences stringForKey:kPreferenceKeyCharactersConsideredPartOfAWordForSelection]
-                             rangeOfString:characterAsString];
-            return (range.length == characterAsString.length);
-        }
-        case iTermAlphaNumericDefinitionUnixCommands: {
-            NSRange range = [@"_-" rangeOfString:characterAsString];
-            return (range.length == characterAsString.length);
-        }
-        case iTermAlphaNumericDefinitionNarrow:
-            // The narrow definition only allows hyphen.
-            return [characterAsString isEqualToString:@"-"];
     }
 }
 
@@ -887,6 +575,27 @@ const NSInteger kLongMaximumWordLength = 100000;
     return coord;
 }
 
+- (VT100GridCoord)coordFromAbsolute:(VT100GridAbsCoord)absCoord {
+    const long long overflow = [_dataSource totalScrollbackOverflow];
+    if (absCoord.y < overflow) {
+        return VT100GridCoordMake(0, 0);
+    }
+    if (absCoord.y - overflow > INT_MAX) {
+        return VT100GridCoordMake(absCoord.x, [_dataSource numberOfLines]);
+    }
+    return VT100GridCoordMake(absCoord.x, absCoord.y - overflow);
+}
+
+- (VT100GridAbsCoord)coordToAbsolute:(VT100GridCoord)coord {
+    return VT100GridAbsCoordMake(coord.x, [_dataSource totalScrollbackOverflow] + coord.y);
+}
+
+- (VT100GridAbsCoord)successorOfAbsCoordSkippingContiguousNulls:(VT100GridAbsCoord)absCoord {
+    const VT100GridCoord coord = [self coordFromAbsolute:absCoord];
+    VT100GridCoord result = [self successorOfCoordSkippingContiguousNulls:coord];
+    return [self coordToAbsolute:result];
+}
+
 - (VT100GridCoord)successorOfCoordSkippingContiguousNulls:(VT100GridCoord)coord {
     do {
         coord.x++;
@@ -923,6 +632,10 @@ const NSInteger kLongMaximumWordLength = 100000;
     }
 
     return coord;
+}
+
+- (VT100GridAbsCoord)predecessorOfAbsCoordSkippingContiguousNulls:(VT100GridAbsCoord)coord {
+    return [self coordToAbsolute:[self predecessorOfCoordSkippingContiguousNulls:[self coordFromAbsolute:coord]]];
 }
 
 - (VT100GridCoord)predecessorOfCoordSkippingContiguousNulls:(VT100GridCoord)coord {
@@ -963,7 +676,7 @@ const NSInteger kLongMaximumWordLength = 100000;
 // Not inclusive of coord2
 - (int)numberOfCoordsInIndexSet:(NSIndexSet *)coords
                         between:(VT100GridCoord)coord1
-                            and:(VT100GridCoord)coord2 {
+                       andCoord:(VT100GridCoord)coord2 {
     NSUInteger coord1Index = [self indexForCoord:coord1 width:[_dataSource width]];
     NSUInteger coord2Index = [self indexForCoord:coord2 width:[_dataSource width]];
     NSUInteger minIndex = MIN(coord1Index, coord2Index);
@@ -995,7 +708,7 @@ const NSInteger kLongMaximumWordLength = 100000;
         if (coord.x >= left && coord.x < right) {
             int extra = [self numberOfCoordsInIndexSet:coordsToSkip
                                                between:coord
-                                                   and:prevCoord];
+                                              andCoord:prevCoord];
             if (forward) {
                 coord.x += extra;
             } else {
@@ -1009,7 +722,7 @@ const NSInteger kLongMaximumWordLength = 100000;
                 coord.x += span;
                 n -= [self numberOfCoordsInIndexSet:coordsToSkip
                                             between:coord
-                                                and:prevCoord];
+                                           andCoord:prevCoord];
                 prevCoord = coord;
             }
         } else {
@@ -1019,7 +732,7 @@ const NSInteger kLongMaximumWordLength = 100000;
                 coord.y++;
                 n += [self numberOfCoordsInIndexSet:coordsToSkip
                                             between:coord
-                                                and:prevCoord];
+                                           andCoord:prevCoord];
                 prevCoord = coord;
             }
         }
@@ -1035,12 +748,11 @@ const NSInteger kLongMaximumWordLength = 100000;
                      forward:(BOOL)forward
   forCharacterMatchingFilter:(BOOL (^)(screen_char_t, VT100GridCoord))block {
     VT100GridCoord coord = start;
-    screen_char_t *theLine;
     int y = coord.y;
-    theLine = [_dataSource getLineAtIndex:coord.y];
+    const screen_char_t *theLine = [_dataSource screenCharArrayForLine:coord.y].line;
     while (1) {
         if (y != coord.y) {
-            theLine = [_dataSource getLineAtIndex:coord.y];
+            theLine = [_dataSource screenCharArrayForLine:coord.y].line;
             y = coord.y;
         }
         BOOL stop = block(theLine[coord.x], coord);
@@ -1089,7 +801,9 @@ const NSInteger kLongMaximumWordLength = 100000;
                                                                       _logicalWindow.location,
                                                                       _logicalWindow.length);
     [self enumerateInReverseCharsInRange:windowedRange
-                               charBlock:^BOOL(screen_char_t theChar, VT100GridCoord charCoord) {
+                               charBlock:^BOOL(screen_char_t theChar,
+                                               VT100GridCoord logicalCoord,
+                                               VT100GridCoord charCoord) {
                                    if (!theChar.code) {
                                        return YES;
                                    }
@@ -1100,6 +814,9 @@ const NSInteger kLongMaximumWordLength = 100000;
                                        !theChar.complexChar) {
                                        // Is a backslash at the right edge of a window.
                                        // no-op
+                                   } else if (theChar.image) {
+                                       // Treat images as nulls.
+                                       return YES;
                                    } else if (theChar.complexChar ||
                                               theChar.code < ITERM2_PRIVATE_BEGIN ||
                                               theChar.code > ITERM2_PRIVATE_END) {
@@ -1114,7 +831,7 @@ const NSInteger kLongMaximumWordLength = 100000;
                                 eolBlock:^BOOL(unichar code, int numPrecedingNulls, int line) {
                                     return [self shouldStopEnumeratingWithCode:code
                                                                       numNulls:numPrecedingNulls
-                                                       windowTouchesLeftMargin:(_logicalWindow.location == 0)
+                                                       windowTouchesLeftMargin:(self->_logicalWindow.location == 0)
                                                       windowTouchesRightMargin:xLimit == trueWidth
                                                               ignoringNewlines:ignoringNewlines];
                                 }];
@@ -1128,7 +845,12 @@ const NSInteger kLongMaximumWordLength = 100000;
                                                _logicalWindow.length);
 
     [self enumerateCharsInRange:windowedRange
-                      charBlock:^BOOL(screen_char_t *currentLine, screen_char_t theChar, VT100GridCoord charCoord) {
+                    supportBidi:NO
+                      charBlock:^BOOL(const screen_char_t *currentLine,
+                                      screen_char_t theChar,
+                                      iTermExternalAttribute *ea,
+                                      VT100GridCoord logicalCoord,
+                                      VT100GridCoord charCoord) {
                           if (!theChar.code) {
                               return YES;
                           }
@@ -1139,6 +861,9 @@ const NSInteger kLongMaximumWordLength = 100000;
                               !theChar.complexChar) {
                               // Is a backslash at the right edge of a window.
                               // no-op
+                          } else if (theChar.image) {
+                              // Treat images as nulls.
+                              return YES;
                           } else if (theChar.complexChar ||
                                      theChar.code < ITERM2_PRIVATE_BEGIN ||
                                      theChar.code > ITERM2_PRIVATE_END) {
@@ -1169,6 +894,31 @@ const NSInteger kLongMaximumWordLength = 100000;
     return joinedLines;
 }
 
+- (void)enumerateWrappedLinesIntersectingRange:(VT100GridRange)range
+                                         block:(void (^)(iTermStringLine *, VT100GridWindowedRange, BOOL *))block {
+    if (range.length <= 0) {
+        return;
+    }
+    if (range.location < 0) {
+        [self enumerateWrappedLinesIntersectingRange:VT100GridRangeMake(0, range.length + range.location) block:block];
+        return;
+    }
+    int line = range.location;
+    while (line <= range.location + range.length - 1 && line < [_dataSource numberOfLines]) {
+        VT100GridWindowedRange lineRange = [self rangeForWrappedLineEncompassing:VT100GridCoordMake(0, line)
+                                                            respectContinuations:YES
+                                                                        maxChars:-1];
+
+        iTermStringLine *stringLine = [self stringLineInRange:lineRange];
+        BOOL stop = NO;
+        block(stringLine, lineRange, &stop);
+        if (stop) {
+            return;
+        }
+        line = MAX(line + 1, lineRange.coordRange.end.y + 1);
+    }
+}
+
 - (VT100GridWindowedRange)rangeForWrappedLineEncompassing:(VT100GridCoord)coord
                                      respectContinuations:(BOOL)respectContinuations
                                                  maxChars:(int)maxChars {
@@ -1190,7 +940,12 @@ const NSInteger kLongMaximumWordLength = 100000;
     [whitespaceCharacterSet addCharactersInRange:NSMakeRange(TAB_FILLER, 1)];
 
     [self enumerateCharsInRange:windowedRange
-                      charBlock:^BOOL(screen_char_t *currentLine, screen_char_t theChar, VT100GridCoord coord) {
+                    supportBidi:NO
+                      charBlock:^BOOL(const screen_char_t *currentLine,
+                                      screen_char_t theChar,
+                                      iTermExternalAttribute *ea,
+                                      VT100GridCoord logicalCoord,
+                                      VT100GridCoord coord) {
                           if (theChar.image) {
                               return NO;
                           }
@@ -1216,38 +971,110 @@ const NSInteger kLongMaximumWordLength = 100000;
     return result;
 }
 
+- (NSAttributedString *)attributedStringForSnippetForRange:(VT100GridAbsCoordRange)range
+                                         regularAttributes:(NSDictionary *)regularAttributes
+                                           matchAttributes:(NSDictionary *)matchAttributes
+                                       maximumPrefixLength:(NSUInteger)maximumPrefixLength
+                                       maximumSuffixLength:(NSUInteger)maximumSuffixLength {
+    const VT100GridCoordRange relativeRange =
+        VT100GridCoordRangeFromAbsCoordRange(range, self.dataSource.totalScrollbackOverflow);
+    const NSInteger maxMatchLength = 1024;
+    NSString *match = [self contentInRange:VT100GridWindowedRangeMake(relativeRange, _logicalWindow.location, _logicalWindow.length)
+                         attributeProvider:nil
+                                nullPolicy:kiTermTextExtractorNullPolicyFromLastToEnd
+                                       pad:NO
+                        includeLastNewline:NO
+                    trimTrailingWhitespace:NO
+                              cappedAtSize:maxMatchLength
+                              truncateTail:YES
+                         continuationChars:nil
+                                    coords:nil];
+    NSAttributedString *matchString = [[NSAttributedString alloc] initWithString:match
+                                                                      attributes:matchAttributes];
+    if (match.length == maxMatchLength) {
+        return matchString;
+    }
+    NSString *prefix = [[self wrappedLocatedStringAt:relativeRange.start
+                                             forward:NO
+                                 respectHardNewlines:YES
+                                            maxChars:maximumPrefixLength
+                                   continuationChars:nil
+                                 convertNullsToSpace:NO].string stringByTrimmingLeadingWhitespace];
+    NSString *suffix = [[self wrappedLocatedStringAt:relativeRange.end
+                                             forward:YES
+                                 respectHardNewlines:YES
+                                            maxChars:maximumSuffixLength + 1
+                                   continuationChars:nil
+                                 convertNullsToSpace:NO].string stringByTrimmingTrailingWhitespace];
+    if (suffix.length > maximumSuffixLength) {
+        suffix = [[[suffix stringByDroppingLastCharacters:1] stringByTrimmingOrphanedSurrogates] stringByAppendingString:@"…"];
+    }
+    NSAttributedString *attributedPrefix = [[NSAttributedString alloc] initWithString:prefix
+                                                                           attributes:regularAttributes];
+    NSAttributedString *attributedSuffix = [[NSAttributedString alloc] initWithString:suffix
+                                                                           attributes:regularAttributes];
+    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] init];
+    [result appendAttributedString:attributedPrefix];
+    [result appendAttributedString:matchString];
+    [result appendAttributedString:attributedSuffix];
+    return result;
+}
+
 - (id)contentInRange:(VT100GridWindowedRange)windowedRange
-   attributeProvider:(NSDictionary *(^)(screen_char_t))attributeProvider
+   attributeProvider:(NSDictionary *(^)(screen_char_t, iTermExternalAttribute *))attributeProvider
           nullPolicy:(iTermTextExtractorNullPolicy)nullPolicy
                  pad:(BOOL)pad
   includeLastNewline:(BOOL)includeLastNewline
+trimTrailingWhitespace:(BOOL)trimSelectionTrailingSpaces
+        cappedAtSize:(int)maxBytes
+        truncateTail:(BOOL)truncateTail
+   continuationChars:(NSMutableIndexSet *)continuationChars
+              coords:(iTermGridCoordArray *)coordsOut {
+    __kindof iTermLocatedString *locatedString =
+    [self locatedStringInRange:windowedRange
+             attributeProvider:attributeProvider
+                    nullPolicy:nullPolicy
+                           pad:pad
+            includeLastNewline:includeLastNewline
+        trimTrailingWhitespace:trimSelectionTrailingSpaces
+                  cappedAtSize:maxBytes
+                  truncateTail:truncateTail
+             continuationChars:continuationChars];
+    [coordsOut appendContentsOfArray:locatedString.gridCoords];
+    return attributeProvider ? ((iTermLocatedAttributedString *)locatedString).attributedString : locatedString.string;
+}
+
+- (id)locatedStringInRange:(VT100GridWindowedRange)windowedRange
+         attributeProvider:(NSDictionary *(^)(screen_char_t, iTermExternalAttribute *))attributeProvider
+                nullPolicy:(iTermTextExtractorNullPolicy)nullPolicy
+                       pad:(BOOL)pad
+        includeLastNewline:(BOOL)includeLastNewline
     trimTrailingWhitespace:(BOOL)trimSelectionTrailingSpaces
               cappedAtSize:(int)maxBytes
               truncateTail:(BOOL)truncateTail
-         continuationChars:(NSMutableIndexSet *)continuationChars
-              coords:(NSMutableArray *)coords {
+         continuationChars:(NSMutableIndexSet *)continuationChars {
     DLog(@"Find selected text in range %@ pad=%d, includeLastNewline=%d, trim=%d",
          VT100GridWindowedRangeDescription(windowedRange), (int)pad, (int)includeLastNewline,
          (int)trimSelectionTrailingSpaces);
-    __block id result;
+    __block iTermLocatedString *locatedString;
+    __block iTermLocatedAttributedString *locatedAttributedString;
     // Appends a string to |result|, either attributed or not, as appropriate.
-    void (^appendString)(NSString *, screen_char_t, VT100GridCoord) =
-        ^void(NSString *string, screen_char_t theChar, VT100GridCoord coord) {
-            if (attributeProvider) {
-                [result iterm_appendString:string
-                            withAttributes:attributeProvider(theChar)];
-            } else {
-                [result appendString:string];
-            }
-            for (NSInteger i = 0; i < string.length; i++) {
-                [coords addObject:[NSValue valueWithGridCoord:coord]];
-            }
-        };
+    void (^appendString)(NSString *, screen_char_t, iTermExternalAttribute *, VT100GridCoord) =
+    ^void(NSString *string, screen_char_t theChar, iTermExternalAttribute *ea, VT100GridCoord coord) {
+        if (attributeProvider) {
+            [locatedAttributedString appendString:string
+                                   withAttributes:attributeProvider(theChar, ea)
+                                               at:coord];
+        } else {
+            [locatedString appendString:string at:coord];
+        }
+    };
 
     if (attributeProvider) {
-        result = [[[NSMutableAttributedString alloc] init] autorelease];
+        locatedAttributedString = [[iTermLocatedAttributedString alloc] init];
+        locatedString = locatedAttributedString;
     } else {
-        result = [NSMutableString string];
+        locatedString = [[iTermLocatedString alloc] init];
     }
 
     if (maxBytes < 0) {
@@ -1258,151 +1085,171 @@ const NSInteger kLongMaximumWordLength = 100000;
     __block BOOL lineContainsNonImage = NO;
     __block BOOL lineContainsImage = NO;
     __block BOOL copiedImage = NO;
+    __block BOOL needsTimestamps = self.addTimestamps;
     [self enumerateCharsInRange:windowedRange
-                      charBlock:^BOOL(screen_char_t *currentLine, screen_char_t theChar, VT100GridCoord coord) {
-                          if (theChar.image) {
-                              lineContainsImage = YES;
-                          } else {
-                              lineContainsNonImage = YES;
-                          }
-                          if (theChar.image) {
-                              if (attributeProvider && theChar.foregroundColor == 0 && theChar.backgroundColor == 0) {
-                                  iTermImageInfo *imageInfo = GetImageInfo(theChar.code);
-                                  NSImage *image = imageInfo.image.images.firstObject;
-                                  if (image) {
-                                      copiedImage = YES;
-                                      NSTextAttachment *textAttachment = [[[NSTextAttachment alloc] init] autorelease];
-                                      textAttachment.image = imageInfo.image.images.firstObject;
-                                      NSAttributedString *attributedStringWithAttachment = [NSAttributedString attributedStringWithAttachment:textAttachment];
-                                      [result appendAttributedString:attributedStringWithAttachment];
-                                      [coords addObject:[NSValue valueWithGridCoord:coord]];
-                                  }
-                              }
-                          } else if (theChar.code == TAB_FILLER && !theChar.complexChar) {
-                              // Convert orphan tab fillers (those without a subsequent
-                              // tab character) into spaces.
-                              if ([self tabFillerAtIndex:coord.x isOrphanInLine:currentLine]) {
-                                  appendString(@" ", theChar, coord);
-                              }
-                          } else if (theChar.code == 0 && !theChar.complexChar) {
-                              // This is only reached for midline nulls; nulls at the end of the
-                              // line end up in eolBlock.
-                              switch (nullPolicy) {
-                                  case kiTermTextExtractorNullPolicyFromLastToEnd:
-                                      [result deleteCharactersInRange:NSMakeRange(0, [result length])];
-                                      [coords removeAllObjects];
-                                      break;
-                                  case kiTermTextExtractorNullPolicyFromStartToFirst:
-                                      return YES;
-                                  case kiTermTextExtractorNullPolicyTreatAsSpace:
-                                  case kiTermTextExtractorNullPolicyMidlineAsSpaceIgnoreTerminal:
-                                      appendString(@" ", theChar, coord);
-                                      break;
-                              }
-                          } else if (theChar.code != DWC_RIGHT &&
-                                     theChar.code != DWC_SKIP) {
-                              // Normal character. Add it unless it's a backslash at the right edge
-                              // of a window.
-                              if (continuationChars &&
-                                  windowedRange.columnWindow.length > 0 &&
-                                  coord.x == windowedRange.columnWindow.location + windowedRange.columnWindow.length - 1 &&
-                                  theChar.code == '\\' &&
-                                  !theChar.complexChar) {
-                                  // Is a backslash at the right edge of a window.
-                                  [continuationChars addIndex:[self indexForCoord:coord width:width]];
-                              } else {
-                                  // Normal character.
-                                  appendString(ScreenCharToStr(&theChar) ?: @"", theChar, coord);
-                              }
-                          }
-                          if (truncateTail) {
-                              return [result length] >= maxBytes;
-                          } else if ([result length] > maxBytes + kMaximumOversizeAmountWhenTruncatingHead) {
-                              // Truncate from head when significantly oversize.
-                              //
-                              // Removing byte from the beginning of the string is slow. The only reason to do it is to save
-                              // memory. Remove a big chunk periodically. After enumeration is done we'll cut it to the
-                              // exact size it needs to be.
-                              [result replaceCharactersInRange:NSMakeRange(0, [result length] - maxBytes) withString:@""];
-                          }
-                          return NO;
-                      }
+                    supportBidi:YES
+                      charBlock:^BOOL(const screen_char_t *currentLine,
+                                      screen_char_t theChar,
+                                      iTermExternalAttribute *ea,
+                                      VT100GridCoord logicalCoord,
+                                      VT100GridCoord visualCoord) {
+        if (needsTimestamps) {
+            appendString([self formattedTimestampForLine:logicalCoord.y],
+                         (screen_char_t) { .code = 0, .complexChar = 0, .image = 0}, nil, logicalCoord);
+            needsTimestamps = NO;
+        }
+        if (theChar.image) {
+            lineContainsImage = YES;
+        } else {
+            lineContainsNonImage = YES;
+        }
+        if (theChar.image) {
+            // TODO: Support virtual placeholders
+            if (attributeProvider && theChar.foregroundColor == 0 && theChar.backgroundColor == 0 && theChar.virtualPlaceholder == 0) {
+                id<iTermImageInfoReading> imageInfo = GetImageInfo(theChar.code);
+                NSImage *image = imageInfo.image.images.firstObject;
+                if (image) {
+                    copiedImage = YES;
+                    NSTextAttachment *textAttachment = [[NSTextAttachment alloc] init];
+                    textAttachment.image = imageInfo.image.images.firstObject;
+                    NSAttributedString *attributedStringWithAttachment = [NSAttributedString attributedStringWithAttachment:textAttachment];
+                    [locatedAttributedString appendAttributedString:attributedStringWithAttachment
+                                                                 at:logicalCoord];
+                }
+            }
+        } else if (ea.controlCode.valid) {
+            if (theChar.code != '^') {
+                appendString([NSString stringWithLongCharacter:ea.controlCode.code], theChar, ea, logicalCoord);
+            }
+        } else if (theChar.code == TAB_FILLER && !theChar.complexChar) {
+            // Convert orphan tab fillers (those without a subsequent
+            // tab character) into spaces.
+            if ([self tabFillerAtIndex:logicalCoord.x isOrphanInLine:currentLine]) {
+                appendString(@" ", theChar, ea, logicalCoord);
+            }
+        } else if (theChar.code == 0 && !theChar.complexChar) {
+            // This is only reached for midline nulls; nulls at the end of the
+            // line end up in eolBlock.
+            switch (nullPolicy) {
+                case kiTermTextExtractorNullPolicyFromLastToEnd:
+                    [locatedString erase];
+                    break;
+                case kiTermTextExtractorNullPolicyFromStartToFirst:
+                    return YES;
+                case kiTermTextExtractorNullPolicyTreatAsSpace:
+                case kiTermTextExtractorNullPolicyMidlineAsSpaceIgnoreTerminal:
+                    appendString(@" ", theChar, ea, logicalCoord);
+                    break;
+            }
+        } else if (theChar.complexChar || (theChar.code != DWC_RIGHT &&
+                                           theChar.code != DWC_SKIP)) {
+            // Normal character. Add it unless it's a backslash at the right edge
+            // of a window.
+            if (continuationChars &&
+                windowedRange.columnWindow.length > 0 &&
+                visualCoord.x == windowedRange.columnWindow.location + windowedRange.columnWindow.length - 1 &&
+                theChar.code == '\\' &&
+                !theChar.complexChar) {
+                // Is a backslash at the right edge of a window.
+                [continuationChars addIndex:[self indexForCoord:logicalCoord width:width]];
+            } else {
+                // Normal character.
+                appendString(ScreenCharToStr(&theChar) ?: @"", theChar, ea, logicalCoord);
+            }
+        }
+        if (truncateTail) {
+            return [locatedString length] >= maxBytes;
+        } else if ([locatedString length] > maxBytes + kMaximumOversizeAmountWhenTruncatingHead) {
+            // Truncate from head when significantly oversize.
+            //
+            // Removing byte from the beginning of the string is slow. The only reason to do it is to save
+            // memory. Remove a big chunk periodically. After enumeration is done we'll cut it to the
+            // exact size it needs to be.
+            [locatedString dropFirst:locatedString.length - maxBytes];
+        }
+        return NO;
+    }
                        eolBlock:^BOOL(unichar code, int numPrecedingNulls, int line) {
-                           BOOL ignore = (!copiedImage && !lineContainsNonImage && lineContainsImage);
-                           copiedImage = lineContainsNonImage = lineContainsImage = NO;
-                           if (ignore) {
-                               return NO;
-                           }
-                           int right;
-                           if (windowedRange.columnWindow.length) {
-                               right = windowedRange.columnWindow.location + windowedRange.columnWindow.length;
-                           } else {
-                               right = width;
-                           }
-                           // If there is no text after this, insert a hard line break.
-                           BOOL shouldAppendNewline = YES;
-                           if (pad) {
-                               for (int i = 0; i < numPrecedingNulls; i++) {
-                                   VT100GridCoord coord =
-                                      VT100GridCoordMake(right - numPrecedingNulls + i, line);
-                                   appendString(@" ", [self defaultChar], coord);
-                               }
-                           } else if (numPrecedingNulls > 0) {
-                               switch (nullPolicy) {
-                                   case kiTermTextExtractorNullPolicyFromLastToEnd:
-                                       [result deleteCharactersInRange:NSMakeRange(0, [result length])];
-                                       [coords removeAllObjects];
-                                       shouldAppendNewline = NO;
-                                       break;
-                                   case kiTermTextExtractorNullPolicyFromStartToFirst:
-                                       return YES;
-                                   case kiTermTextExtractorNullPolicyTreatAsSpace:
-                                       appendString(@" ",
-                                                    [self defaultChar],
-                                                    VT100GridCoordMake(right - 1, line));
-                                       break;
-                                   case kiTermTextExtractorNullPolicyMidlineAsSpaceIgnoreTerminal:
-                                       break;
-                               }
-                           }
-                           if (code == EOL_HARD &&
-                               shouldAppendNewline &&
-                               (includeLastNewline || line < windowedRange.coordRange.end.y)) {
-                               if (trimSelectionTrailingSpaces) {
-                                   NSInteger lengthBeforeTrimming = [result length];
-                                   [result trimTrailingWhitespace];
-                                   [coords removeObjectsInRange:NSMakeRange([result length],
-                                                                            lengthBeforeTrimming - [result length])];
-                               }
-                               appendString(@"\n",
-                                            [self defaultChar],
-                                            VT100GridCoordMake(right, line));
-                           }
-                           if (truncateTail) {
-                               return [result length] >= maxBytes;
-                           } else if ([result length] > maxBytes + kMaximumOversizeAmountWhenTruncatingHead) {
-                               // Truncate from head when significantly oversize.
-                               //
-                               // Removing byte from the beginning of the string is slow. The only reason to do it is to save
-                               // memory. Remove a big chunk periodically. After enumeration is done we'll cut it to the
-                               // exact size it needs to be.
-                               [result replaceCharactersInRange:NSMakeRange(0, [result length] - maxBytes) withString:@""];
-                           }
-                           return NO;
-                       }];
+        if (needsTimestamps) {
+            VT100GridCoord coord = VT100GridCoordMake(0, line);
+            appendString([self formattedTimestampForLine:coord.y],
+                         [self defaultChar],
+                         nil,
+                         coord);
+        }
+        needsTimestamps = self.addTimestamps;
+        self.progress.fraction = (double)(line - windowedRange.coordRange.start.y) / (double)(windowedRange.coordRange.end.y - windowedRange.coordRange.start.y + 1);
+        BOOL ignore = (!copiedImage && !lineContainsNonImage && lineContainsImage);
+        copiedImage = lineContainsNonImage = lineContainsImage = NO;
+        if (ignore) {
+            return NO;
+        }
+        int right;
+        if (windowedRange.columnWindow.length) {
+            right = windowedRange.columnWindow.location + windowedRange.columnWindow.length;
+        } else {
+            right = width;
+        }
+        // If there is no text after this, insert a hard line break.
+        BOOL shouldAppendNewline = YES;
+        if (pad) {
+            for (int i = 0; i < numPrecedingNulls; i++) {
+                VT100GridCoord coord =
+                VT100GridCoordMake(right - numPrecedingNulls + i, line);
+                appendString(@" ", [self defaultChar], nil, coord);
+            }
+        } else if (numPrecedingNulls > 0) {
+            switch (nullPolicy) {
+                case kiTermTextExtractorNullPolicyFromLastToEnd:
+                    [locatedString erase];
+                    shouldAppendNewline = NO;
+                    break;
+                case kiTermTextExtractorNullPolicyFromStartToFirst:
+                    return YES;
+                case kiTermTextExtractorNullPolicyTreatAsSpace:
+                    appendString(@" ",
+                                 [self defaultChar],
+                                 nil,
+                                 VT100GridCoordMake(right - 1, line));
+                    break;
+                case kiTermTextExtractorNullPolicyMidlineAsSpaceIgnoreTerminal:
+                    break;
+            }
+        }
+        if (code == EOL_HARD &&
+            shouldAppendNewline &&
+            (includeLastNewline || line < windowedRange.coordRange.end.y)) {
+            if (trimSelectionTrailingSpaces) {
+                [locatedString trimTrailingWhitespace];
+            }
+            appendString(@"\n",
+                         [self defaultChar],
+                         nil,
+                         VT100GridCoordMake(right, line));
+        }
+        if (truncateTail) {
+            return locatedString.length >= maxBytes;
+        } else if (locatedString.length > maxBytes + kMaximumOversizeAmountWhenTruncatingHead) {
+            // Truncate from head when significantly oversize.
+            //
+            // Removing byte from the beginning of the string is slow. The only reason to do it is to save
+            // memory. Remove a big chunk periodically. After enumeration is done we'll cut it to the
+            // exact size it needs to be.
+            [locatedString dropFirst:locatedString.length - maxBytes];
+        }
+        return NO;
+    }];
+    self.progress.fraction = 1.0;
 
-    if (!truncateTail && [result length] > maxBytes) {
+    if (!truncateTail && locatedString.length > maxBytes) {
         // Truncate the head to the exact size.
-        [result replaceCharactersInRange:NSMakeRange(0, [result length] - maxBytes) withString:@""];
+        [locatedString dropFirst:locatedString.length - maxBytes];
     }
 
     if (trimSelectionTrailingSpaces) {
-        NSInteger lengthBeforeTrimming = [result length];
-        [result trimTrailingWhitespace];
-        [coords removeObjectsInRange:NSMakeRange([result length],
-                                                 lengthBeforeTrimming - [result length])];
+        [locatedString trimTrailingWhitespace];
     }
-    return result;
+    return locatedString;
 }
 
 
@@ -1434,7 +1281,12 @@ const NSInteger kLongMaximumWordLength = 100000;
             VT100GridWindowedRangeMake(localRange, _logicalWindow.location, _logicalWindow.length);
     if (leading) {
         [self enumerateCharsInRange:windowedRange
-                          charBlock:^BOOL(screen_char_t *currentLine, screen_char_t theChar, VT100GridCoord coord) {
+                        supportBidi:NO
+                          charBlock:^BOOL(const screen_char_t *currentLine,
+                                          screen_char_t theChar,
+                                          iTermExternalAttribute *ea,
+                                          VT100GridCoord logicalCoord,
+                                          VT100GridCoord coord) {
                               NSString *string = ScreenCharToStr(&theChar);
                               if ([string rangeOfCharacterFromSet:nonWhitespace].location != NSNotFound) {
                                   trimmedRange.start.x = coord.x;
@@ -1457,7 +1309,9 @@ const NSInteger kLongMaximumWordLength = 100000;
         __block BOOL haveSeenCharacter = NO;
         __block BOOL haveSeenNewline = NO;
         [self enumerateInReverseCharsInRange:windowedRange
-                                   charBlock:^BOOL(screen_char_t theChar, VT100GridCoord coord) {
+                                   charBlock:^BOOL(screen_char_t theChar,
+                                                   VT100GridCoord logicalCoord,
+                                                   VT100GridCoord coord) {
                                        NSString *string = ScreenCharToStr(&theChar);
                                        BOOL result = NO;
                                        if ([string rangeOfCharacterFromSet:whitespace].location != NSNotFound) {
@@ -1488,9 +1342,30 @@ const NSInteger kLongMaximumWordLength = 100000;
     return trimmedRange;
 }
 
+- (NSString *)formattedTimestampForLine:(int)line {
+    NSDate *date = [self.dataSource dateForLine:line];
+    static NSString *format;
+    static dispatch_once_t onceToken;
+    static NSDateFormatter *formatter;
+    dispatch_once(&onceToken, ^{
+        format = [NSDateFormatter dateFormatFromTemplate:@"yyyy-MM-dd HH:mm:ss"
+                                                    options:0
+                                                     locale:[NSLocale currentLocale]];
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.dateFormat = format;
+    });
+    NSString *content;
+    if (date) {
+        content = [formatter stringFromDate:date];
+    } else {
+        content = [[formatter stringFromDate:[NSDate date]] stringByReplacingOccurrencesOfRegex:@"." withString:@" "];
+    }
+    return [NSString stringWithFormat:@"[%@] ", content];
+}
+
 - (BOOL)haveDoubleWidthExtensionAt:(VT100GridCoord)coord {
     screen_char_t sct = [self characterAt:coord];
-    return !sct.complexChar && (sct.code == DWC_RIGHT || sct.code == DWC_SKIP);
+    return !sct.complexChar && !sct.image && (sct.code == DWC_RIGHT || sct.code == DWC_SKIP);
 }
 
 - (BOOL)coord:(VT100GridCoord)coord1 isEqualToCoord:(VT100GridCoord)coord2 {
@@ -1559,9 +1434,9 @@ const NSInteger kLongMaximumWordLength = 100000;
     return i - 1;
 }
 
-- (BOOL)lineHasSoftEol:(int)y respectContinuations:(BOOL)respectContinuations
-{
-    screen_char_t *theLine = [_dataSource getLineAtIndex:y];
+- (BOOL)lineHasSoftEol:(int)y respectContinuations:(BOOL)respectContinuations {
+    ScreenCharArray *sca = [_dataSource screenCharArrayForLine:y];
+    const screen_char_t *theLine = sca.line;
     int width = [_dataSource width];
     int xLimit = [self xLimit];
 
@@ -1575,19 +1450,19 @@ const NSInteger kLongMaximumWordLength = 100000;
         return !(c == 0 || c == ' ');
     }
     if (respectContinuations) {
-        return (theLine[width].code != EOL_HARD ||
+        return (sca.eol != EOL_HARD ||
                 (theLine[width - 1].code == '\\' && !theLine[width - 1].complexChar));
     } else {
-        return theLine[width].code != EOL_HARD;
+        return sca.eol != EOL_HARD;
     }
 }
 
-- (BOOL)tabFillerAtIndex:(int)index isOrphanInLine:(screen_char_t *)line {
+- (BOOL)tabFillerAtIndex:(int)index isOrphanInLine:(const screen_char_t *)line {
     // A tab filler orphan is a tab filler that is followed by a tab filler orphan or a
     // non-tab character.
     int xLimit = [self xLimit];
     for (int i = index + 1; i < xLimit; i++) {
-        if (line[i].complexChar) {
+        if (line[i].complexChar || line[i].image) {
             return YES;
         }
         unichar c = line[i].code;
@@ -1605,13 +1480,43 @@ const NSInteger kLongMaximumWordLength = 100000;
     return YES;
 }
 
-- (NSString *)wrappedStringAt:(VT100GridCoord)coord
-                      forward:(BOOL)forward
-          respectHardNewlines:(BOOL)respectHardNewlines
-                     maxChars:(int)maxChars
-            continuationChars:(NSMutableIndexSet *)continuationChars
-          convertNullsToSpace:(BOOL)convertNullsToSpace
-                       coords:(NSMutableArray *)coords {
+- (ScreenCharArray *)screenCharArrayAtLine:(int)line {
+    return [_dataSource screenCharArrayForLine:line];
+}
+
+- (ScreenCharArray *)screenCharArrayAtLine:(int)line window:(VT100GridRange)window {
+    return [[_dataSource screenCharArrayForLine:line] inWindow:window];
+}
+
+- (iTermStringLine *)stringLineInRange:(VT100GridWindowedRange)range {
+    ScreenCharArray *array = [self combinedLinesInWindowedRange:range];
+    return [[iTermStringLine alloc] initWithScreenChars:array.line length:array.length];
+}
+
+- (ScreenCharArray *)combinedLinesInWindowedRange:(VT100GridWindowedRange)range {
+    ScreenCharArray *result = [[ScreenCharArray alloc] init];
+    for (NSInteger i = range.coordRange.start.y; i <= range.coordRange.end.y; i++) {
+        result = [result screenCharArrayByAppendingScreenCharArray:[self screenCharArrayAtLine:i window:range.columnWindow]];
+    }
+    return result;
+}
+
+- (ScreenCharArray *)combinedLinesInRange:(NSRange)range {
+    ScreenCharArray *result = [[ScreenCharArray alloc] init];
+    for (NSInteger i = range.location;
+         i < NSMaxRange(range);
+         i++) {
+        result = [result screenCharArrayByAppendingScreenCharArray:[self screenCharArrayAtLine:i]];
+    }
+    return result;
+}
+
+- (iTermLocatedString *)wrappedLocatedStringAt:(VT100GridCoord)coord
+                                       forward:(BOOL)forward
+                           respectHardNewlines:(BOOL)respectHardNewlines
+                                      maxChars:(int)maxChars
+                             continuationChars:(NSMutableIndexSet *)continuationChars
+                           convertNullsToSpace:(BOOL)convertNullsToSpace {
     if ([self hasLogicalWindow]) {
         respectHardNewlines = NO;
     }
@@ -1632,7 +1537,7 @@ const NSInteger kLongMaximumWordLength = 100000;
         range.coordRange.start = coord;
         if (VT100GridCoordOrder(range.coordRange.start,
                                 range.coordRange.end) != NSOrderedAscending) {
-            return @"";
+            return [[iTermLocatedString alloc] init];
         }
     } else {
         nullPolicy = kiTermTextExtractorNullPolicyFromLastToEnd;
@@ -1641,42 +1546,40 @@ const NSInteger kLongMaximumWordLength = 100000;
         range.coordRange.end = coord;
         if (VT100GridCoordOrder(range.coordRange.start,
                                 range.coordRange.end) != NSOrderedAscending) {
-            return @"";
+            return [[iTermLocatedString alloc] init];
         }
     }
     if (convertNullsToSpace) {
         nullPolicy = kiTermTextExtractorNullPolicyTreatAsSpace;
     }
-
-    NSString *content =
-            [self contentInRange:range
-               attributeProvider:nil
-                      nullPolicy:nullPolicy
-                             pad:NO
-              includeLastNewline:NO
-          trimTrailingWhitespace:NO
-                    cappedAtSize:maxChars
-                    truncateTail:forward
-               continuationChars:continuationChars
-                          coords:coords];
-    if (!respectHardNewlines) {
-        if (coords == nil) {
-            content = [content stringByReplacingOccurrencesOfString:@"\n" withString:@""];
-        } else {
-            NSMutableString *mutableContent = [[content mutableCopy] autorelease];
-            [content reverseEnumerateSubstringsEqualTo:@"\n" block:^(NSRange range) {
-                [mutableContent replaceCharactersInRange:range withString:@""];
-                [coords removeObjectsInRange:range];
-            }];
-            content = mutableContent;
-        }
+    if (range.coordRange.start.x >= _dataSource.width) {
+        range.coordRange.start.x = 0;
+        range.coordRange.start.y += 1;
     }
-    return content;
+    iTermLocatedString *locatedString =
+        [self locatedStringInRange:range
+                 attributeProvider:nil
+                        nullPolicy:nullPolicy
+                               pad:NO
+                includeLastNewline:NO
+            trimTrailingWhitespace:NO
+                      cappedAtSize:maxChars
+                      truncateTail:forward
+                 continuationChars:continuationChars];
+    if (!respectHardNewlines) {
+        [locatedString removeOcurrencesOfString:@"\n"];
+    }
+    return locatedString;
 }
 
 - (void)enumerateCharsInRange:(VT100GridWindowedRange)range
-                    charBlock:(BOOL (^)(screen_char_t *currentLine, screen_char_t theChar, VT100GridCoord coord))charBlock
-                     eolBlock:(BOOL (^)(unichar code, int numPrecedingNulls, int line))eolBlock {
+                  supportBidi:(BOOL)supportBidi
+                    charBlock:(BOOL (^NS_NOESCAPE)(const screen_char_t *currentLine,
+                                                   screen_char_t theChar,
+                                                   iTermExternalAttribute *,
+                                                   VT100GridCoord logicalCoord,
+                                                   VT100GridCoord visualCoord))charBlock
+                     eolBlock:(BOOL (^NS_NOESCAPE)(unichar code, int numPrecedingNulls, int line))eolBlock {
     int width = [_dataSource width];
 
     int startx = VT100GridWindowedRangeStart(range).x;
@@ -1693,12 +1596,18 @@ const NSInteger kLongMaximumWordLength = 100000;
                       range.columnWindow.length <= 0);
     int left = range.columnWindow.length ? range.columnWindow.location : 0;
     for (int y = MAX(0, range.coordRange.start.y); y <= MIN(bound, range.coordRange.end.y); y++) {
+        if (self.stopAsSoonAsPossible) {
+            DLog(@"Aborted");
+            break;
+        }
         if (y == range.coordRange.end.y) {
             // Reduce endx for last line.
-            endx = range.columnWindow.length ? VT100GridWindowedRangeEnd(range).x
-                                             : range.coordRange.end.x;
+            const int reducedEndX = range.columnWindow.length ? VT100GridWindowedRangeEnd(range).x : range.coordRange.end.x;
+            endx = MAX(0, MIN(endx, reducedEndX));
         }
-        screen_char_t *theLine = [_dataSource getLineAtIndex:y];
+        ScreenCharArray *sca = [_dataSource screenCharArrayForLine:y];
+        const screen_char_t *theLine = sca.line;
+        id<iTermExternalAttributeIndexReading> eaIndex = [_dataSource externalAttributeIndexForLine:y];
 
         // Count number of nulls at end of line.
         int numNulls = 0;
@@ -1720,12 +1629,27 @@ const NSInteger kLongMaximumWordLength = 100000;
             }
         }
 
-        // Iterate over characters up to terminal nulls.
-        for (int x = MIN(width - 1, MAX(range.columnWindow.location, startx)); x < endx - numNulls; x++) {
-            ITAssertWithMessage(x >= 0 && x < width, @"Iterating terminal nulls. x=%@ range=%@ width=%@ numNulls=%@", @(x), VT100GridWindowedRangeDescription(range), @(width), @(numNulls));
-            if (charBlock) {
-                if (charBlock(theLine, theLine[x], VT100GridCoordMake(x, y))) {
-                    return;
+        iTermBidiDisplayInfo *bidi = _supportBidi ? sca.bidiInfo : nil;
+        if (charBlock) {
+            if (supportBidi && bidi) {
+                const NSRange visualRange = NSMakeRangeFromHalfOpenInterval(MIN(width - 1, MAX(range.columnWindow.location, startx)),
+                                                                            endx);
+                [bidi enumerateLogicalRangesIn:visualRange closure:^(NSRange logicalRange, int visualStart, BOOL *stop) {
+                    for (int i = 0; i < logicalRange.length; i++) {
+                        int x = logicalRange.location + i;
+                        if (charBlock(theLine, theLine[x], eaIndex[x], VT100GridCoordMake(x, y), VT100GridCoordMake(visualStart + i, y))) {
+                            *stop = YES;
+                            return;
+                        }
+                    }
+                }];
+            } else {
+                // Iterate over characters up to terminal nulls.
+                for (int x = MIN(width - 1, MAX(range.columnWindow.location, startx)); x < endx - numNulls; x++) {
+                    ITAssertWithMessage(x >= 0 && x < width, @"Iterating terminal nulls. x=%@ range=%@ width=%@ numNulls=%@", @(x), VT100GridWindowedRangeDescription(range), @(width), @(numNulls));
+                    if (charBlock(theLine, theLine[x], eaIndex[x], VT100GridCoordMake(x, y), VT100GridCoordMake(x, y))) {
+                        return;
+                    }
                 }
             }
         }
@@ -1737,7 +1661,7 @@ const NSInteger kLongMaximumWordLength = 100000;
         if (eolBlock && haveReachedEol) {
             BOOL stop;
             if (fullWidth) {
-                stop = eolBlock(theLine[width].code, numNulls, y);
+                stop = eolBlock(sca.eol, numNulls, y);
             } else {
                 stop = eolBlock(numNulls ? EOL_HARD : EOL_SOFT, numNulls, y);
             }
@@ -1749,9 +1673,15 @@ const NSInteger kLongMaximumWordLength = 100000;
     }
 }
 
+static NSRange NSMakeRangeFromHalfOpenInterval(NSUInteger lowerBound, NSUInteger openUpperBound) {
+    assert(lowerBound <= openUpperBound);
+    return NSMakeRange(lowerBound, openUpperBound - lowerBound);
+}
+
+// NOTE: This enumerates in logical order. RTL characters will not actually be reversed.
 - (void)enumerateInReverseCharsInRange:(VT100GridWindowedRange)range
-                             charBlock:(BOOL (^)(screen_char_t theChar, VT100GridCoord coord))charBlock
-                              eolBlock:(BOOL (^)(unichar code, int numPrecedingNulls, int line))eolBlock {
+                             charBlock:(BOOL (^NS_NOESCAPE)(screen_char_t theChar, VT100GridCoord logicalCoord, VT100GridCoord visualCoord))charBlock
+                              eolBlock:(BOOL (^NS_NOESCAPE)(unichar code, int numPrecedingNulls, int line))eolBlock {
     int xLimit = range.columnWindow.length == 0 ? [_dataSource width] :
         (range.columnWindow.location + range.columnWindow.length);
     int initialX = MIN(xLimit - 1, range.coordRange.end.x - 1);
@@ -1760,7 +1690,12 @@ const NSInteger kLongMaximumWordLength = 100000;
     for (int y = MIN([_dataSource numberOfLines] - 1, range.coordRange.end.y);
          y >= yLimit;
          y--) {
-        screen_char_t *theLine = [_dataSource getLineAtIndex:y];
+        if (self.stopAsSoonAsPossible) {
+            DLog(@"Aborted");
+            break;
+        }
+        ScreenCharArray *sca = [_dataSource screenCharArrayForLine:y];
+        const screen_char_t *theLine = sca.line;
         int x = initialX;
         int xmin;
         if (y == yLimit) {
@@ -1776,7 +1711,7 @@ const NSInteger kLongMaximumWordLength = 100000;
             }
             if (eolBlock) {
                 if (xLimit == trueWidth) {
-                    if (eolBlock(theLine[trueWidth].code, numNulls, y)) {
+                    if (eolBlock(sca.eol, numNulls, y)) {
                         return;
                     }
                 } else {
@@ -1794,7 +1729,8 @@ const NSInteger kLongMaximumWordLength = 100000;
         }
         if (charBlock) {
             for (; x >= xmin; x--) {
-                if (charBlock(theLine[x], VT100GridCoordMake(x, y))) {
+                VT100GridCoord coord = VT100GridCoordMake(x, y);
+                if (charBlock(theLine[x], coord, coord)) {
                     return;
                 }
             }
@@ -1803,8 +1739,19 @@ const NSInteger kLongMaximumWordLength = 100000;
     }
 }
 
+- (int)lengthOfAbsLine:(long long)absLine {
+    const long long overflow = [_dataSource totalScrollbackOverflow];
+    if (absLine < overflow) {
+        return 0;
+    }
+    if (absLine - overflow > INT_MAX) {
+        return 0;
+    }
+    return [self lengthOfLine:absLine - overflow];
+}
+
 - (int)lengthOfLine:(int)line {
-    screen_char_t *theLine = [_dataSource getLineAtIndex:line];
+    const screen_char_t *theLine = [_dataSource screenCharArrayForLine:line].line;
     int x;
     for (x = [_dataSource width] - 1; x >= 0; x--) {
         if (theLine[x].code || theLine[x].complexChar) {
@@ -1820,14 +1767,19 @@ const NSInteger kLongMaximumWordLength = 100000;
         VT100GridCoordRangeMake(0, coord.y, [_dataSource width], coord.y);
     NSCharacterSet *columnDividers = [self columnDividers];
     [self enumerateCharsInRange:VT100GridWindowedRangeMake(theRange, 0, 0)
-                      charBlock:^BOOL(screen_char_t *currentLine, screen_char_t theChar, VT100GridCoord theCoord) {
+                    supportBidi:NO
+                      charBlock:^BOOL(const screen_char_t *currentLine,
+                                      screen_char_t theChar,
+                                      iTermExternalAttribute *ea,
+                                      VT100GridCoord logicalCoord,
+                                      VT100GridCoord theCoord) {
                           if (!theChar.complexChar &&
                               [columnDividers characterIsMember:theChar.code]) {
                               [indexes addIndex:theCoord.x];
                           }
                           return NO;
                       }
-                       eolBlock:NULL];
+                       eolBlock:nil];
     return indexes;
 }
 
@@ -1836,7 +1788,7 @@ const NSInteger kLongMaximumWordLength = 100000;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         charSet = [[NSMutableCharacterSet alloc] init];
-        [charSet addCharactersInString:@"|\u2502"];
+        [charSet addCharactersInString:@"|\u2502\u251c\u2524"];
     });
     return charSet;
 }
@@ -1916,16 +1868,78 @@ const NSInteger kLongMaximumWordLength = 100000;
     return coord;
 }
 
+- (screen_char_t)characterAtAbsCoord:(VT100GridAbsCoord)coord {
+    const long long overflow = [_dataSource totalScrollbackOverflow];
+    if (coord.y < overflow || coord.y - overflow > INT_MAX) {
+        screen_char_t zero = { 0 };
+        return zero;
+    }
+    return [self characterAt:[self coordFromAbsolute:coord]];
+}
+
+- (VT100GridCoord)logicalCoordForVisualCoord:(VT100GridCoord)visualCoord {
+    if (!_supportBidi) {
+        return visualCoord;
+    }
+    iTermBidiDisplayInfo *bidi = nil;
+    ScreenCharArray *sca = [_dataSource screenCharArrayForLine:visualCoord.y];
+    bidi = sca.bidiInfo;
+    if (!bidi) {
+        return visualCoord;
+    }
+    VT100GridCoord logicalCoord = visualCoord;
+    logicalCoord.x = [bidi logicalForVisual:visualCoord.x];
+    return logicalCoord;
+}
+
+- (screen_char_t)characterAtVisualCoord:(VT100GridCoord)visualCoord {
+    return [self characterAt:[self logicalCoordForVisualCoord:visualCoord]];
+}
+
 - (screen_char_t)characterAt:(VT100GridCoord)coord {
     if (_shouldCacheLines && coord.y == _cachedLineNumber && _cachedLine != nil) {
         return _cachedLine[coord.x];
     }
-    screen_char_t *theLine = [_dataSource getLineAtIndex:coord.y];
+    ScreenCharArray *sca = [_dataSource screenCharArrayForLine:coord.y];
+    const screen_char_t *theLine = sca.line;
     if (_shouldCacheLines) {
         _cachedLineNumber = coord.y;
         _cachedLine = theLine;
     }
+    if (coord.x >= sca.length) {
+        return sca.continuation;
+    }
     return theLine[coord.x];
+}
+
+- (id<iTermExternalAttributeIndexReading>)externalAttributeIndexForLine:(int)line {
+    if (_shouldCacheLines && line == _cachedExternalAttributeLineNumber && _cachedExternalAttributeIndex != nil) {
+        return _cachedExternalAttributeIndex;
+    }
+    id<iTermExternalAttributeIndexReading> index = [_dataSource externalAttributeIndexForLine:line];
+    if (_shouldCacheLines) {
+        _cachedExternalAttributeLineNumber = line;
+        _cachedExternalAttributeIndex = index;
+    }
+    return index;
+}
+
+- (iTermExternalAttribute *)externalAttributesAt:(VT100GridCoord)coord {
+    return [self externalAttributeIndexForLine:coord.y][coord.x];
+}
+
+#pragma mark - iTermWordExtractorDataSource
+
+- (VT100GridRange)wordExtractorLogicalWindow {
+    return _logicalWindow;
+}
+
+- (int)wordExtractorWidth {
+    return _dataSource.width;
+}
+
+- (int)wordExtractroNumberOfLines {
+    return _dataSource.numberOfLines;
 }
 
 @end

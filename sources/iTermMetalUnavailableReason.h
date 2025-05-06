@@ -5,6 +5,8 @@
 //  Created by George Nachman on 9/29/18.
 //
 
+#import <Foundation/Foundation.h>
+
 typedef NS_ENUM(NSUInteger, iTermMetalUnavailableReason) {
     iTermMetalUnavailableReasonNone,
     iTermMetalUnavailableReasonNoGPU,
@@ -17,6 +19,7 @@ typedef NS_ENUM(NSUInteger, iTermMetalUnavailableReason) {
     iTermMetalUnavailableReasonVerticalSpacing,
     iTermMetalUnavailableReasonMarginSize,
     iTermMetalUnavailableReasonAnnotations,
+    iTermMetalUnavailableReasonPortholes,
     iTermMetalUnavailableReasonFindPanel,
     iTermMetalUnavailableReasonPasteIndicator,
     iTermMetalUnavailableReasonAnnouncement,
@@ -29,8 +32,14 @@ typedef NS_ENUM(NSUInteger, iTermMetalUnavailableReason) {
     iTermMetalUnavailableReasonTabInactive,
     iTermMetalUnavailableReasonTabBarTemporarilyVisible,
     iTermMetalUnavailableReasonScreensChanging,
-    iTermMetalUnavailableReasonWindowObscured,
     iTermMetalUnavailableReasonContextAllocationFailure,
     iTermMetalUnavailableReasonTabDragInProgress,
-    iTermMetalUnavailableReasonSessionHasNoWindow
+    iTermMetalUnavailableReasonSessionHasNoWindow,
+    iTermMetalUnavailableReasonDropTargetsVisible,
+    iTermMetalUnavailableReasonSwipingBetweenTabs,
+    iTermMetalUnavailableReasonSplitPaneBeingDragged,
+    iTermMetalUnavailableReasonWindowObscured,
+    iTermMetalUnavailableReasonLowerPowerMode
 };
+
+NSString *iTermMetalUnavailableReasonDescription(iTermMetalUnavailableReason reason);

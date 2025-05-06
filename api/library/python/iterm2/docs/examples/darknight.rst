@@ -1,3 +1,5 @@
+:orphan:
+
 .. _darknight_example:
 
 Change Color Preset by Time of Day
@@ -49,7 +51,7 @@ The script changes the color preset based on time of day. Edit the constants at 
     async def set_colors(connection, preset_name):
 	print("Change to preset {}".format(preset_name))
 	preset = await iterm2.ColorPreset.async_get(connection, preset_name)
-	for partial in (await iterm2.PartialProfile.async_get(connection)):
+	for partial in (await iterm2.PartialProfile.async_query(connection)):
 	    if partial.name in PROFILES:
 		await partial.async_set_color_preset(preset)
 

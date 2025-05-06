@@ -58,14 +58,27 @@ NS_ASSUME_NONNULL_BEGIN
         return;
     }
 
+    const CGFloat maxWidth = reallyDraw ? self.bounds.size.width - point.x : INFINITY;
     if (reallyDraw) {
         NSColor *textColor = attrs[NSForegroundColorAttributeName];
         if (!textColor) {
             attrs = [attrs dictionaryBySettingObject:self.textColor forKey:NSForegroundColorAttributeName];
         }
-        [string drawAtPoint:point withAttributes:attrs];
+        const CGFloat height = [string sizeWithAttributes:attrs].height;
+
+        NSRect rect = {
+            .origin = {
+                .x = point.x,
+                .y = point.y
+            },
+            .size = {
+                .width = self.bounds.size.width - point.x,
+                .height = height
+            }
+        };
+        [string drawInRect:rect withAttributes:attrs];
     }
-    *width = [self retinaRound:[string sizeWithAttributes:attrs].width];
+    *width = [self retinaRoundUp:MIN(maxWidth, [string sizeWithAttributes:attrs].width)];
 }
 
 - (void)sizeToFit {
@@ -83,6 +96,7 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    dirtyRect = NSIntersectionRect(dirtyRect, self.bounds);
     [self drawRect:dirtyRect width:nil];
 }
 
@@ -168,6 +182,10 @@ NS_ASSUME_NONNULL_BEGIN
     }
 }
 
+- (void)statusBarDefaultTextColorDidChange {
+    [self updateTextFieldIfNeeded];
+}
+
 - (NSTextField *)newTextField {
     NSTextField *textField = [[NSTextField alloc] initWithFrame:NSZeroRect];
     textField.drawsBackground = NO;
@@ -250,7 +268,15 @@ NS_ASSUME_NONNULL_BEGIN
     }];
 }
 
+- (BOOL)truncatesTail {
+    return NO;
+}
+
 - (nullable NSAttributedString *)attributedStringForWidth:(CGFloat)width {
+    if (self.truncatesTail) {
+        return self.attributedStringVariants.firstObject;
+    }
+
     NSArray<iTermTuple<NSAttributedString *,NSNumber *> *> *tuples = [self widthAttributedStringTuples];
     tuples = [tuples filteredArrayUsingBlock:^BOOL(iTermTuple<NSAttributedString *,NSNumber *> *anObject) {
         return ceil(anObject.secondObject.doubleValue) <= ceil(width);
@@ -260,8 +286,12 @@ NS_ASSUME_NONNULL_BEGIN
     }].firstObject ?: [[NSAttributedString alloc] initWithString:@"" attributes:@{}];
 }
 
+- (NSFont *)font {
+    return self.advancedConfiguration.font ?: [iTermStatusBarAdvancedConfiguration defaultFont];
+}
+
 - (CGFloat)statusBarComponentVerticalOffset {
-    NSFont *font = self.advancedConfiguration.font ?: [iTermStatusBarAdvancedConfiguration defaultFont];
+    NSFont *font = [self font];
     const CGFloat containerHeight = _textField.superview.bounds.size.height;
     const CGFloat capHeight = font.capHeight;
     const CGFloat descender = font.descender - font.leading;  // negative (distance from bottom of bounding box to baseline)
@@ -284,7 +314,7 @@ NS_ASSUME_NONNULL_BEGIN
     view.frame = NSMakeRect(0, 0, width, view.frame.size.height);
 }
 
-- (NSColor *)statusBarTextColor {
+- (nullable NSColor *)statusBarTextColor {
     return [self textColor];
 }
 

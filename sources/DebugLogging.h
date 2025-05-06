@@ -6,10 +6,15 @@
 //
 //
 
-#import <Foundation/Foundation.h>
 #include <assert.h>
 
+#ifndef __OBJC__
+#include "iTermCLogging.h"
+#else
+// Rest of the file is Obj-C code path
+#import <Foundation/Foundation.h>
 extern BOOL gDebugLogging;
+#include "iTermCLogging.h"
 
 #define USE_STOPWATCH 0
 
@@ -103,6 +108,12 @@ extern BOOL gDebugLogging;
     } \
   } while (0)
 
+#if __has_feature(objc_arc)
+#define ITCriticalErrorCreateAlert [[NSAlert alloc] init]
+#else
+#define ITCriticalErrorCreateAlert [[[NSAlert alloc] init] autorelease]
+#endif
+
 #define ITCriticalError(condition, args...) \
   do { \
     if (!(condition)) { \
@@ -118,7 +129,7 @@ extern BOOL gDebugLogging;
       ELog(args); \
       if (TurnOffDebugLoggingSilently()) { \
         dispatch_async(dispatch_get_main_queue(), ^{ \
-          NSAlert *alert = [[NSAlert alloc] init]; \
+          NSAlert *alert = ITCriticalErrorCreateAlert; \
           alert.messageText = @"Critical Error"; \
           alert.informativeText =  @"A critical error occurred and a debug log was created. Please send /tmp/debuglog.txt to the developers."; \
           [alert addButtonWithTitle:@"OK"]; \
@@ -129,6 +140,25 @@ extern BOOL gDebugLogging;
   } while (0)
 
 #define IT_STRINGIFY(x) #x
+
+#if BETA
+#define ITBetaAssertSampled(percentage, condition, args...) \
+  do { \
+    if (!(condition) && arc4random_uniform(100) < percentage) { \
+      DLog(@"Crashing because %s from:\n%@", #condition, [NSThread callStackSymbols]); \
+      ELog(args); \
+      assert(NO); \
+    } \
+  } while (0)
+#else  // BETA
+#define ITBetaAssertSampled(percentage, condition, args...) \
+  do { \
+    if (!(condition) && arc4random_uniform(100) < percentage) { \
+      ELog(@"BETA ASSERT: Failed beta assert because %s from:\n%@", #condition, [NSThread callStackSymbols]); \
+      ELog(args); \
+    } \
+  } while (0)
+#endif
 
 #if BETA
 #define ITBetaAssert(condition, args...) \
@@ -171,11 +201,32 @@ extern BOOL gDebugLogging;
         } \
     } while (0)
 
+void iTermFatalError(NSString *s) __attribute__((noreturn));
+
 void ToggleDebugLogging(void);
 int DebugLogImpl(const char *file, int line, const char *function, NSString* value);
 void LogForNextCrash(const char *file, int line, const char *function, NSString* value, BOOL force);
 void TurnOnDebugLoggingSilently(void);
 BOOL TurnOffDebugLoggingSilently(void);
+void TurnOnDebugLoggingAutomatically(void);
 
 void SetPinnedDebugLogMessage(NSString *key, NSString *value, ...);
 void AppendPinnedDebugLogMessage(NSString *key, NSString *value, ...);
+
+_Noreturn NS_INLINE void iTermCrashWithMessage(const char *file,
+                                               int line,
+                                               const char  *function,
+                                               const char  *message) {
+    __assert_rtn(function, file, line, message);
+}
+
+@interface NSException(iTerm)
+@property (nonatomic, readonly) NSArray<NSString *> *it_originalCallStackSymbols;
+@property (nonatomic, readonly) NSString *it_compressedDescription;
+- (NSException *)it_rethrowWithMessage:(NSString *)format, ...;
+@end
+
+#endif  // __OBJC__
+
+#define VLog(args...)
+//#define VLog(args...) NSLog(args)

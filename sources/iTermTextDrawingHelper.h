@@ -8,60 +8,84 @@
 
 #import <Foundation/Foundation.h>
 #import "ITAddressBookMgr.h"
+#import "iTermColorMap.h"
 #import "iTermCursor.h"
+#import "iTermTextDrawingHelperDelegate.h"
 #import "iTermTimestampDrawHelper.h"
 #import "ScreenChar.h"
 #import "VT100GridTypes.h"
 
+@class iTermAttributedStringBuilder;
 @class iTermColorMap;
+@class iTermExternalAttribute;
+@class iTermExternalAttributeIndex;
+@class iTermFontTable;
+@protocol iTermExternalAttributeIndexReading;
 @class iTermFindOnPageHelper;
+@class iTermKittyImageDraw;
+@class iTermOffscreenCommandLine;
+@class iTermRectArray;
 @class iTermSelection;
 @class iTermTextExtractor;
+@protocol FontProviderProtocol;
 @class PTYFontInfo;
-@class VT100ScreenMark;
+@class ScreenCharArray;
+@protocol VT100ScreenMarkReading;
+
+typedef NS_ENUM(NSUInteger, iTermMarkIndicatorType) {
+    iTermMarkIndicatorTypeSuccess,
+    iTermMarkIndicatorTypeError,
+    iTermMarkIndicatorTypeOther,
+
+    iTermMarkIndicatorTypeFoldedSuccess,
+    iTermMarkIndicatorTypeFoldedError,
+    iTermMarkIndicatorTypeFoldedOther
+};
+
+typedef struct {
+    VT100GridCoord previousCoord;
+    int previousImageMSB;
+    int runLength;
+} iTermKittyUnicodePlaceholderState;
+
+typedef struct {
+    int row;
+    int column;
+    unsigned int imageID;
+    unsigned int placementID;
+    int runLength;
+} iTermKittyUnicodePlaceholderInfo;
+
+typedef struct {
+    BOOL valid;
+    NSPoint translation;
+    NSRect destRect;
+    NSRect sourceRect;
+} iTermKittyPlaceholderDrawInstructions;
+
+iTermKittyPlaceholderDrawInstructions iTermKittyPlaceholderDrawInstructionsCreate(iTermKittyImageDraw *draw,
+                                                                                  NSSize cellSize,
+                                                                                  VT100GridCoord sourceCoord,
+                                                                                  VT100GridCoord destCoord,
+                                                                                  NSPoint point,
+                                                                                  unsigned int imageID,
+                                                                                  unsigned int placementID,
+                                                                                  CGFloat virtualOffset);
+iTermKittyImageDraw *iTermFindKittyImageDrawForVirtualPlaceholder(NSArray<iTermKittyImageDraw *> *draws,
+                                                                  unsigned int placementID,
+                                                                  unsigned int imageID);
+
+void iTermKittyUnicodePlaceholderStateInit(iTermKittyUnicodePlaceholderState *state);
+BOOL iTermDecodeKittyUnicodePlaceholder(const screen_char_t *c,
+                                        iTermExternalAttribute *ea,
+                                        iTermKittyUnicodePlaceholderState *state,
+                                        iTermKittyUnicodePlaceholderInfo *info);
 
 BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
+NSColor *iTermTextDrawingHelperTextColorForMatch(NSColor *bgColor);
 
-@protocol iTermTextDrawingHelperDelegate <NSObject>
-
-- (void)drawingHelperDrawBackgroundImageInRect:(NSRect)rect
-                        blendDefaultBackground:(BOOL)blendDefaultBackground;
-
-- (VT100ScreenMark *)drawingHelperMarkOnLine:(int)line;
-
-- (screen_char_t *)drawingHelperLineAtIndex:(int)line;
-- (screen_char_t *)drawingHelperLineAtScreenIndex:(int)line;
-
-- (screen_char_t *)drawingHelperCopyLineAtIndex:(int)line toBuffer:(screen_char_t *)buffer;
-
-- (iTermTextExtractor *)drawingHelperTextExtractor;
-
-- (NSArray *)drawingHelperCharactersWithNotesOnLine:(int)line;
-
-- (void)drawingHelperUpdateFindCursorView;
-
-- (NSDate *)drawingHelperTimestampForLine:(int)line;
-
-- (NSColor *)drawingHelperColorForCode:(int)theIndex
-                                 green:(int)green
-                                  blue:(int)blue
-                             colorMode:(ColorMode)theMode
-                                  bold:(BOOL)isBold
-                                 faint:(BOOL)isFaint
-                          isBackground:(BOOL)isBackground;
-
-- (PTYFontInfo *)drawingHelperFontForChar:(UniChar)ch
-                                isComplex:(BOOL)isComplex
-                               renderBold:(BOOL *)renderBold
-                             renderItalic:(BOOL *)renderItalic;
-
-- (NSData *)drawingHelperMatchesOnLine:(int)line;
-
-- (void)drawingHelperDidFindRunOfAnimatedCellsStartingAt:(VT100GridCoord)coord ofLength:(int)length;
-
-- (NSString *)drawingHelperLabelForDropTargetOnLine:(int)line;
-
-@end
+extern const CGFloat iTermOffscreenCommandLineVerticalPadding;
+extern const int iTermTextDrawingHelperLineStyleMarkRightInsetCells;
 
 @interface iTermTextDrawingHelper : NSObject
 
@@ -78,10 +102,10 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 @property(nonatomic, retain) NSColor *unfocusedSelectionColor;
 
 // Holds colors.
-@property(nonatomic, retain) iTermColorMap *colorMap;
+@property(nonatomic, retain) id<iTermColorMapReading> colorMap;
 
 // Required delegate.
-@property(nonatomic, assign) NSView<iTermTextDrawingHelperDelegate> *delegate;
+@property(nonatomic, assign) id<iTermTextDrawingHelperDelegate> delegate;
 
 // Size of a cell in pixels.
 @property(nonatomic, assign) NSSize cellSize;
@@ -112,6 +136,9 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 
 // Is the cursor configured to blink?
 @property(nonatomic, assign) BOOL cursorBlinking;
+
+// Should bar/underscore cursors have a shadow?
+@property(nonatomic) BOOL cursorShadow;
 
 // Are we in copy mode?
 @property(nonatomic, assign) BOOL copyMode;
@@ -146,6 +173,9 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 // Is this view active (receiving user input)?
 @property(nonatomic, assign) BOOL textViewIsActiveSession;
 
+// Is the textview the first responder?
+@property(nonatomic, assign) BOOL textViewIsFirstResponder;
+
 // Is "smart cursor color" on?
 @property(nonatomic, assign) BOOL useSmartCursorColor;
 
@@ -156,7 +186,7 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 @property(nonatomic, assign) BOOL shouldDrawFilledInCursor;
 
 // Does bold text render as the bright version of a dim ansi color, and also use specified bold color?
-@property(nonatomic, assign) BOOL useBoldColor;
+@property(nonatomic, assign) BOOL useCustomBoldColor;
 
 // Is this the current text view of the "front" terminal window?
 // TODO: This might be the same as textViewIsActiveSession.
@@ -166,7 +196,7 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 @property(nonatomic, assign) double transparencyAlpha;
 
 // Is the cursor visible?
-@property(nonatomic, assign) BOOL cursorVisible;
+@property(nonatomic, assign) BOOL isCursorVisible;
 
 // What kind of cursor to draw.
 @property(nonatomic, assign) ITermCursorType cursorType;
@@ -190,10 +220,11 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 @property(nonatomic, assign) BOOL blinkAllowed;
 
 // Underlined selection range (inclusive of all values), indicating clickable url.
+// This is a logical range.
 @property(nonatomic, assign) VT100GridAbsWindowedRange underlinedRange;
 
 // If set, the last-modified time of each line on the screen is shown on the right side of the display.
-@property(nonatomic, assign) BOOL showTimestamps;
+@property(nonatomic) BOOL shouldShowTimestamps;
 
 // Amount to shift anti-aliased text by horizontally to simulate bold
 @property(nonatomic, assign) CGFloat antiAliasedShift;
@@ -224,8 +255,10 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 // Origin in view coordinates of the cursor. Valid only if there is marked text.
 @property(nonatomic, readonly) NSPoint imeCursorLastPos;
 
-// Where the cursor is drawn based on current cellSize and cursorCoord.
-@property(nonatomic, readonly) NSRect cursorFrame;
+// Where the cursor is drawn based on current cellSize and cursorCoord, assuming it is a solid rectangle.
+@property(nonatomic, readonly) NSRect cursorFrameForSolidRectangle;
+@property(nonatomic, readonly) NSColor *cursorColor;
+@property(nonatomic, readonly) BOOL cursorIsSolidRectangle;
 
 // Draw debug info?
 @property(nonatomic, assign) BOOL debug;
@@ -234,6 +267,7 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 @property(nonatomic, assign) BOOL animated;
 
 @property(nonatomic, assign) BOOL isRetina;
+@property(nonatomic, assign) BOOL forceAntialiasingOnRetina;
 
 // Draw mark indicators?
 @property(nonatomic, assign) BOOL drawMarkIndicators;
@@ -262,6 +296,8 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 // Is bold text allowed? If so, then double struck text may be used when a bold version of the font
 // is not available.
 @property(nonatomic, assign) BOOL boldAllowed;
+@property(nonatomic, assign) BOOL italicAllowed;
+@property(nonatomic, strong) id<FontProviderProtocol> fontProvider;
 
 // Version of unicode. Determines character widths.
 @property(nonatomic, assign) NSInteger unicodeVersion;
@@ -278,6 +314,8 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 @property(nonatomic, readonly) iTermTimestampDrawHelper *timestampDrawHelper;
 
 @property(nonatomic, readonly) NSColor *defaultBackgroundColor;
+@property(nonatomic, readonly) NSColor *defaultTextColor;
+@property(nonatomic, readonly) NSColor *blockHoverColor;
 
 // Does the current ascii font have ligatures? Used to determine if ASCII
 // symbols (non-alphanumerics) get to use the fastpath.
@@ -290,6 +328,38 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 @property (nonatomic) CGFloat badgeTopMargin;
 @property (nonatomic) CGFloat badgeRightMargin;
 
+@property (nonatomic, readonly) NSColor *blockCursorFillColorRespectingSmartSelection;
+@property (nonatomic) BOOL softAlternateScreenMode;
+@property (nonatomic, strong) iTermOffscreenCommandLine *offscreenCommandLine;
+@property (nonatomic, readonly) NSRect offscreenCommandLineFrame;
+@property (nonatomic, readonly) NSColor *offscreenCommandLineBackgroundColor;
+@property (nonatomic, readonly) NSColor *offscreenCommandLineOutlineColor;
+@property (nonatomic) BOOL useSelectedTextColor;
+@property (nonatomic, strong) iTermFontTable *fontTable;
+@property (nonatomic) VT100GridRange linesToSuppress;
+@property (nonatomic) CGFloat pointsOnBottomToSuppressDrawing;
+// NOTE: This is a relative line range.
+@property (nonatomic) NSRange selectedCommandRegion;
+@property (nonatomic) BOOL selectedCommandHasLineStyleMarks;
+@property (nonatomic) BOOL forceRegularBottomMargin;
+@property (nonatomic, readonly) NSArray<NSColor *> *selectedCommandOutlineColors;
+@property (nonatomic) NSEdgeInsets extraMargins;
+
+// Color for shade over deselected commands
+@property (nonatomic, readonly) NSColor *shadeColor;
+@property (nonatomic, copy) NSArray<iTermKittyImageDraw *> *kittyImageDraws;
+@property (nonatomic, copy) NSIndexSet *folds;
+@property (nonatomic, readonly) iTermAttributedStringBuilder *attributedStringBuilder;
+@property (nonatomic) CGFloat rightExtra;
+@property (nonatomic) NSRange highlightedBlockLineRange;
+
++ (NSColor *)colorForMarkType:(iTermMarkIndicatorType)type;
++ (NSColor *)colorForLineStyleMark:(iTermMarkIndicatorType)type backgroundColor:(NSColor *)bgColor;
+
++ (NSRect)offscreenCommandLineFrameForVisibleRect:(NSRect)visibleRect
+                                         cellSize:(NSSize)cellSize
+                                         gridSize:(VT100GridSize)gridSize;
+
 // imageSize: size of image to draw
 // destinationRect: rect bounding the region of a scrollview's content view (i.e., very tall view) that's being drawn
 // destinationFrameSize: size of the scrollview's content view
@@ -298,11 +368,10 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
 //
 // Returns: destination frame to draw to
 + (NSRect)rectForBadgeImageOfSize:(NSSize)imageSize
-                  destinationRect:(NSRect)destinationRect
              destinationFrameSize:(NSSize)destinationFrameSize
-                      visibleSize:(NSSize)visibleSize
                     sourceRectPtr:(NSRect *)sourceRectPtr
-                          margins:(NSEdgeInsets)margins;
+                          margins:(NSEdgeInsets)margins
+                   verticalOffset:(CGFloat)verticalOffset;
 
 // Indicates whether the cursor should take its color from the background (if YES) or text color (if NO).
 + (BOOL)cursorUsesBackgroundColorForScreenChar:(screen_char_t)screenChar
@@ -314,42 +383,73 @@ BOOL CheckFindMatchAtIndex(NSData *findMatches, int index);
                cellSizeWithoutSpacing:(CGSize)cellSizeWithoutSpacing
                                 scale:(CGFloat)scale;
 
++ (NSImage *)newImageWithMarkOfColor:(NSColor *)color
+                                size:(CGSize)size
+                              folded:(BOOL)folded;
+
++ (NSImage *)newImageWithMarkOfColor:(NSColor *)color
+                           pixelSize:(CGSize)size
+                              folded:(BOOL)folded;
+
 // Updates self.blinkingFound.
 - (void)drawTextViewContentInRect:(NSRect)rect
                          rectsPtr:(const NSRect *)rectArray
-                        rectCount:(NSInteger)rectCount;
+                        rectCount:(NSInteger)rectCount
+                    virtualOffset:(CGFloat)virtualOffset;
 
 // If timestamps are to be shown, call this just before drawing.
-- (void)createTimestampDrawingHelper;
+- (void)createTimestampDrawingHelperWithFont:(NSFont *)font;
 
 // Draw timestamps.
-- (void)drawTimestamps;
+- (void)drawTimestampsWithVirtualOffset:(CGFloat)virtualOffset;
+- (void)drawOffscreenCommandLineWithVirtualOffset:(CGFloat)virtualOffset;
 
 - (VT100GridCoordRange)coordRangeForRect:(NSRect)rect;
 
 - (CGFloat)yOriginForUnderlineForFont:(NSFont *)font yOffset:(CGFloat)yOffset cellHeight:(CGFloat)cellHeight;
+- (CGFloat)yOriginForStrikethroughForFont:(NSFont *)font yOffset:(CGFloat)yOffset cellHeight:(CGFloat)cellHeight;
+
 - (CGFloat)underlineThicknessForFont:(NSFont *)font;
+- (CGFloat)strikethroughThicknessForFont:(NSFont *)font;
 - (NSRange)underlinedRangeOnLine:(long long)row;
 
 - (void)updateCachedMetrics;
+- (void)updateButtonFrames NS_AVAILABLE_MAC(11);
+- (iTermRectArray *)buttonsBackgroundRects;
+- (NSRange)rangeOfVisibleRows;
+- (VT100GridCoord)coordinateByTransformingScreenCoordinateForRTL:(VT100GridCoord)nominal;
+- (void)didFinishSetup;
 
 @end
 
 NS_INLINE BOOL iTermTextDrawingHelperIsCharacterDrawable(const screen_char_t *const c,
+                                                         const screen_char_t *const predecessor,
                                                          BOOL isStringifiable,
                                                          BOOL blinkingItemsVisible,
-                                                         BOOL blinkAllowed) {
+                                                         BOOL blinkAllowed,
+                                                         BOOL preferSpeedToFullLigatureSupport,
+                                                         BOOL isURL) {
     const unichar code = c->code;
     if (c->image) {
         return YES;
     }
+    if (c->invisible) {
+        return NO;
+    }
     if (!c->complexChar) {
-        if (code == DWC_RIGHT ||
-            code == DWC_SKIP ||
-            code == TAB_FILLER ||
+        if ((code >= ITERM2_PRIVATE_BEGIN && code <= ITERM2_PRIVATE_END) ||
             code < ' ') {
             return NO;
-        } else if (code == ' ' && !c->underline && !c->urlCode) {
+        } else if (preferSpeedToFullLigatureSupport &&
+                   code == ' ' &&
+                   !c->underline &&
+                   !c->strikethrough &&
+                   !isURL) {
+            return NO;
+        }
+    } else if (predecessor && ComplexCharCodeIsSpacingCombiningMark(c->code)) {
+        if (predecessor->complexChar || predecessor->code > 127) {
+            // A spacing combining mark that has a non-ascii predecessor is not visible because the predecessor draws it.
             return NO;
         }
     }

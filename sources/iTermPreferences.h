@@ -8,9 +8,15 @@
 
 #import <Foundation/Foundation.h>
 #import "PreferenceInfo.h"
-#import "PSMTabBarControl.h"
 
 extern NSString *const iTermMetalSettingsDidChangeNotification;
+extern NSString *const iTermAutoComposerDidChangeNotification;
+
+typedef NS_ENUM(NSUInteger, iTermAIPermission) {
+    iTermAIPermissionAsk = 0,
+    iTermAIPermissionAllow = 1,
+    iTermAIPermissionNever = 2
+};
 
 // Values for kPreferenceKeyOpenTmuxWindowsIn (corresponds to tags in control).
 typedef NS_ENUM(NSInteger, iTermOpenTmuxWindowsMode) {
@@ -25,8 +31,9 @@ typedef NS_ENUM(int, iTermPreferencesTabStyle) {
     TAB_STYLE_DARK = 1,
     TAB_STYLE_LIGHT_HIGH_CONTRAST = 2,
     TAB_STYLE_DARK_HIGH_CONTRAST = 3,
-    TAB_STYLE_AUTOMATIC = 4,
-    TAB_STYLE_MINIMAL = 5
+    TAB_STYLE_AUTOMATIC = 4,  // automatic + normal windows. This has the side-effect of changing compact windows to normal.
+    TAB_STYLE_MINIMAL = 5,  // minimal + compact windows. Changes normal windows to compact.
+    TAB_STYLE_COMPACT = 6  // automatic + compact windows. This should be like automatic, except it has a side-effect of changing normal windows to compact.
 };
 
 typedef NS_ENUM(NSUInteger, iTermStatusBarPosition) {
@@ -40,8 +47,11 @@ typedef NS_ENUM(NSUInteger, iTermStatusBarPosition) {
 #define TAB_POSITION_LEFT PSMTab_LeftTab
 
 // Values for kPreferenceKeyXxxRemapping (corresponds to tags in controls).
+// Note that this serves two purposes. It describes what keys are remapped to and also the shortcuts
+// for navigating to tab/window/pane by number.
 typedef NS_ENUM(int, iTermPreferencesModifierTag) {
-    kPreferencesModifierTagControl = 1,
+    // This was the old way of remapping right control and also continues to describe either control for the puporses of switching windows/tabs.
+    kPreferencesModifierTagLegacyRightControl = 1,
     kPreferencesModifierTagLeftOption = 2,
     kPreferencesModifierTagRightOption = 3,
     kPreferencesModifierTagEitherCommand = 4,
@@ -51,24 +61,50 @@ typedef NS_ENUM(int, iTermPreferencesModifierTag) {
     kPreferencesModifierTagRightCommand = 8,
 
     kPreferenceModifierTagNone = 9,  // No modifier assigned (not available for all popups)
+
+    kPreferenceModifierTagFunction = 10,  // fn key, and no l/r distinction exists here
+
+    // Modern way of remapping control.
+    kPreferencesModifierTagLeftControl = 11,
+    kPreferencesModifierTagRightControl = 12,
+
+};
+
+typedef NS_ENUM(NSInteger, iTermPreferenceSavePrefsMode) {
+    iTermPreferenceSavePrefsModeOnQuit = 0,
+    iTermPreferenceSavePrefsModeNever = 1,  // default
+    iTermPreferenceSavePrefsModeAlways = 2
 };
 
 // General
 extern NSString *const kPreferenceKeyOpenBookmark;
 extern NSString *const kPreferenceKeyOpenArrangementAtStartup;
+extern NSString *const kPreferenceKeyAlwaysOpenWindowAtStartup;
+extern NSString *const kPreferenceKeyRestoreWindowsToSameSpaces;
 extern NSString *const kPreferenceKeyOpenNoWindowsAtStartup;
 extern NSString *const kPreferenceKeyQuitWhenAllWindowsClosed;
 extern NSString *const kPreferenceKeyConfirmClosingMultipleTabs;
 extern NSString *const kPreferenceKeyPromptOnQuit;
+extern NSString *const kPreferenceKeyPromptOnQuitEvenIfThereAreNoWindows;
 extern NSString *const kPreferenceKeyInstantReplayMemoryMegabytes;
 extern NSString *const kPreferenceKeySavePasteAndCommandHistory;
 extern NSString *const kPreferenceKeyAddBonjourHostsToProfiles;
+extern NSString *const kPreferenceKeyNotifyOnlyForCriticalShellIntegrationUpdates;
 extern NSString *const kPreferenceKeyCheckForUpdatesAutomatically;
 extern NSString *const kPreferenceKeyCheckForTestReleases;
 extern NSString *const kPreferenceKeyLoadPrefsFromCustomFolder;
-extern NSString *const kPreferenceKeyNeverRemindPrefsChangesLostForFileSelection;
+extern NSString *const kPreferenceKeyUseCustomScriptsFolder;  // Bool
+extern NSString *const kPreferenceKeyOpenAIAPIKey;
+extern NSString *const kPreferenceKeyAIPrompt;
+extern NSString *const kPreferenceKeyAIModel;
+extern NSString *const kPreferenceKeyAITokenLimit;
+
+// Note: if kPreferenceKeyNeverRemindPrefsChangesLostForFileHaveSelection is false, then use the default value (.never).
+// Otherwise, respect this value.
+extern NSString *const kPreferenceKeyNeverRemindPrefsChangesLostForFileSelection;  // iTermPreferenceSavePrefsMode
 extern NSString *const kPreferenceKeyNeverRemindPrefsChangesLostForFileHaveSelection;
 extern NSString *const kPreferenceKeyCustomFolder;  // Path/URL to location with prefs. Path may have ~ in it.
+extern NSString *const kPreferenceKeyCustomScriptsFolder;  // Path to scripts folder
 extern NSString *const kPreferenceKeySelectionCopiesText;
 extern NSString *const kPreferenceKeyCopyLastNewline;
 extern NSString *const kPreferenceKeyAllowClipboardAccessFromTerminal;
@@ -77,15 +113,38 @@ extern NSString *const kPreferenceKeySmartWindowPlacement;
 extern NSString *const kPreferenceKeyAdjustWindowForFontSizeChange;
 extern NSString *const kPreferenceKeyMaximizeVerticallyOnly;
 extern NSString *const kPreferenceKeyLionStyleFullscreen;
+extern NSString *const kPreferenceKeySeparateWindowTitlePerTab;
 extern NSString *const kPreferenceKeyOpenTmuxWindowsIn;
 extern NSString *const kPreferenceKeyTmuxDashboardLimit;
 extern NSString *const kPreferenceKeyAutoHideTmuxClientSession;
 extern NSString *const kPreferenceKeyUseTmuxProfile;
+extern NSString *const kPreferenceKeyUseTmuxStatusBar;
+extern NSString *const kPreferenceKeyTmuxPauseModeAgeLimit;
+extern NSString *const kPreferenceKeyTmuxUnpauseAutomatically;
+extern NSString *const kPreferenceKeyTmuxWarnBeforePausing;
+extern NSString *const kPreferenceKeyTmuxSyncClipboard;
 extern NSString *const kPreferenceKeyUseMetal;
 extern NSString *const kPreferenceKeyDisableMetalWhenUnplugged;
+extern NSString *const kPreferenceKeyDisableInLowPowerMode;
 extern NSString *const kPreferenceKeyPreferIntegratedGPU;
-extern NSString *const kPreferenceKeyMetalMaximizeThroughput;
+extern NSString *const kPreferenceKeyMaximizeThroughput;
 extern NSString *const kPreferenceKeyEnableAPIServer;
+extern NSString *const kPreferenceKeyAPIAuthentication;
+extern NSString *const kPreferenceKeyEnableAI;
+extern NSString *const kPhonyPreferenceKeyInstallAIPlugin;
+extern NSString *const kPreferenceKeyPhonyAllowSendingClipboardContents;
+extern NSString *const kPreferenceKeyAITermURL;
+extern NSString *const kPreferenceKeyAITermUseLegacyAPI;
+extern NSString *const kPreferenceKeyIndicateNonDefaultValues;
+extern NSString *const kPreferenceKeyAICompletion;
+
+extern NSString *const kPreferenceKeyAIPermissionCheckTerminalState;
+extern NSString *const kPreferenceKeyAIPermissionRunCommands;
+extern NSString *const kPreferenceKeyAIPermissionViewHistory;
+extern NSString *const kPreferenceKeyAIPermissionWriteToClipboard;
+extern NSString *const kPreferenceKeyAIPermissionTypeForYou;
+extern NSString *const kPreferenceKeyAIPermissionViewManpages;
+extern NSString *const kPreferenceKeyAIPermissionWriteToFilesystem;
 
 // Appearance
 extern NSString *const kPreferenceKeyTabStyle_Deprecated;
@@ -95,13 +154,15 @@ extern NSString *const kPreferenceKeyStatusBarPosition;
 extern NSString *const kPreferenceKeyHideTabBar;
 extern NSString *const kPreferenceKeyHideTabNumber;
 extern NSString *const kPreferenceKeyPreserveWindowSizeWhenTabBarVisibilityChanges;
-extern NSString *const kPreferenceKeyHideTabCloseButton;
+extern NSString *const kPreferenceKeyHideTabCloseButton;  // DEPRECATED
+extern NSString *const kPreferenceKeyTabsHaveCloseButton;
 extern NSString *const kPreferenceKeyHideTabActivityIndicator;
 extern NSString *const kPreferenceKeyShowNewOutputIndicator;
 extern NSString *const kPreferenceKeyShowPaneTitles;
 extern NSString *const kPreferenceKeyPerPaneBackgroundImage;
 extern NSString *const kPreferenceKeyHideMenuBarInFullscreen;
 extern NSString *const kPreferenceKeyUIElement;
+extern NSString *const kPreferenceKeyUIElementRequiresHotkeys;
 extern NSString *const kPreferenceKeyFlashTabBarInFullscreen;
 extern NSString *const kPreferenceKeyStretchTabsToFillBar;
 extern NSString *const kPreferenceKeyShowWindowNumber;
@@ -117,22 +178,35 @@ extern NSString *const kPreferenceKeyEnableDivisionView;
 extern NSString *const kPreferenceKeyEnableProxyIcon;
 extern NSString *const kPreferenceKeyDimBackgroundWindows;
 extern NSString *const kPreferenceKeySeparateStatusBarsPerPane;
+extern NSString *const kPreferenceKeyHTMLTabTitles;
+extern NSString *const kPreferenceKeySideMargins;
+extern NSString *const kPreferenceKeyTopBottomMargins;
 
 // Keys
-extern NSString *const kPreferenceKeyControlRemapping;
+extern NSString *const kPreferenceKeyControlRemapping_Deprecated;  // Deprecated
+extern NSString *const kPreferenceKeyLeftControlRemapping;
+extern NSString *const kPreferenceKeyRightControlRemapping;
 extern NSString *const kPreferenceKeyLeftOptionRemapping;
 extern NSString *const kPreferenceKeyRightOptionRemapping;
 extern NSString *const kPreferenceKeyLeftCommandRemapping;
 extern NSString *const kPreferenceKeyRightCommandRemapping;
+extern NSString *const kPreferenceKeyFunctionRemapping;
 extern NSString *const kPreferenceKeySwitchPaneModifier;
 extern NSString *const kPreferenceKeySwitchTabModifier;
 extern NSString *const kPreferenceKeySwitchWindowModifier;
 extern NSString *const kPreferenceKeyEmulateUSKeyboard;  // See issue 6994
 
 extern NSString *const kPreferenceKeyHotkeyEnabled;
+extern NSString *const kPreferenceKeyForceKeyboard;
+extern NSString *const kPreferenceKeyKeyboardLocale;
 extern NSString *const kPreferenceKeyHotKeyCode;
 extern NSString *const kPreferenceKeyHotkeyCharacter;
 extern NSString *const kPreferenceKeyHotkeyModifiers;
+extern NSString *const kPreferenceKeyEnableHapticFeedbackForEsc;
+extern NSString *const kPreferenceKeyEnableSoundForEsc;
+extern NSString *const kPreferenceKeyVisualIndicatorForEsc;
+
+extern NSString *const kPreferenceKeyLanguageAgnosticKeyBindings;
 
 // Migration to multi-hotkey window will move these settings into a profile.
 extern NSString *const kPreferenceKeyHotKeyTogglesWindow_Deprecated;  // Deprecated
@@ -142,18 +216,25 @@ extern NSString *const kPreferenceKeyHotkeyAutoHides_Deprecated;  // Deprecated
 // Pointer
 extern NSString *const kPreferenceKeyCmdClickOpensURLs;
 extern NSString *const kPreferenceKeyControlLeftClickBypassesContextMenu;
+extern NSString *const kPreferenceKeyRightClickClickBypassesContextMenu;
 extern NSString *const kPreferenceKeyOptionClickMovesCursor;
 extern NSString *const kPreferenceKeyThreeFingerEmulatesMiddle;
 extern NSString *const kPreferenceKeyFocusFollowsMouse;
 extern NSString *const kPreferenceKeyTripleClickSelectsFullWrappedLines;
 extern NSString *const kPreferenceKeyDoubleClickPerformsSmartSelection;
+extern NSString *const kPreferenceKeyEnterCopyModeAutomatically;
+extern NSString *const kPreferenceKeyClickToSelectCommand;
+extern NSString *const kPreferenceKeyFocusOnRightOrMiddleClick;
+extern NSString *const kPreferenceKeyReportHorizontalScrollEvents;
 
 // Not in prefs
 // Stores the last CFBundleVersion run.
 extern NSString *const kPreferenceKeyAppVersion;
+extern NSString *const kPreferenceKeyAllAppVersions;
 
 // Auto-command history (set through menu)
 extern NSString *const kPreferenceAutoCommandHistory;
+extern NSString *const kPreferenceAutoComposer;
 
 extern NSString *const kPreferenceKeyPasteSpecialChunkSize;
 extern NSString *const kPreferenceKeyPasteSpecialChunkDelay;
@@ -174,9 +255,22 @@ extern NSString *const kPreferenceKeyPasteWarningNumberOfSpacesPerTab;
 extern NSString *const kPreferenceKeyShowFullscreenTabBar;
 extern NSString *const kPreferenceKeyDefaultToolbeltWidth;
 extern NSString *const kPreferenceKeySizeChangesAffectProfile;
+extern NSString *const kPreferenceKeyAlertOnMarksInOffscreenSessions;
 
 // Set to YES on the first launch of a version that supports multiple hotkey windows.
 extern NSString *const kPreferenceKeyHotkeyMigratedFromSingleToMulti;
+
+// See iTermActionsModel. NOTE: This cannot be accessed with the usual getters and setters because
+// it is array-valued.
+extern NSString *const kPreferenceKeyActions;
+// See iTermSnippetsModel. NOTE: This cannot be accessed with the usual getters and setters because
+// it is array-valued.
+extern NSString *const kPreferenceKeySnippets;
+
+extern NSString *const kPreferenceKeyDisableTransparencyForKeyWindow;
+extern NSString *const kPreferenceKeyNeverBlockSystemShutdown;
+
+extern NSString *const iTermDefaultAIPrompt;
 
 @interface iTermPreferences : NSObject
 
@@ -186,6 +280,7 @@ extern NSString *const kPreferenceKeyHotkeyMigratedFromSingleToMulti;
 
 // Last app version launched, if any.
 + (NSString *)appVersionBeforeThisLaunch;
++ (NSSet<NSString *> *)allAppVersionsUsedOnThisMachine;
 
 + (void)setObject:(id)object forKey:(NSString *)key;
 + (NSObject *)objectForKey:(NSString *)key;
@@ -214,6 +309,7 @@ extern NSString *const kPreferenceKeyHotkeyMigratedFromSingleToMulti;
 // This is used for ensuring that all controls have default values.
 + (BOOL)keyHasDefaultValue:(NSString *)key;
 + (BOOL)defaultValueForKey:(NSString *)key isCompatibleWithType:(PreferenceInfoType)type;
++ (id)defaultObjectForKey:(NSString *)key;
 
 // When the value held by |key| changes, the block is invoked with the old an
 // new values. Either may be nil, but they are guaranteed to be different by
@@ -222,10 +318,15 @@ extern NSString *const kPreferenceKeyHotkeyMigratedFromSingleToMulti;
 
 + (NSUInteger)maskForModifierTag:(iTermPreferencesModifierTag)tag;
 
++ (NSString *)warningIdentifierForNeverWarnAboutShortLivedSessions:(NSString *)guid;
+#if DEBUG
++ (NSURL *)gitlabURLOnPasteboard;
+#endif
+
 @end
 
 @interface iTermPreferences (FastAccessors)
 + (BOOL)hideTabActivityIndicator;
-+ (BOOL)maximizeMetalThroughput;
++ (BOOL)maximizeThroughput;
 + (BOOL)useTmuxProfile;
 @end

@@ -7,8 +7,11 @@
 //
 
 #import "iTermAboutWindowController.h"
+
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermLaunchExperienceController.h"
 #import "NSArray+iTerm.h"
+#import "NSMutableAttributedString+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSStringITerm.h"
 
@@ -17,8 +20,56 @@ static NSString *iTermAboutWindowControllerWhatsNewURLString = @"iterm2://whats-
 @interface iTermAboutWindowContentView : NSVisualEffectView
 @end
 
+@interface iTermSponsor: NSObject
+@property (nonatomic) NSTextField *textField;
+@property (nonatomic) NSTrackingArea *trackingArea;
+@property (nonatomic) NSView *view;
+@property (nonatomic, copy) NSString *url;
+
++ (instancetype)sponsorWithView:(NSView *)view textField:(NSTextField *)textField container:(NSView *)container url:(NSString *)url;
+@end
+
+@implementation iTermSponsor
++ (instancetype)sponsorWithView:(NSView *)view textField:(NSTextField *)textField container:(NSView *)container url:(NSString *)url {
+    iTermSponsor *sponsor = [[iTermSponsor alloc] init];
+    sponsor.view = view;
+    sponsor.textField = textField;
+    sponsor.url = url;
+
+    // Create a tracking area for the sponsor's view
+    sponsor.trackingArea = [[NSTrackingArea alloc] initWithRect:view.frame
+                                                        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways
+                                                          owner:container
+                                                       userInfo:nil];
+    [view addTrackingArea:sponsor.trackingArea];
+    if (textField) {
+        NSDictionary *underlineAttribute = @{NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle)};
+        NSAttributedString *attributedString = [[NSAttributedString alloc] initWithString:[textField stringValue] attributes:underlineAttribute];
+        [textField setAttributedStringValue:attributedString];
+    }
+    return sponsor;
+}
+
+- (void)updateTrackingAreaForContainer:(NSView *)container {
+    [container removeTrackingArea:self.trackingArea];
+    self.trackingArea = [[NSTrackingArea alloc] initWithRect:self.view.frame
+                                                    options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways
+                                                      owner:container
+                                                   userInfo:nil];
+    [container addTrackingArea:self.trackingArea];
+}
+@end
+
 @implementation iTermAboutWindowContentView {
     IBOutlet NSScrollView *_bottomAlignedScrollView;
+    IBOutlet NSTextView *_sponsorsHeading;
+
+    IBOutlet NSView *_whitebox;
+    IBOutlet NSTextField *_whiteboxText;
+
+    IBOutlet NSView *_codeRabbit;
+
+    NSArray<iTermSponsor *> *_sponsors;
 }
 
 - (void)resizeSubviewsWithOldSize:(NSSize)oldSize {
@@ -27,6 +78,55 @@ static NSString *iTermAboutWindowControllerWhatsNewURLString = @"iterm2://whats-
     CGFloat topMargin = oldSize.height - NSMaxY(frame);
     frame.origin.y = self.frame.size.height - topMargin - frame.size.height;
     _bottomAlignedScrollView.frame = frame;
+}
+
+- (void)awakeFromNib {
+    [super awakeFromNib];
+    NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
+    paragraphStyle.alignment = NSTextAlignmentCenter;
+    _sponsorsHeading.selectable = YES;
+    _sponsorsHeading.editable = NO;
+    [_sponsorsHeading.textStorage setAttributedString:[NSAttributedString attributedStringWithHTML:_sponsorsHeading.textStorage.string
+                                                                                              font:_sponsorsHeading.font
+                                                                                    paragraphStyle:paragraphStyle]];
+
+    _sponsors = @[ [iTermSponsor sponsorWithView:_whitebox
+                                       textField:_whiteboxText
+                                       container:self
+                                             url:@"https://whitebox.so/?utm_source=iTerm2"],
+                   [iTermSponsor sponsorWithView:_codeRabbit
+                                       textField:nil
+                                       container:self
+                                             url:@"https://coderabbit.ai/"]];
+}
+
+
+- (void)mouseEntered:(NSEvent *)theEvent {
+    [NSCursor.pointingHandCursor set];
+}
+
+- (void)mouseExited:(NSEvent *)theEvent {
+    [NSCursor.arrowCursor set];
+}
+
+- (void)mouseUp:(NSEvent *)theEvent {
+    if (theEvent.clickCount == 1) {
+        NSPoint locationInView = [self convertPoint:theEvent.locationInWindow fromView:nil];
+        [_sponsors enumerateObjectsUsingBlock:^(iTermSponsor * _Nonnull sponsor, NSUInteger idx, BOOL * _Nonnull stop) {
+            if (NSPointInRect(locationInView, sponsor.view.frame)) {
+                // Open the link
+                [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:sponsor.url]];
+            }
+        }];
+    }
+}
+
+// Don't forget to update the tracking area when the view resizes
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    [_sponsors enumerateObjectsUsingBlock:^(iTermSponsor * _Nonnull sponsor, NSUInteger idx, BOOL * _Nonnull stop) {
+        [sponsor updateTrackingAreaForContainer:self];
+    }];
 }
 
 @end
@@ -55,9 +155,9 @@ static NSString *iTermAboutWindowControllerWhatsNewURLString = @"iterm2://whats-
         NSString *const versionNumber = myDict[(NSString *)kCFBundleVersionKey];
         NSString *versionString = [NSString stringWithFormat: @"Build %@\n\n", versionNumber];
         NSAttributedString *whatsNew = nil;
-        if ([versionNumber hasPrefix:@"3.3."]) {
+        if ([versionNumber hasPrefix:@"3.5."] || [versionString isEqualToString:@"unknown"]) {
             whatsNew = [self attributedStringWithLinkToURL:iTermAboutWindowControllerWhatsNewURLString
-                                                     title:@"What’s New in 3.3?\n"];
+                                                     title:@"What’s New in 3.5?\n"];
         }
 
         NSAttributedString *webAString = [self attributedStringWithLinkToURL:@"https://iterm2.com/"
@@ -73,12 +173,12 @@ static NSString *iTermAboutWindowControllerWhatsNewURLString = @"iterm2://whats-
         [self window];
 
         NSDictionary *versionAttributes = @{ NSForegroundColorAttributeName: [NSColor controlTextColor] };
-        NSAttributedString *bullet = [[[NSAttributedString alloc] initWithString:@" ∙ "
-                                                                      attributes:versionAttributes] autorelease];
+        NSAttributedString *bullet = [[NSAttributedString alloc] initWithString:@" ∙ "
+                                                                     attributes:versionAttributes];
         [_dynamicText setLinkTextAttributes:self.linkTextViewAttributes];
         [[_dynamicText textStorage] deleteCharactersInRange:NSMakeRange(0, [[_dynamicText textStorage] length])];
-        [[_dynamicText textStorage] appendAttributedString:[[[NSAttributedString alloc] initWithString:versionString
-                                                                                            attributes:versionAttributes] autorelease]];
+        [[_dynamicText textStorage] appendAttributedString:[[NSAttributedString alloc] initWithString:versionString
+                                                                                            attributes:versionAttributes]];
         if (whatsNew) {
             [[_dynamicText textStorage] appendAttributedString:whatsNew];
         }
@@ -95,7 +195,7 @@ static NSString *iTermAboutWindowControllerWhatsNewURLString = @"iterm2://whats-
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             NSURL *url = [NSURL URLWithString:@"https://iterm2.com/patrons.txt"];
             NSData *data = [NSData dataWithContentsOfURL:url];
-            NSString *string = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease];
+            NSString *string = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
             NSArray<NSString *> *patronNames = string.length > 0 ? [string componentsSeparatedByString:@"\n"] : nil;
             patronNames = [patronNames filteredArrayUsingBlock:^BOOL(NSString *name) {
                 return name.length > 0;
@@ -128,8 +228,9 @@ static NSString *iTermAboutWindowControllerWhatsNewURLString = @"iterm2://whats-
 
     NSRect rect = _patronsTextView.enclosingScrollView.frame;
     [_patronsTextView sizeToFit];
-    CGFloat diff = _patronsTextView.frame.size.height - rect.size.height;
-    rect.size.height = _patronsTextView.frame.size.height;
+    const CGFloat desiredHeight = [_patronsTextView.textStorage heightForWidth:rect.size.width];
+    CGFloat diff = desiredHeight - rect.size.height;
+    rect.size.height = desiredHeight;
     rect.origin.y -= diff;
     _patronsTextView.enclosingScrollView.frame = rect;
     
@@ -142,34 +243,36 @@ static NSString *iTermAboutWindowControllerWhatsNewURLString = @"iterm2://whats-
 - (NSAttributedString *)defaultPatronsString {
     NSString *string = [NSString stringWithFormat:@"Loading supporters…"];
     NSMutableAttributedString *attributedString =
-        [[[NSMutableAttributedString alloc] initWithString:string
-                                                attributes:self.attributes] autorelease];
+        [[NSMutableAttributedString alloc] initWithString:string
+                                               attributes:self.attributes];
     return attributedString;
 }
 
 - (NSDictionary *)attributes {
-    return @{ NSForegroundColorAttributeName: [NSColor controlTextColor] };
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    [style setMinimumLineHeight:18];
+    [style setMaximumLineHeight:18];
+    [style setLineSpacing:3];
+    return @{ NSForegroundColorAttributeName: [NSColor controlTextColor],
+              NSParagraphStyleAttributeName: style
+    };
 }
 
 - (void)setPatrons:(NSArray *)patronNames {
     if (!patronNames.count) {
-        [self setPatronsString:[[[NSAttributedString alloc] initWithString:@"Error loading patrons :("] autorelease] animate:NO];
+        [self setPatronsString:[[NSAttributedString alloc] initWithString:@"Error loading patrons :("
+                                                                attributes:[self attributes]]
+                       animate:NO];
         return;
     }
 
-    NSArray *sortedNames = [patronNames sortedArrayUsingComparator:^NSComparisonResult(id  _Nonnull obj1, id  _Nonnull obj2) {
-        return [[obj1 surname] compare:[obj2 surname]];
-    }];
-    NSString *patrons = [sortedNames componentsJoinedWithOxfordComma];
-    NSString *string = [NSString stringWithFormat:@"iTerm2 is generously supported by %@ on ", patrons];
+    NSArray *sortedNames = [patronNames sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    NSString *string = [sortedNames componentsJoinedWithOxfordComma];
     NSDictionary *attributes = [self attributes];
     NSMutableAttributedString *attributedString =
-        [[[NSMutableAttributedString alloc] initWithString:string
-                                                attributes:attributes] autorelease];
-    NSAttributedString *patreonLink = [self attributedStringWithLinkToURL:@"https://patreon.com/gnachman"
-                                                                    title:@"Patreon"];
-    [attributedString appendAttributedString:patreonLink];
-    NSAttributedString *period = [[[NSAttributedString alloc] initWithString:@"."] autorelease];
+        [[NSMutableAttributedString alloc] initWithString:string
+                                               attributes:attributes];
+    NSAttributedString *period = [[NSAttributedString alloc] initWithString:@"."];
     [attributedString appendAttributedString:period];
 
     [self setPatronsString:attributedString animate:YES];
@@ -178,8 +281,8 @@ static NSString *iTermAboutWindowControllerWhatsNewURLString = @"iterm2://whats-
 - (NSAttributedString *)attributedStringWithLinkToURL:(NSString *)urlString title:(NSString *)title {
     NSDictionary *linkAttributes = @{ NSLinkAttributeName: [NSURL URLWithString:urlString] };
     NSString *localizedTitle = title;
-    return [[[NSAttributedString alloc] initWithString:localizedTitle
-                                            attributes:linkAttributes] autorelease];
+    return [[NSAttributedString alloc] initWithString:localizedTitle
+                                            attributes:linkAttributes];
 }
 
 #pragma mark - NSTextViewDelegate

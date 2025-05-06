@@ -9,6 +9,9 @@
 
 #import "iTermAPIHelper.h"
 #import "iTermFontPanel.h"
+#import "iTerm2SharedARC-Swift.h"
+#import "iTermStatusBarActionComponent.h"
+#import "iTermStatusBarBatteryComponent.h"
 #import "iTermStatusBarComponent.h"
 #import "iTermStatusBarCPUUtilizationComponent.h"
 #import "iTermStatusBarClockComponent.h"
@@ -23,6 +26,7 @@
 #import "iTermStatusBarNetworkUtilizationComponent.h"
 #import "iTermStatusBarRPCProvidedTextComponent.h"
 #import "iTermStatusBarSearchFieldComponent.h"
+#import "iTermStatusBarSnippetComponent.h"
 #import "iTermStatusBarSpringComponent.h"
 #import "iTermStatusBarSetupCollectionViewItem.h"
 #import "iTermStatusBarSetupDestinationCollectionViewController.h"
@@ -34,6 +38,7 @@
 #import "NSJSONSerialization+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSView+iTerm.h"
+#import "NSWorkspace+iTerm.h"
 #import <ColorPicker/ColorPicker.h>
 
 NS_ASSUME_NONNULL_BEGIN
@@ -64,10 +69,11 @@ NS_ASSUME_NONNULL_BEGIN
     IBOutlet CPKColorWell *_separatorColorWell;
     IBOutlet CPKColorWell *_backgroundColorWell;
     IBOutlet CPKColorWell *_defaultTextColorWell;
-    IBOutlet NSButton *_autoRainbow;
     IBOutlet NSTextField *_fontLabel;
     IBOutlet NSPanel *_advancedPanel;
     IBOutlet NSButton *_tightPacking;
+    IBOutlet NSButton *_removeEmptyComponents;
+    IBOutlet NSPopUpButton *_autoRainbow;
     NSArray<iTermStatusBarSetupElement *> *_elements;
     iTermStatusBarLayout *_layout;
     BOOL _darkBackground;
@@ -97,11 +103,16 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)loadElements {
     NSArray<Class> *classes = @[
+                                 [iTermStatusBarBatteryComponent class],
                                  [iTermStatusBarCPUUtilizationComponent class],
                                  [iTermStatusBarMemoryUtilizationComponent class],
                                  [iTermStatusBarNetworkUtilizationComponent class],
 
                                  [iTermStatusBarClockComponent class],
+                                 [iTermStatusBarActionComponent class],
+                                 [iTermStatusBarActionMenuComponent class],
+                                 [iTermStatusBarSnippetMenuComponent class],
+                                 [iTermStatusBarTriggersComponent class],
 
                                  [iTermStatusBarGitComponent class],
                                  [iTermStatusBarHostnameComponent class],
@@ -110,6 +121,7 @@ NS_ASSUME_NONNULL_BEGIN
                                  [iTermStatusBarWorkingDirectoryComponent class],
 
                                  [iTermStatusBarSearchFieldComponent class],
+                                 [iTermStatusBarFilterComponent class],
                                  [iTermStatusBarComposerComponent class],
 
                                  [iTermStatusBarFixedSpacerComponent class],
@@ -128,6 +140,10 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (void)awakeFromNib {
+    _destinationViewController.defaultBackgroundColor = self.defaultBackgroundColor;
+    _destinationViewController.defaultTextColor = self.defaultTextColor;
+    _destinationViewController.sourceCollectionView = _collectionView;
+
     [self loadElements];
     for (ITMRPCRegistrationRequest *request in iTermAPIHelper.statusBarComponentProviderRegistrationRequests) {
         iTermStatusBarSetupElement *element = [self newElementForProviderRegistrationRequest:request];
@@ -139,9 +155,17 @@ NS_ASSUME_NONNULL_BEGIN
     [_collectionView setDraggingSourceOperationMask:NSDragOperationCopy forLocal:YES];
     _collectionView.selectable = YES;
 
+    [_autoRainbow selectItemWithTag:_layout.advancedConfiguration.autoRainbowStyle];
+
+    _destinationViewController.darkBackground = _darkBackground;
     _destinationViewController.advancedConfiguration = _layout.advancedConfiguration;
+
     [_destinationViewController setLayout:_layout];
 
+    __weak __typeof(self) weakSelf = self;
+    _destinationViewController.onChange = ^{
+        [weakSelf apply];
+    };
     [self setFont:_layout.advancedConfiguration.font ?: [iTermStatusBarAdvancedConfiguration defaultFont]];
     [self initializeColorWell:_separatorColorWell
                    withAction:@selector(noop:)
@@ -155,21 +179,22 @@ NS_ASSUME_NONNULL_BEGIN
                    withAction:@selector(noop:)
                         color:_layout.advancedConfiguration.defaultTextColor
                  alphaAllowed:NO];
-    [self initializeTightPacking];
-    _autoRainbow.hidden = !_allowRainbow;
+    [self initializeUI];
 
     [super awakeFromNib];
 }
 
-- (void)initializeTightPacking {
+- (void)initializeUI {
     switch (_layout.advancedConfiguration.layoutAlgorithm) {
         case iTermStatusBarLayoutAlgorithmSettingStable:
-            _tightPacking.state = NO;
+            _tightPacking.state = NSControlStateValueOff;
             break;
         case iTermStatusBarLayoutAlgorithmSettingTightlyPacked:
-            _tightPacking.state = YES;
+            _tightPacking.state = NSControlStateValueOn;
             break;
     }
+
+    _removeEmptyComponents.state = _layout.advancedConfiguration.removeEmptyComponents ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 - (void)initializeColorWell:(CPKColorWell *)colorWell
@@ -204,7 +229,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSView *)fontPanelAccessory {
     NSButton *button = [[NSButton alloc] init];
     button.title = @"Reset to System Font";
-    button.buttonType = NSMomentaryPushInButton;
+    button.buttonType = NSButtonTypeMomentaryPushIn;
     button.bezelStyle = NSBezelStyleRounded;
     button.target = self;
     button.action = @selector(resetFont:);
@@ -259,6 +284,20 @@ NS_ASSUME_NONNULL_BEGIN
     [self endSheet];
 }
 
+- (void)apply {
+    if (self.applyBlock) {
+        self.applyBlock(self.layoutDictionary);
+    }
+    const NSInteger tag = _destinationViewController.advancedConfiguration.autoRainbowStyle;
+    [_autoRainbow selectItemWithTag:tag];
+    const NSInteger index = [_autoRainbow indexOfItemWithTag:tag];
+    if (index != NSNotFound) {
+        _autoRainbow.title = [_autoRainbow.menu.itemArray[index] title];
+    } else {
+        _autoRainbow.title = _autoRainbow.menu.itemArray.firstObject.title;
+    }
+}
+
 - (IBAction)cancel:(id)sender {
     [self endSheet];
 }
@@ -271,13 +310,19 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (IBAction)autoRainbow:(id)sender {
-    [_destinationViewController autoRainbowWithDarkBackground:_darkBackground];
+    NSPopUpButton *control = sender;
+    iTermStatusBarAdvancedConfiguration *config = [_destinationViewController.advancedConfiguration copy];
+    config.autoRainbowStyle = control.selectedTag;
+    _destinationViewController.advancedConfiguration = config;
 }
 
 - (IBAction)advancedOK:(id)sender {
     [self.view.window endSheet:_advancedPanel];
 }
 
+- (IBAction)help:(id)sender {
+    [[NSWorkspace sharedWorkspace] it_openURL:[NSURL URLWithString:@"https://iterm2.com/status-bar-layout"]];
+}
 
 - (void)advancedPanelDidClose {
     NSFontManager *fontManager = [NSFontManager sharedFontManager];
@@ -287,7 +332,8 @@ NS_ASSUME_NONNULL_BEGIN
     _layout.advancedConfiguration.separatorColor = _separatorColorWell.color;
     _layout.advancedConfiguration.backgroundColor = _backgroundColorWell.color;
     _layout.advancedConfiguration.defaultTextColor = _defaultTextColorWell.color;
-    _layout.advancedConfiguration.layoutAlgorithm = (_tightPacking.state == NSOnState) ? iTermStatusBarLayoutAlgorithmSettingTightlyPacked : iTermStatusBarLayoutAlgorithmSettingStable;
+    _layout.advancedConfiguration.layoutAlgorithm = (_tightPacking.state == NSControlStateValueOn) ? iTermStatusBarLayoutAlgorithmSettingTightlyPacked : iTermStatusBarLayoutAlgorithmSettingStable;
+    _layout.advancedConfiguration.removeEmptyComponents = (_removeEmptyComponents.state == NSControlStateValueOn);
     _layout.delegate = nil;
 
     _layout = [[iTermStatusBarLayout alloc] initWithDictionary:_layout.dictionaryValue scope:nil];
@@ -304,6 +350,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)configureStatusBarComponentWithIdentifier:(NSString *)identifier {
     [_destinationViewController configureStatusBarComponentWithIdentifier:identifier];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(autoRainbow:)) {
+        menuItem.state = (_destinationViewController.advancedConfiguration.autoRainbowStyle == menuItem.tag);
+    }
+    return YES;
 }
 
 #pragma mark - NSCollectionViewDataSource
@@ -356,18 +409,11 @@ canDragItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths
     return YES;
 }
 
-- (BOOL)collectionView:(NSCollectionView *)collectionView
-writeItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths
-          toPasteboard:(NSPasteboard *)pasteboard {
-    [pasteboard clearContents];
-
-    NSArray *objects = [indexPaths.allObjects mapWithBlock:^id(NSIndexPath *indexPath) {
-        NSUInteger index = [indexPath indexAtPosition:1];
-        return self->_elements[index];
-    }];
-    [pasteboard writeObjects:objects];
-
-    return YES;
+- (nullable id<NSPasteboardWriting>)collectionView:(NSCollectionView *)collectionView pasteboardWriterForItemAtIndex:(NSUInteger)index {
+    NSPasteboardItem *pbItem = [[NSPasteboardItem alloc] init];
+    [pbItem setData:[NSData it_dataWithArchivedObject:_elements[index]]
+            forType:iTermStatusBarElementPasteboardType];
+    return pbItem;
 }
 
 - (NSImage *)collectionView:(NSCollectionView *)collectionView draggingImageForItemsAtIndexPaths:(NSSet<NSIndexPath *> *)indexPaths

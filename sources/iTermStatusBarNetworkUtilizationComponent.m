@@ -16,11 +16,14 @@
 #import "NSView+iTerm.h"
 
 static const CGFloat iTermNetworkUtilizationWidth = 170;
+static NSString *const iTermStatusBarNetworkUtilizationComponentKnobKeyDownloadColor = @"Network download color";
+static NSString *const iTermStatusBarNetworkUtilizationComponentKnobKeyUploadColor = @"Network upload color";
+static NSString *const iTermStatusBarNetworkUtilizationComponentKnobKeyDownloadTextColor = @"Network download text color";
+static NSString *const iTermStatusBarNetworkUtilizationComponentKnobKeyUploadTextColor = @"Network upload text color";
 
 NS_ASSUME_NONNULL_BEGIN
 
 @implementation iTermStatusBarNetworkUtilizationComponent {
-    NSMutableArray<NSArray<NSNumber *> *> *_samples;
     double _ceiling;
 }
 
@@ -29,7 +32,6 @@ NS_ASSUME_NONNULL_BEGIN
     self = [super initWithConfiguration:configuration scope:scope];
     if (self) {
         _ceiling = 1;
-        _samples = [NSMutableArray array];
         __weak __typeof(self) weakSelf = self;
         [[iTermNetworkUtilization sharedInstance] addSubscriber:self block:^(double down, double up) {
             [weakSelf updateWithDown:down up:up];
@@ -38,8 +40,41 @@ NS_ASSUME_NONNULL_BEGIN
     return self;
 }
 
-- (NSImage *)statusBarComponentIcon {
-    return [NSImage it_imageNamed:@"StatusBarIconNetwork" forClass:[self class]];
+- (NSArray<iTermStatusBarComponentKnob *> *)statusBarComponentKnobs {
+    NSArray<iTermStatusBarComponentKnob *> *knobs = [super statusBarComponentKnobs];
+
+    iTermStatusBarComponentKnob *downloadColorKnob =
+        [[iTermStatusBarComponentKnob alloc] initWithLabelText:@"Download Color:"
+                                                          type:iTermStatusBarComponentKnobTypeColor
+                                                   placeholder:nil
+                                                  defaultValue:nil
+                                                           key:iTermStatusBarNetworkUtilizationComponentKnobKeyDownloadColor];
+
+    iTermStatusBarComponentKnob *downloadTextColorKnob =
+        [[iTermStatusBarComponentKnob alloc] initWithLabelText:@"Download Text Color:"
+                                                          type:iTermStatusBarComponentKnobTypeColor
+                                                   placeholder:nil
+                                                  defaultValue:nil
+                                                           key:iTermStatusBarNetworkUtilizationComponentKnobKeyDownloadTextColor];
+    iTermStatusBarComponentKnob *uploadColorKnob =
+        [[iTermStatusBarComponentKnob alloc] initWithLabelText:@"Upload Color:"
+                                                          type:iTermStatusBarComponentKnobTypeColor
+                                                   placeholder:nil
+                                                  defaultValue:nil
+                                                           key:iTermStatusBarNetworkUtilizationComponentKnobKeyUploadColor];
+
+    iTermStatusBarComponentKnob *uploadTextColorKnob =
+        [[iTermStatusBarComponentKnob alloc] initWithLabelText:@"Upload Text Color:"
+                                                          type:iTermStatusBarComponentKnobTypeColor
+                                                   placeholder:nil
+                                                  defaultValue:nil
+                                                           key:iTermStatusBarNetworkUtilizationComponentKnobKeyUploadTextColor];
+
+    return [knobs arrayByAddingObjectsFromArray:@[downloadColorKnob, downloadTextColorKnob, uploadColorKnob, uploadTextColorKnob]];
+}
+
+- (nullable NSImage *)statusBarComponentIcon {
+    return [NSImage it_cacheableImageNamed:@"StatusBarIconNetwork" forClass:[self class]];
 }
 
 - (NSString *)statusBarComponentShortDescription {
@@ -59,10 +94,6 @@ NS_ASSUME_NONNULL_BEGIN
     return NO;
 }
 
-- (NSTimeInterval)statusBarComponentUpdateCadence {
-    return 1;
-}
-
 - (CGFloat)statusBarComponentMinimumWidth {
     return iTermNetworkUtilizationWidth;
 }
@@ -71,12 +102,38 @@ NS_ASSUME_NONNULL_BEGIN
     return iTermNetworkUtilizationWidth;
 }
 
-- (NSArray *)values {
-    return _samples;
+- (NSColor *)uploadColor {
+    NSDictionary *knobValues = self.configuration[iTermStatusBarComponentConfigurationKeyKnobValues];
+    return [knobValues[iTermStatusBarNetworkUtilizationComponentKnobKeyUploadColor] colorValue] ?: [NSColor redColor];
 }
 
-- (NSInteger)numberOfTimeSeries {
-    return 2;
+- (NSColor *)downloadColor {
+    NSDictionary *knobValues = self.configuration[iTermStatusBarComponentConfigurationKeyKnobValues];
+    return [knobValues[iTermStatusBarNetworkUtilizationComponentKnobKeyDownloadColor] colorValue] ?: [NSColor blueColor];
+}
+
+- (iTermStatusBarSparklinesModel *)sparklinesModel {
+    NSArray<iTermNetworkUtilizationSample *> *samples =
+    [[iTermNetworkUtilization sharedInstance] samples];
+
+    NSArray<NSNumber *> *readValues = [samples mapWithBlock:^id(iTermNetworkUtilizationSample *anObject) {
+        return @(anObject.bytesPerSecondRead);
+    }];
+    iTermStatusBarTimeSeries *readTimeSeries = [[iTermStatusBarTimeSeries alloc] initWithValues:readValues];
+    iTermStatusBarTimeSeriesRendition *readRendition =
+    [[iTermStatusBarTimeSeriesRendition alloc] initWithTimeSeries:readTimeSeries
+                                                            color:[self downloadColor]];
+
+    NSArray<NSNumber *> *writeValues = [samples mapWithBlock:^id(iTermNetworkUtilizationSample *anObject) {
+        return @(anObject.bytesPerSecondWrite);
+    }];
+    iTermStatusBarTimeSeries *writeTimeSeries = [[iTermStatusBarTimeSeries alloc] initWithValues:writeValues];
+    iTermStatusBarTimeSeriesRendition *writeRendition =
+    [[iTermStatusBarTimeSeriesRendition alloc] initWithTimeSeries:writeTimeSeries
+                                                            color:[self uploadColor]];
+
+    return [[iTermStatusBarSparklinesModel alloc] initWithDictionary:@{ @"read": readRendition,
+                                                                        @"write": writeRendition  }];
 }
 
 - (double)ceiling {
@@ -84,50 +141,20 @@ NS_ASSUME_NONNULL_BEGIN
 }
 
 - (double)downThroughput {
-    return _samples.lastObject[0].doubleValue;
+    return [[[[iTermNetworkUtilization sharedInstance] samples] lastObject] bytesPerSecondRead];
 }
 
 - (double)upThroughput {
-    return _samples.lastObject[1].doubleValue;
-}
-
-- (void)drawTextWithRect:(NSRect)rect
-                    left:(NSString *)left
-                   right:(NSString *)right
-               rightSize:(CGSize)rightSize {
-    NSRect textRect = rect;
-    textRect.size.height = rightSize.height;
-    textRect.origin.y = [self textOffset];
-    [left drawInRect:textRect withAttributes:[self.leftAttributes it_attributesDictionaryWithAppearance:self.view.effectiveAppearance]];
-    [right drawInRect:textRect withAttributes:[self.rightAttributes it_attributesDictionaryWithAppearance:self.view.effectiveAppearance]];
-}
-
-- (CGFloat)textOffset {
-    NSFont *font = self.advancedConfiguration.font ?: [iTermStatusBarAdvancedConfiguration defaultFont];
-    const CGFloat containerHeight = self.view.superview.bounds.size.height;
-    const CGFloat capHeight = font.capHeight;
-    const CGFloat descender = font.descender - font.leading;  // negative (distance from bottom of bounding box to baseline)
-    const CGFloat frameY = (containerHeight - self.view.frame.size.height) / 2;
-    const CGFloat origin = containerHeight / 2.0 - frameY + descender - capHeight / 2.0;
-    return origin;
-}
-
-- (NSRect)graphRectForRect:(NSRect)rect
-                  leftSize:(CGSize)leftSize
-                 rightSize:(CGSize)rightSize {
-    NSRect graphRect = rect;
-    const CGFloat margin = 4;
-    CGFloat rightWidth = rightSize.width + margin;
-    CGFloat leftWidth = leftSize.width + margin;
-    graphRect.origin.x += leftWidth;
-    graphRect.size.width -= (leftWidth + rightWidth);
-    graphRect = NSInsetRect(graphRect, 0, [self.view retinaRound:-self.font.descender] + self.statusBarComponentVerticalOffset);
-
-    return graphRect;
+    return [[[[iTermNetworkUtilization sharedInstance] samples] lastObject] bytesPerSecondWrite];
 }
 
 - (NSFont *)font {
     return self.advancedConfiguration.font ?: [iTermStatusBarAdvancedConfiguration defaultFont];
+}
+
+- (NSColor *)colorForKey:(NSString *)key {
+    NSDictionary *knobValues = self.configuration[iTermStatusBarComponentConfigurationKeyKnobValues];
+    return [knobValues[key] colorValue];
 }
 
 - (NSDictionary *)leftAttributes {
@@ -136,9 +163,10 @@ NS_ASSUME_NONNULL_BEGIN
     [leftAlignStyle setAlignment:NSTextAlignmentLeft];
     [leftAlignStyle setLineBreakMode:NSLineBreakByTruncatingTail];
 
+    NSColor *textColor = [self colorForKey:iTermStatusBarNetworkUtilizationComponentKnobKeyDownloadTextColor] ?: self.textColor;
     return @{ NSParagraphStyleAttributeName: leftAlignStyle,
               NSFontAttributeName: self.font,
-              NSForegroundColorAttributeName: self.textColor };
+              NSForegroundColorAttributeName: textColor };
 }
 
 - (NSDictionary *)rightAttributes {
@@ -146,54 +174,35 @@ NS_ASSUME_NONNULL_BEGIN
         [[NSParagraphStyle defaultParagraphStyle] mutableCopy];
     [rightAlignStyle setAlignment:NSTextAlignmentRight];
     [rightAlignStyle setLineBreakMode:NSLineBreakByTruncatingTail];
+    NSColor *textColor = [self colorForKey:iTermStatusBarNetworkUtilizationComponentKnobKeyUploadTextColor] ?: self.textColor;
     return @{ NSParagraphStyleAttributeName: rightAlignStyle,
               NSFontAttributeName: self.font,
-              NSForegroundColorAttributeName: self.textColor };
+              NSForegroundColorAttributeName: textColor };
 }
 
-- (NSString *)leftText {
+- (NSString * _Nullable)leftText {
     return [NSString stringWithFormat:@"%@↓", [NSString it_formatBytesCompact:self.downThroughput]];
 }
 
-- (NSString *)rightText {
+- (NSString * _Nullable)rightText {
     return [NSString stringWithFormat:@"%@↑", [NSString it_formatBytesCompact:self.upThroughput]];
 }
 
 - (CGSize)rightSize {
-    return [self.rightText sizeWithAttributes:self.rightAttributes];
+    NSString *longest = @"123.0 TB↑";
+    return [longest sizeWithAttributes:self.rightAttributes];
 }
 
 - (CGSize)leftSize {
-    return [self.leftText sizeWithAttributes:self.leftAttributes];
-}
-
-- (void)drawRect:(NSRect)rect {
-    CGSize rightSize = self.rightSize;
-
-    [self drawTextWithRect:rect
-                      left:self.leftText
-                     right:self.rightText
-                 rightSize:rightSize];
-
-    NSRect graphRect = [self graphRectForRect:rect
-                                     leftSize:self.leftSize
-                                    rightSize:rightSize];
-
-    [super drawRect:graphRect];
+    NSString *longest = @"123.0 TB↓";
+    return [longest sizeWithAttributes:self.leftAttributes];
 }
 
 #pragma mark - Private
 
 - (void)updateWithDown:(double)down up:(double)up {
-    [_samples addObject:@[ @(down), @(up) ]];
-    while (_samples.count > self.maximumNumberOfValues) {
-        [_samples removeObjectAtIndex:0];
-    }
-    _ceiling = [[[_samples flatMapWithBlock:^NSArray *(NSArray<NSNumber *> *anObject) {
-        return anObject;
-    }] maxWithBlock:^NSComparisonResult(NSNumber *n1, NSNumber *n2) {
-        return [n1 compare:n2];
-    }] doubleValue];
+    _ceiling = self.sparklinesModel.maximumValue.doubleValue;
+    [self invalidate];
 }
 
 @end

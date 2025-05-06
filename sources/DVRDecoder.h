@@ -1,7 +1,7 @@
 /*
  **  DVRDecoder.h
  **
- **  Copyright 20101
+ **  Copyright 2010
  **
  **  Author: George Nachman
  **
@@ -33,6 +33,7 @@
 @interface DVRDecoder : NSObject
 
 @property(nonatomic, readonly) long long timestamp;
+@property(nonatomic, readonly) int migrateFromVersion;
 
 - (instancetype)initWithBuffer:(DVRBuffer*)buffer;
 
@@ -42,7 +43,8 @@
 
 // Accessors for the most recent frame.
 - (char*)decodedFrame;
-- (int)length;
+- (int)encodedLength;
+- (int)screenCharArrayLength;
 - (DVRFrameInfo)info;
 
 // Advance to next frame.
@@ -53,6 +55,7 @@
 
 // Called when frame index key i is freed.
 - (void)invalidateIndex:(long long)i;
+- (NSData *)metadataForLine:(int)line;
 
 @end
 

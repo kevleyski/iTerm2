@@ -13,11 +13,14 @@ NSString *const kPointerPrefsChangedNotification = @"kPointerPrefsChangedNotific
 NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPointerPrefsSemanticHistoryEnabledChangedNotification";
 
 @implementation PointerPreferencesViewController {
+    IBOutlet NSTabView *_tabView;
+
     // Cmd-click to launch url.
     IBOutlet NSButton *_cmdSelection;
 
     // Control-click doesn't open the context menu, is mouse-reported as right click.
     IBOutlet NSButton *_controlLeftClickActsLikeRightClick;
+    IBOutlet NSButton *_rightClickActsLikeRightClick;
 
     // Opt-click moves cursor.
     IBOutlet NSButton *_optionClickMovesCursor;
@@ -28,11 +31,10 @@ NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPoin
     // Focus follows mouse.
     IBOutlet NSButton *_focusFollowsMouse;
 
-    // Triple click selects full, wrapped lines.
-    IBOutlet NSButton *_tripleClickSelectsFullLines;
+    // Focus on right or middle click
+    IBOutlet NSButton *_focusOnRightOrMiddleClick;
 
-    // Double click perform smart selection
-    IBOutlet NSButton *_doubleClickPerformsSmartSelection;
+    IBOutlet NSButton *_reportHorizontalScrollEvents;
 }
 
 - (void)awakeFromNib {
@@ -41,6 +43,7 @@ NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPoin
     __weak __typeof(self) weakSelf = self;
     info = [self defineControl:_cmdSelection
                            key:kPreferenceKeyCmdClickOpensURLs
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.onChange = ^() {
         [[NSNotificationCenter defaultCenter] postNotificationName:kPointerPrefsSemanticHistoryEnabledChangedNotification
@@ -49,14 +52,22 @@ NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPoin
 
     [self defineControl:_controlLeftClickActsLikeRightClick
                     key:kPreferenceKeyControlLeftClickBypassesContextMenu
+            relatedView:nil
+                   type:kPreferenceInfoTypeCheckbox];
+
+    [self defineControl:_rightClickActsLikeRightClick
+                    key:kPreferenceKeyRightClickClickBypassesContextMenu
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     [self defineControl:_optionClickMovesCursor
                     key:kPreferenceKeyOptionClickMovesCursor
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
 
     info = [self defineControl:_threeFingerEmulatesMiddle
                            key:kPreferenceKeyThreeFingerEmulatesMiddle
+                   relatedView:nil
                           type:kPreferenceInfoTypeCheckbox];
     info.onChange = ^() {
         [weakSelf postRefreshNotification];
@@ -67,14 +78,24 @@ NSString *const kPointerPrefsSemanticHistoryEnabledChangedNotification = @"kPoin
 
     [self defineControl:_focusFollowsMouse
                     key:kPreferenceKeyFocusFollowsMouse
+            relatedView:nil
                    type:kPreferenceInfoTypeCheckbox];
+    [self defineControl:_focusOnRightOrMiddleClick
+                    key:kPreferenceKeyFocusOnRightOrMiddleClick
+            relatedView:nil
+                   type:kPreferenceInfoTypeCheckbox];
+    [self defineControl:_reportHorizontalScrollEvents
+                    key:kPreferenceKeyReportHorizontalScrollEvents
+            relatedView:nil
+                   type:kPreferenceInfoTypeCheckbox];
+}
 
-    [self defineControl:_tripleClickSelectsFullLines
-                    key:kPreferenceKeyTripleClickSelectsFullWrappedLines
-                   type:kPreferenceInfoTypeCheckbox];
-    [self defineControl:_doubleClickPerformsSmartSelection
-                    key:kPreferenceKeyDoubleClickPerformsSmartSelection
-                   type:kPreferenceInfoTypeCheckbox];
+- (NSTabView *)tabView {
+    return _tabView;
+}
+
+- (CGFloat)minimumWidth {
+    return 186;
 }
 
 @end

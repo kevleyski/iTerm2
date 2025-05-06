@@ -19,20 +19,14 @@
 #define ENABLE_DISPATCH_TO_MAIN_QUEUE_FOR_ENQUEUEING_DRAW_CALLS 0
 
 #define ENABLE_PER_FRAME_METAL_STATS 0
-
-// When ASCII characters overlap each other, first draw "main" part of characters, tne copy to the
-// intermediate texture, then draw non-main parts using blending to fix it up.
-#define ENABLE_PRETTY_ASCII_OVERLAP 1
-
-// Pretty ASCII overlap requires the use of a temporary texture as a scratchpad.
-#define ENABLE_USE_TEMPORARY_TEXTURE ENABLE_PRETTY_ASCII_OVERLAP
+#define ENABLE_STATS 1
 
 //I've had to disable this feature because it appears to tickle a race condition. It dies saying:
 //"[CAMetalLayerDrawable texture] should not be called after already presenting this drawable. Get a nextDrawable instead"
 //That gets logged when accessing the texture immediately after getting a drawable and before it
 //has been presented. However, that drawable gets touched in two different threads at different
 // points in time, and another drawable gets presented at about the same time in a different thread.
-// So my theory is that MTKView.currentDrawable can be used in a thread besides the main thread but
+// So my theory is that iTermMetalView.currentDrawable can be used in a thread besides the main thread but
 // it always has to be the *same* thread.
 #define ENABLE_DEFER_CURRENT_DRAWABLE 0
 
@@ -43,3 +37,11 @@
 // https://openradar.appspot.com/radar?id=4996901569036288
 #define ENABLE_TRANSPARENT_METAL_WINDOWS 1
 
+// Sometimes when you ask MKTView for its currentDrawable, you get back a drawable with a texture
+// that you've never seen before. When you go to presentDrawable:, the completion handler is called
+// but it never becomes visible! This flag enables a workaround where we redraw any frame with a
+// never-before-seen texture. I have a question out to developer tech support on this one.
+#define ENABLE_UNFAMILIAR_TEXTURE_WORKAROUND 1
+
+// Disable metal renderer when there's a subview like a porthole or annotation?
+#define ENABLE_FORCE_LEGACY_RENDERER_WITH_PTYTEXTVIEW_SUBVIEWS 0

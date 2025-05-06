@@ -26,37 +26,53 @@
 
 #import "DebugLogging.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "iTermCachingFileManager.h"
+#import "iTermCommandRunner.h"
+#import "iTermController.h"
+#import "iTermExpressionEvaluator.h"
+#import "iTermExpressionParser.h"
 #import "iTermLaunchServices.h"
+#import "iTermObject.h"
+#import "iTermPathCleaner.h"
+#import "iTermPathFinder.h"
 #import "iTermSemanticHistoryPrefsController.h"
+#import "iTermSlowOperationGateway.h"
+#import "iTermVariableScope.h"
+#import "iTermWarning.h"
 #import "NSArray+iTerm.h"
+#import "NSDictionary+iTerm.h"
 #import "NSFileManager+iTerm.h"
+#import "NSMutableData+iTerm.h"
 #import "NSStringITerm.h"
 #import "NSURL+iTerm.h"
+#import "NSWorkspace+iTerm.h"
 #import "RegexKitLite.h"
+#include <sys/utsname.h>
 
 NSString *const kSemanticHistoryPathSubstitutionKey = @"semanticHistory.path";
 NSString *const kSemanticHistoryPrefixSubstitutionKey = @"semanticHistory.prefix";
 NSString *const kSemanticHistorySuffixSubstitutionKey = @"semanticHistory.suffix";
 NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHistory.workingDirectory";
+NSString *const kSemanticHistoryLineNumberKey = @"semanticHistory.lineNumber";
+NSString *const kSemanticHistoryColumnNumberKey = @"semanticHistory.columnNumber";
 
-@implementation iTermSemanticHistoryController
+@interface iTermSemanticHistoryController()<iTermObject>
+@end
+
+@implementation iTermSemanticHistoryController {
+    iTermExpressionEvaluator *_expressionEvaluator;
+    NSMutableArray<iTermCommandRunner *> *_commandRunners;
+}
 
 @synthesize prefs = prefs_;
 @synthesize delegate = delegate_;
 
-- (void)dealloc {
-    [prefs_ release];
-    [super dealloc];
-}
-
-- (BOOL)fileExistsAtPathLocally:(NSString *)path {
-    return [self.fileManager fileExistsAtPathLocally:path
-                              additionalNetworkPaths:[[iTermAdvancedSettingsModel pathsToIgnore] componentsSeparatedByString:@","]];
-}
-
-- (BOOL)fileHasForbiddenPrefix:(NSString *)path {
-    return [self.fileManager fileHasForbiddenPrefix:path
-                             additionalNetworkPaths:[[iTermAdvancedSettingsModel pathsToIgnore] componentsSeparatedByString:@","]];
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _commandRunners = [NSMutableArray array];
+    }
+    return self;
 }
 
 - (NSString *)cleanedUpPathFromPath:(NSString *)path
@@ -64,177 +80,20 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
                    workingDirectory:(NSString *)workingDirectory
                 extractedLineNumber:(NSString **)lineNumber
                        columnNumber:(NSString **)columnNumber {
+    iTermPathCleaner *cleaner = [[iTermPathCleaner alloc] initWithPath:path
+                                                                suffix:suffix
+                                                      workingDirectory:workingDirectory
+                                                                ignore:[iTermAdvancedSettingsModel pathsToIgnore]
+                                                    allowNetworkMounts:[iTermAdvancedSettingsModel enableSemanticHistoryOnNetworkMounts]];
+    cleaner.fileManager = self.fileManager;
+    [cleaner cleanSynchronously];
     if (lineNumber) {
-        *lineNumber = nil;
+        *lineNumber = cleaner.lineNumber;
     }
     if (columnNumber) {
-        *columnNumber = nil;
+        *columnNumber = cleaner.columnNumber;
     }
-    NSString *result = [self reallyComputeCleanedUpPathFromPath:path
-                                                         suffix:suffix
-                                               workingDirectory:workingDirectory
-                                            extractedLineNumber:lineNumber
-                                                   columnNumber:columnNumber];
-    if (!result) {
-        // If path doesn't exist and it starts with "a/" or "b/" (from `diff`).
-        if ([path isMatchedByRegex:@"^[ab]/"]) {
-            DLog(@"  Treating as diff path");
-            // strip the prefix off ...
-            path = [path stringByReplacingOccurrencesOfRegex:@"^[ab]/"
-                                                  withString:@""];
-
-            // ... and calculate the full path again
-            result = [self reallyComputeCleanedUpPathFromPath:path
-                                                       suffix:suffix
-                                             workingDirectory:workingDirectory
-                                          extractedLineNumber:lineNumber
-                                                 columnNumber:columnNumber];
-        }
-    }
-    return result;
-}
-
-- (NSString *)reallyComputeCleanedUpPathFromPath:(NSString *)path
-                                          suffix:(NSString *)suffix
-                                workingDirectory:(NSString *)workingDirectory
-                             extractedLineNumber:(NSString **)lineNumber
-                                    columnNumber:(NSString **)columnNumber {
-    NSString *stringToSearchForLineAndColumn = suffix;
-    NSString *pathWithoutNearbyGunk = [self pathByStrippingEnclosingPunctuationFromPath:path
-                                                                     lineAndColumnMatch:&stringToSearchForLineAndColumn];
-    if (!pathWithoutNearbyGunk) {
-        return nil;
-    }
-    if (lineNumber != nil || columnNumber != nil) {
-        if (stringToSearchForLineAndColumn) {
-            [self extractFromSuffix:stringToSearchForLineAndColumn lineNumber:lineNumber columnNumber:columnNumber];
-        }
-    }
-    NSString *fullPath = [self getFullPath:pathWithoutNearbyGunk workingDirectory:workingDirectory];
-    return fullPath;
-}
-
-- (NSString *)pathByStrippingEnclosingPunctuationFromPath:(NSString *)path
-                                       lineAndColumnMatch:(NSString **)lineAndColumnMatch {
-    if (!path || [path length] == 0) {
-        DLog(@"  no: it is empty");
-        return nil;
-    }
-
-    // If it's in any form of bracketed delimiters, strip them
-    path = [path stringByRemovingEnclosingBrackets];
-
-    // Strip various trailing characters that are unlikely to be part of the file name.
-    NSString *trailingPunctuationRegex = @"[.,:]$";
-    path = [path stringByReplacingOccurrencesOfRegex:trailingPunctuationRegex
-                                          withString:@""];
-
-    // Try to chop off a trailing line/column number.
-    NSArray<NSString *> *regexes = [self.lineAndColumnNumberRegexes mapWithBlock:^id(NSString *anObject) {
-        return [anObject stringByAppendingString:@"$"];
-    }];
-    for (NSString *regex in regexes) {
-        NSString *match = [path stringByMatching:regex];
-        if (!match) {
-            continue;
-        }
-        if (lineAndColumnMatch) {
-            *lineAndColumnMatch = match;
-        }
-        return [path stringByDroppingLastCharacters:match.length];
-    }
-
-    // No trailing line/column number. Drop a trailing paren.
-    if ([path hasSuffix:@")"]) {
-        return [path stringByDroppingLastCharacters:1];
-    }
-
-    return path;
-}
-
-- (NSArray<NSString *> *)lineAndColumnNumberRegexes {
-    return @[ @":(\\d+):(\\d+)",
-              @":(\\d+)",
-              @"\\[(\\d+), ?(\\d+)]",
-              @"\", line (\\d+), column (\\d+)",
-              @"\\((\\d+), ?(\\d+)\\)" ];
-}
-
-- (void)extractFromSuffix:(NSString *)suffix lineNumber:(NSString **)lineNumber columnNumber:(NSString **)columnNumber {
-    NSArray<NSString *> *regexes = [[self lineAndColumnNumberRegexes] mapWithBlock:^id(NSString *anObject) {
-        return [@"^" stringByAppendingString:anObject];
-    }];
-    for (NSString *regex in regexes) {
-        NSString *match = [suffix stringByMatching:regex];
-        if (!match) {
-            continue;
-        }
-        const NSInteger matchLength = match.length;
-        if (matchLength < suffix.length) {
-            // If part of `suffix` would remain, we can't use it.
-            continue;
-        }
-        DLog(@"  Suffix of %@ matches regex %@", suffix, regex);
-        NSArray<NSArray<NSString *> *> *matches = [suffix arrayOfCaptureComponentsMatchedByRegex:regex];
-        NSArray<NSString *> *captures = matches.firstObject;
-        if (captures.count > 1 && lineNumber) {
-            *lineNumber = captures[1];
-        }
-        if (captures.count > 2 && columnNumber) {
-            *columnNumber = captures[2];
-        }
-        return;
-    }
-}
-
-- (NSString *)getFullPath:(NSString *)pathExLineNumberAndColumn
-         workingDirectory:(NSString *)workingDirectory {
-    DLog(@"Check if %@ is a valid path in %@", pathExLineNumberAndColumn, workingDirectory);
-    // TODO(chendo): Move regex, define capture semantics in config file/prefs
-    if (!pathExLineNumberAndColumn || [pathExLineNumberAndColumn length] == 0) {
-        DLog(@"  no: it is empty");
-        return nil;
-    }
-
-    NSString *path = [pathExLineNumberAndColumn stringByExpandingTildeInPath];
-    DLog(@"  Strip line number suffix leaving %@", path);
-    if ([path length] == 0) {
-        // Everything was stripped out, meaning we'd try to open the working directory.
-        return nil;
-    }
-    if ([path rangeOfRegex:@"^/"].location == NSNotFound) {
-        path = [workingDirectory stringByAppendingPathComponent:path];
-        DLog(@"  Prepend working directory, giving %@", path);
-    }
-
-    DLog(@"  Checking if file exists locally: %@", path);
-
-    // NOTE: The path used to be standardized first. While that would allow us to catch
-    // network paths, it also caused filesystem access that would hit network paths.
-    // That was also true for fileURLWithPath:.
-    //
-    // I think the statfs() flag check ought to be enough to prevent network access, anyway.
-    // A second check for forbidden prefixes is performed below to ensure backward compatibility
-    // and respect for explicitly excluded paths. The latter category will now
-    // be stat()ed, although they were always stat()ed because of unintentional
-    // disk access in the old code.
-
-    if ([self fileExistsAtPathLocally:path]) {
-        DLog(@"    YES: A file exists at %@", path);
-        NSURL *url = [NSURL fileURLWithPath:path];
-
-        // Resolve path by removing ./ and ../ etc
-        path = [[url standardizedURL] path];
-        DLog(@"    Check standardized path for forbidden prefix %@", path);
-
-        if ([self fileHasForbiddenPrefix:path]) {
-            DLog(@"    NO: Standardized path has forbidden prefix.");
-            return nil;
-        }
-        return path;
-    }
-    DLog(@"     NO: no valid path found");
-    return nil;
+    return cleaner.cleanPath;
 }
 
 - (NSString *)preferredEditorIdentifier {
@@ -259,45 +118,246 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
     [self launchAppWithBundleIdentifier:bundleIdentifier args:@[ path ]];
 }
 
-- (void)launchAppWithBundleIdentifier:(NSString *)bundleIdentifier args:(NSArray *)args {
+- (void)openAppWithBundleIdentifier:(NSString *)bundleIdentifier args:(NSArray *)args {
+    args = [@[ @"-nb", bundleIdentifier, @"--args" ] arrayByAddingObjectsFromArray: args];
+    [self launchTaskWithPath:@"/usr/bin/open" arguments:args completion:nil];
+}
+
+- (NSBundle *)applicationBundleWithIdentifier:(NSString *)bundleIdentifier {
     NSString *bundlePath =
         [[NSWorkspace sharedWorkspace] absolutePathForAppBundleWithIdentifier:bundleIdentifier];
     NSBundle *bundle = [NSBundle bundleWithPath:bundlePath];
-    NSString *executable = [bundlePath stringByAppendingPathComponent:@"Contents/MacOS"];
-    executable = [executable stringByAppendingPathComponent:
-                            [bundle objectForInfoDictionaryKey:(id)kCFBundleExecutableKey]];
-    if (bundle && executable) {
-        DLog(@"Launch %@: %@ %@", bundleIdentifier, executable, args);
-        [self launchTaskWithPath:executable arguments:args wait:NO];
-    } else {
-        DLog(@"Not launching bundle=%@ executable=%@", bundle, executable);
-    }
+    return bundle;
 }
 
-- (void)launchVSCodeWithPath:(NSString *)path {
+- (NSString *)executableInApplicationBundle:(NSBundle *)bundle {
+    NSString *executable = [bundle.bundlePath stringByAppendingPathComponent:@"Contents/MacOS"];
+    executable = [executable stringByAppendingPathComponent:
+                            [bundle objectForInfoDictionaryKey:(id)kCFBundleExecutableKey]];
+    return executable;
+}
+
+- (NSString *)novaClientInApplicationBundle:(NSBundle *)bundle {
+    DLog(@"Trying to find nova in %@", bundle.bundlePath);
+    NSURL *url = bundle.bundleURL;
+    NSArray<NSString *> *parts = @[ @"Contents", @"SharedSupport", @"nova" ];
+    for (NSString *part in parts) {
+        url = [url URLByAppendingPathComponent:part];
+    }
+    return url.path;
+}
+
+- (NSString *)zedCommandInBundle:(NSBundle *)bundle {
+    DLog(@"Trying to find zed in %@", bundle.bundlePath);
+    NSURL *url = bundle.bundleURL;
+    NSArray<NSString *> *parts = @[ @"Contents", @"MacOS", @"cli" ];
+    for (NSString *part in parts) {
+        url = [url URLByAppendingPathComponent:part];
+    }
+    return url.path;
+}
+
+- (NSString *)emacsClientInApplicationBundle:(NSBundle *)bundle {
+    DLog(@"Trying to find emacsclient in %@", bundle.bundlePath);
+    struct utsname uts;
+    int status = uname(&uts);
+    if (status) {
+        DLog(@"Failed to get uname: %s", strerror(errno));
+        return nil;
+    }
+    NSString *arch = [NSString stringWithUTF8String:uts.machine];
+    
+    NSOperatingSystemVersion version = [[NSProcessInfo processInfo] operatingSystemVersion];
+    NSMutableArray<NSString *> *bindirs = [NSMutableArray array];
+    NSURL *folder = [NSURL fileURLWithPath:[bundle.bundlePath stringByAppendingPathComponent:@"Contents/MacOS"]];
+    for (NSURL *url in [[iTermCachingFileManager cachingFileManager] enumeratorAtURL:folder
+                                                          includingPropertiesForKeys:nil
+                                                                             options:NSDirectoryEnumerationSkipsSubdirectoryDescendants
+                                                                        errorHandler:nil]) {
+        NSString *file = url.path.lastPathComponent;
+        DLog(@"Consider: %@", file);
+        if (![file hasPrefix:@"bin-"]) {
+            DLog(@"Reject: does not start with bin-");
+            continue;
+        }
+        BOOL isdir = NO;
+        [[iTermCachingFileManager cachingFileManager] fileExistsAtPath:url.path isDirectory:&isdir];
+        if (!isdir) {
+            DLog(@"Reject: not a folder");
+            continue;
+        }
+        [bindirs addObject:file];
+    }
+    
+    // bin-i386-10_5
+    NSString *regex = @"^bin-([^-]+)-([0-9]+)_([0-9]+)$";
+    NSArray<NSString *> *contenders = [bindirs filteredArrayUsingBlock:^BOOL(NSString *dir) {
+        NSArray<NSString *> *captures = [[dir arrayOfCaptureComponentsMatchedByRegex:regex] firstObject];
+        DLog(@"Captures for %@ are %@", dir, captures);
+        if (captures.count != 4) {
+            return NO;
+        }
+        if (![captures[1] isEqualToString:arch]) {
+            DLog(@"Reject: arch is %@, but I want %@", captures[1], arch);
+            return NO;
+        }
+        if ([captures[2] integerValue] < version.majorVersion) {
+            DLog(@"Accept: major version %@ is less than my max of %@", captures[2], @(version.majorVersion));
+            return YES;
+        }
+        if ([captures[2] integerValue] > version.majorVersion) {
+            DLog(@"Reject: major version is %@ but I want no more than %@", captures[2], @(version.majorVersion));
+            return NO;
+        }
+        if ([captures[3] integerValue] > version.minorVersion) {
+            DLog(@"Reject: minor version is %@ but I want no more than %@", captures[3], @(version.minorVersion));
+            return NO;
+        }
+        DLog(@"It's a keeper");
+        return YES;
+    }];
+    DLog(@"Contenders are %@", contenders);
+    NSString *best = [contenders maxWithBlock:^NSComparisonResult(NSString *obj1, NSString *obj2) {
+        NSArray<NSString *> *cap1 = [obj1 arrayOfCaptureComponentsMatchedByRegex:regex].firstObject;
+        NSArray<NSString *> *cap2 = [obj2 arrayOfCaptureComponentsMatchedByRegex:regex].firstObject;
+        
+        NSInteger minor1 = [cap1[3] integerValue];
+        NSInteger minor2 = [cap2[3] integerValue];
+        return [@(minor1) compare:@(minor2)];
+    }];
+    DLog(@"Best is %@", best);
+    if (!best) {
+        return nil;
+    }
+    NSString *executable = [bundle.bundlePath stringByAppendingPathComponent:@"Contents/MacOS"];
+    executable = [executable stringByAppendingPathComponent:best];
+    executable = [executable stringByAppendingPathComponent:@"emacsclient"];
+    DLog(@"I guess emacsclient is %@", executable);
+    return executable;
+}
+
+- (NSString *)intelliJIDEALauncherInApplicationBundle:(NSBundle *)bundle {
+    DLog(@"Trying to find IntelliJ IDEA launcher in %@", bundle.bundlePath);
+    return [[[[bundle.bundleURL URLByAppendingPathComponent:@"Contents"] URLByAppendingPathComponent:@"MacOS"] URLByAppendingPathComponent:@"idea"] path];
+}
+
+- (void)launchAppWithBundleIdentifier:(NSString *)bundleIdentifier args:(NSArray *)args {
+    NSBundle *bundle = [self applicationBundleWithIdentifier:bundleIdentifier];
+    if (!bundle) {
+        DLog(@"No bundle for %@", bundleIdentifier);
+        return;
+    }
+    NSString *executable = [self executableInApplicationBundle:bundle];
+    if (!executable) {
+        DLog(@"No executable for %@ in %@", bundleIdentifier, bundle);
+        return;
+    }
+    DLog(@"Launch %@: %@ %@", bundleIdentifier, executable, args);
+    [self launchTaskWithPath:executable arguments:args completion:nil];
+}
+
+- (void)launchVSCodeWithPath:(NSString *)path codium:(BOOL)codium {
     assert(path);
     if (!path) {
         // I don't expect this to ever happen.
         return;
     }
-    NSString *bundlePath = [self absolutePathForAppBundleWithIdentifier:kVSCodeIdentifier];
+    NSArray<NSString *> *possibleIdentifiers = codium ? @[ kVSCodiumIdentifier1, kVSCodiumIdentifier2 ] : @[kVSCodeIdentifier, kVSCodeInsidersIdentifier];
+    NSString *identifier;
+    NSString *bundlePath = nil;
+    for (NSString *candidate in possibleIdentifiers) {
+        identifier = candidate;
+        bundlePath = [self absolutePathForAppBundleWithIdentifier:identifier];
+        if (bundlePath) {
+            break;
+        }
+    }
     if (bundlePath) {
         NSString *codeExecutable =
         [bundlePath stringByAppendingPathComponent:@"Contents/Resources/app/bin/code"];
         if ([self.fileManager fileExistsAtPath:codeExecutable]) {
             DLog(@"Launch VSCode %@ %@", codeExecutable, path);
-            [self launchTaskWithPath:codeExecutable arguments:@[ path, @"-g" ] wait:NO];
+            [self launchTaskWithPath:codeExecutable arguments:@[ path, @"-g" ] completion:nil];
         } else {
             // This isn't as good as opening "code -g" because it always opens a new instance
             // of the app but it's the OS-sanctioned way of running VSCode.  We can't
             // use AppleScript because it won't open the file to a particular line number.
-            [self launchAppWithBundleIdentifier:kVSCodeIdentifier path:path];
+            [self launchAppWithBundleIdentifier:identifier path:path];
         }
     }
 }
 
 - (void)launchEmacsWithArguments:(NSArray *)args {
-    [self launchAppWithBundleIdentifier:kEmacsAppIdentifier args:[@[ @"emacs" ] arrayByAddingObjectsFromArray:args]];
+    // Try to find emacsclient.
+    NSBundle *bundle = [self applicationBundleWithIdentifier:kEmacsAppIdentifier];
+    if (!bundle) {
+        DLog(@"Failed to find emacs bundle");
+        return;
+    }
+    NSString *emacsClient = [self emacsClientInApplicationBundle:bundle];
+    if (!emacsClient) {
+        DLog(@"No emacsClient in %@", bundle);
+        DLog(@"Launching emacs the old-fashioned way");
+        [self launchAppWithBundleIdentifier:kEmacsAppIdentifier
+                                       args:[@[ @"emacs" ] arrayByAddingObjectsFromArray:args]];
+        return;
+    }
+
+    // Find the regular emacs exectuable to fall back to
+    NSString *emacs = [self executableInApplicationBundle:bundle];
+    if (!emacs) {
+        DLog(@"No executable for emacs in %@", bundle);
+        return;
+    }
+    NSArray<NSString *> *fallbackParts = @[ emacs ];
+    NSString *fallback = [[fallbackParts mapWithBlock:^id(NSString *anObject) {
+        return [anObject stringWithBackslashEscapedShellCharactersIncludingNewlines:YES];
+    }] componentsJoinedByString:@" "];
+    
+    // Run emacsclient -a "emacs <args>" <args>
+    // That'll use emacsclient if possible and fall back to real emacs if it fails.
+    // Normally it will fail unless you've enabled the daemon.
+    [self launchTaskWithPath:emacsClient
+                   arguments:[@[ @"-n", @"-a", fallback, args] flattenedArray]
+                  completion:nil];
+
+}
+
+- (void)openDocumentInNova:(NSString *)path line:(NSString *)line column:(NSString *)column {
+    NSBundle *bundle = [self applicationBundleWithIdentifier:kNovaAppIdentifier];
+    if (!bundle) {
+        DLog(@"Failed to find nova bundle");
+        return;
+    }
+    NSString *novaUtil = [self novaClientInApplicationBundle:bundle];
+    NSMutableArray<NSString *> *args = [@[@"open", path] mutableCopy];
+    if (line) {
+        [args addObject:@"-l"];
+        if (column) {
+            [args addObject:[NSString stringWithFormat:@"%@:%@", line, column]];
+        } else {
+            [args addObject:line];
+        }
+    }
+    [self launchTaskWithPath:novaUtil arguments:args completion:nil];
+}
+
+- (void)openDocumentInZed:(NSString *)path line:(NSString *)line column:(NSString *)column {
+    NSBundle *bundle = [self applicationBundleWithIdentifier:kZedAppIdentifier];
+    if (!bundle) {
+        DLog(@"Failed to find zed bundle");
+        return;
+    }
+    NSString *zed = [self zedCommandInBundle:bundle];
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    [parts addObject:path];
+    if (line.length) {
+        [parts addObject:line];
+        if (column.length) {
+            [parts addObject:column];
+        }
+    }
+    [self launchTaskWithPath:zed arguments:@[ [parts componentsJoinedByString:@":"] ] completion:nil];
 }
 
 - (NSString *)absolutePathForAppBundleWithIdentifier:(NSString *)bundleId {
@@ -316,7 +376,7 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
             [bundlePath stringByAppendingPathComponent:@"Contents/SharedSupport/bin/subl"];
         if ([self.fileManager fileExistsAtPath:sublExecutable]) {
             DLog(@"Launch sublime text %@ %@", sublExecutable, path);
-            [self launchTaskWithPath:sublExecutable arguments:@[ path ] wait:NO];
+            [self launchTaskWithPath:sublExecutable arguments:@[ path ] completion:nil];
         } else {
             // This isn't as good as opening "subl" because it always opens a new instance
             // of the app but it's the OS-sanctioned way of running Sublimetext.  We can't
@@ -326,89 +386,188 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
     }
 }
 
+- (void)openDocumentInXcode:(NSString *)path line:(NSString *)line {
+    assert(path);
+    if (!path) {
+        // I don't expect this to ever happen.
+        return;
+    }
+
+    NSMutableArray *args = [NSMutableArray array];
+    if ([line length]) {
+        [args addObjectsFromArray:@[@"--line", line]];
+    }
+
+    [args addObject:path];
+
+    NSString *xedPath = @"/usr/bin/xed";
+
+    DLog(@"Launch Xcode: `%@ %@`", xedPath, args);
+    [self launchTaskWithPath:xedPath arguments:args completion:nil];
+}
+
+- (void)openDocumentInCursor:(NSString *)path line:(NSString *)line column:(NSString *)column {
+    NSURLComponents *components = [[NSURLComponents alloc] init];
+    components.scheme = @"cursor";
+    components.host = @"file";
+    NSArray<NSString *> *parts = [@[ path, 
+                                     line ?: [NSNull null],
+                                     (line != nil && column != nil) ? column : [NSNull null] ] arrayByRemovingNulls];
+    components.path = [parts componentsJoinedByString:@":"];
+
+    [self openURL:components.URL editorIdentifier:kCursorAppIdentifier];
+}
+
 + (NSArray *)bundleIdsThatSupportOpeningToLineNumber {
     return @[ kAtomIdentifier,
               kVSCodeIdentifier,
+              kVSCodiumIdentifier1,
+              kVSCodiumIdentifier2,
+              kVSCodeInsidersIdentifier,
               kSublimeText2Identifier,
               kSublimeText3Identifier,
+              kSublimeText4Identifier,
               kMacVimIdentifier,
               kTextmateIdentifier,
               kTextmate2Identifier,
               kBBEditIdentifier,
-              kEmacsAppIdentifier];
+              kEmacsAppIdentifier,
+              kIntelliJIDEAIdentifierCE,
+              kIntelliJIDEAIdentifierUE,
+              kWebStormIdentifier,
+              kRiderIdentifier,
+              kNovaAppIdentifier,
+              kXcodeAppIdentifier,
+              kCursorAppIdentifier,
+              kZedAppIdentifier
+    ];
 }
 
 - (void)openFile:(NSString *)path
     inEditorWithBundleId:(NSString *)identifier
           lineNumber:(NSString *)lineNumber
         columnNumber:(NSString *)columnNumber {
-    if (identifier) {
-        DLog(@"openFileInEditor. editor=%@", [self preferredEditorIdentifier]);
-        if ([identifier isEqualToString:kAtomIdentifier]) {
-            if (lineNumber != nil) {
-                path = [NSString stringWithFormat:@"%@:%@", path, lineNumber];
-            }
-            if (columnNumber != nil) {
-                path = [path stringByAppendingFormat:@":%@", columnNumber];
-            }
-            [self launchAtomWithPath:path];
-        } else if ([identifier isEqualToString:kVSCodeIdentifier]) {
-            if (lineNumber != nil) {
-                path = [NSString stringWithFormat:@"%@:%@", path, lineNumber];
-            }
-            if (columnNumber != nil) {
-                path = [path stringByAppendingFormat:@":%@", columnNumber];
-            }
-            [self launchVSCodeWithPath:path];
-        } else if ([identifier isEqualToString:kSublimeText2Identifier] ||
-                   [identifier isEqualToString:kSublimeText3Identifier]) {
-            if (lineNumber != nil) {
-                path = [NSString stringWithFormat:@"%@:%@", path, lineNumber];
-            }
-            if (columnNumber != nil) {
-                path = [path stringByAppendingFormat:@":%@", columnNumber];
-            }
-            NSString *bundleId;
-            if ([identifier isEqualToString:kSublimeText3Identifier]) {
-                bundleId = kSublimeText3Identifier;
-            } else {
-                bundleId = kSublimeText2Identifier;
-            }
+    if (!identifier) {
+        return;
+    }
+    DLog(@"openFileInEditor. editor=%@", [self preferredEditorIdentifier]);
+    if ([identifier isEqualToString:kAtomIdentifier]) {
+        if (lineNumber != nil) {
+            path = [NSString stringWithFormat:@"%@:%@", path, lineNumber];
+        }
+        if (columnNumber != nil) {
+            path = [path stringByAppendingFormat:@":%@", columnNumber];
+        }
+        [self launchAtomWithPath:path];
+        return;
+    }
+    if ([identifier isEqualToString:kVSCodeIdentifier] ||
+        [identifier isEqualToString:kVSCodiumIdentifier1] ||
+        [identifier isEqualToString:kVSCodiumIdentifier2] ||
+        [identifier isEqualToString:kVSCodeInsidersIdentifier]) {
+        if (lineNumber != nil) {
+            path = [NSString stringWithFormat:@"%@:%@", path, lineNumber];
+        }
+        if (columnNumber != nil) {
+            path = [path stringByAppendingFormat:@":%@", columnNumber];
+        }
+        [self launchVSCodeWithPath:path
+                            codium:([identifier isEqualToString:kVSCodiumIdentifier1] || [identifier isEqualToString:kVSCodiumIdentifier2])];
+        return;
+    }
+    if ([identifier isEqualToString:kSublimeText2Identifier] ||
+        [identifier isEqualToString:kSublimeText3Identifier] ||
+        [identifier isEqualToString:kSublimeText4Identifier]) {
+        if (lineNumber != nil) {
+            path = [NSString stringWithFormat:@"%@:%@", path, lineNumber];
+        }
+        if (columnNumber != nil) {
+            path = [path stringByAppendingFormat:@":%@", columnNumber];
+        }
+        NSString *bundleId;
+        if ([identifier isEqualToString:kSublimeText3Identifier]) {
+            bundleId = kSublimeText3Identifier;
+        } else if ([identifier isEqualToString:kSublimeText4Identifier]) {
+            bundleId = kSublimeText4Identifier;
+        } else {
+            bundleId = kSublimeText2Identifier;
+        }
 
-            [self launchSublimeTextWithBundleIdentifier:bundleId path:path];
-        } else if ([identifier isEqualToString:kEmacsAppIdentifier]) {
-            NSMutableArray *args = [NSMutableArray array];
-            if (path) {
-                [args addObject:path];
-                if (lineNumber) {
-                    if (columnNumber) {
-                        [args insertObject:[NSString stringWithFormat:@"+%@:%@", lineNumber, columnNumber] atIndex:0];
-                    } else {
-                        [args insertObject:[NSString stringWithFormat:@"+%@", lineNumber] atIndex:0];
-                    }
+        [self launchSublimeTextWithBundleIdentifier:bundleId path:path];
+        return;
+    }
+    if ([identifier isEqualToString:kEmacsAppIdentifier]) {
+        NSMutableArray *args = [NSMutableArray array];
+        if (path) {
+            [args addObject:path];
+            if (lineNumber) {
+                if (columnNumber) {
+                    [args insertObject:[NSString stringWithFormat:@"+%@:%@", lineNumber, columnNumber] atIndex:0];
+                } else {
+                    [args insertObject:[NSString stringWithFormat:@"+%@", lineNumber] atIndex:0];
                 }
             }
-            [self launchEmacsWithArguments:args];
-        } else {
-            path = [path stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLHostAllowedCharacterSet]];
-            NSURL *url = nil;
-            NSString *editorIdentifier = identifier;
-            if (lineNumber) {
-                url = [NSURL URLWithString:[NSString stringWithFormat:
-                                            @"%@://open?url=file://%@&line=%@",
-                                            [iTermSemanticHistoryPrefsController schemeForEditor:editorIdentifier],
-                                            path, lineNumber]];
-            } else {
-                url = [NSURL URLWithString:[NSString stringWithFormat:
-                                            @"%@://open?url=file://%@",
-                                            [iTermSemanticHistoryPrefsController schemeForEditor:editorIdentifier],
-                                            path]];
-            }
-            DLog(@"Open url %@", url);
-            // BBEdit and TextMate share a URL scheme, so this disambiguates.
-            [self openURL:url editorIdentifier:editorIdentifier];
         }
+        [self launchEmacsWithArguments:args];
+        return;
     }
+    if ([identifier isEqualToString:kNovaAppIdentifier]) {
+        [self openDocumentInNova:path line:lineNumber column:columnNumber];
+        return;
+    }
+    if ([identifier isEqualToString:kXcodeAppIdentifier]) {
+        [self openDocumentInXcode:path line:lineNumber];
+        return;
+    }
+    if ([identifier isEqualToString:kCursorAppIdentifier]) {
+        [self openDocumentInCursor:path line:lineNumber column:columnNumber];
+        return;
+    }
+    if ([identifier isEqualToString:kZedAppIdentifier]) {
+        [self openDocumentInZed:path line:lineNumber column:columnNumber];
+        return;
+    }
+    // WebStorm doesn't actually support --line, but it's harmless to try.
+    NSArray *jetbrains = @[
+        kIntelliJIDEAIdentifierCE,
+        kIntelliJIDEAIdentifierUE,
+        kWebStormIdentifier,
+        kRiderIdentifier
+    ];
+    if ([jetbrains containsObject:identifier]) {
+        NSArray<NSString *> *args = @[];
+        if (path) {
+            if (lineNumber) {
+                args = @[ @"--line", lineNumber, path ];
+            } else {
+                args = @[ path ];
+            }
+        }
+        [self openAppWithBundleIdentifier:identifier args:args];
+        return;
+    }
+
+    NSMutableCharacterSet *queryCharset = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+    [queryCharset removeCharactersInString:@"/"];
+    NSString *(^percentEncoded)(NSString *) = ^NSString *(NSString *string) {
+        return [string stringByAddingPercentEncodingWithAllowedCharacters:queryCharset];
+    };
+    NSURLComponents *urlComponents = [[NSURLComponents alloc] init];
+    urlComponents.host = @"open";
+    urlComponents.path = nil;
+    urlComponents.scheme = [iTermSemanticHistoryPrefsController schemeForEditor:identifier];
+    NSURL *fileURL = [NSURL fileURLWithPath:path];
+    urlComponents.percentEncodedQueryItems = @[ [NSURLQueryItem queryItemWithName:@"url"
+                                                                            value:percentEncoded(fileURL.absoluteString)] ];
+    if (lineNumber) {
+        NSURLQueryItem *lineItem = [NSURLQueryItem queryItemWithName:@"line"
+                                                               value:percentEncoded(lineNumber)];
+        urlComponents.percentEncodedQueryItems = [urlComponents.queryItems arrayByAddingObject:lineItem];
+    }
+    NSURL *url = urlComponents.URL;
+    DLog(@"Open url %@", url);
+    // BBEdit and TextMate share a URL scheme, so identifier disambiguates.
+    [self openURL:url editorIdentifier:identifier];
 }
 
 - (void)openFileInEditor:(NSString *)path lineNumber:(NSString *)lineNumber columnNumber:(NSString *)columnNumber {
@@ -419,16 +578,93 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
     return [prefs_[kSemanticHistoryActionKey] isEqualToString:kSemanticHistoryRawCommandAction];
 }
 
-- (void)launchTaskWithPath:(NSString *)path arguments:(NSArray *)arguments wait:(BOOL)wait {
-    NSTask *task = [NSTask launchedTaskWithLaunchPath:path arguments:arguments];
-    if (wait) {
-        [task waitUntilExit];
+- (void)launchTaskWithPath:(NSString *)path
+                 arguments:(NSArray *)arguments
+                completion:(void (^)(void))completion {
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_group_enter(group);
+    __weak __typeof(self) weakSelf = self;
+    [self _launchTaskWithPath:path arguments:arguments completion:^(iTermBufferedCommandRunner *runner, int status) {
+        [weakSelf didFinishCommand:[@[path ?: @""] arrayByAddingObjectsFromArray:arguments]
+                        withStatus:status
+                            runner:runner];
+        dispatch_group_leave(group);
+    }];
+    if (completion) {
+        dispatch_group_notify(group, dispatch_get_main_queue(), completion);
     }
 }
 
-- (BOOL)openFile:(NSString *)fullPath {
+- (void)didFinishCommand:(NSArray *)parts
+              withStatus:(int)status
+                  runner:(iTermBufferedCommandRunner *)runner {
+    [_commandRunners removeObject:runner];
+    DLog(@"Runner %@ finished with status %@. There are now %@ runners.", runner, @(status), @(_commandRunners.count));
+    if (!status) {
+        return;
+    }
+    iTermWarning *warning = [[iTermWarning alloc] init];
+    warning.title = [NSString stringWithFormat:@"The following command returned a non-zero exit code:\n\n“%@”",
+                     [parts componentsJoinedByString:@" "]];
+    warning.heading = @"Semantic History Command Failed";
+    static const iTermSingleUseWindowOptions options = iTermSingleUseWindowOptionsShortLived;
+    NSMutableData *inject = [runner.output mutableCopy];
+    NSString *truncationWarning = [NSString stringWithFormat:@"\n%c[m;[output truncated]\n", 27];
+    if (runner.truncated) {
+        [inject appendData:[truncationWarning dataUsingEncoding:NSUTF8StringEncoding]];
+    }
+    [inject it_replaceOccurrencesOfData:[NSData dataWithBytes:"\n" length:1]
+                               withData:[NSData dataWithBytes:"\r\n" length:2]];
+    warning.warningActions = @[ [iTermWarningAction warningActionWithLabel:@"OK" block:nil],
+                                [iTermWarningAction warningActionWithLabel:@"View" block:^(iTermWarningSelection selection) {
+                                    [[iTermController sharedInstance] openSingleUseWindowWithCommand:@"/usr/bin/true"
+                                                                                           arguments:nil
+                                                                                              inject:inject
+                                                                                         environment:nil
+                                                                                                 pwd:@"/"
+                                                                                             options:options
+                                                                                      didMakeSession:nil
+                                                                                          completion:nil];
+                                }] ];
+    warning.warningType = kiTermWarningTypePermanentlySilenceable;
+    NSString *name;
+    if ([parts[0] isEqualToString:@"/bin/sh"] && [parts[1] isEqualToString:@"-c"] && parts.count > 2) {
+        name = parts[2];
+    } else {
+        name = parts[0];
+    }
+    warning.identifier = [@"NoSyncSemanticHistoryCommandFailed_" stringByAppendingString:name];
+    [warning runModal];
+}
+
+- (void)_launchTaskWithPath:(NSString *)path
+                  arguments:(NSArray *)arguments
+                 completion:(void (^)(iTermBufferedCommandRunner *runner, int status))completion {
+    iTermBufferedCommandRunner *runner =
+    [[iTermBufferedCommandRunner alloc] initWithCommand:path
+                                          withArguments:arguments
+                                                   path:[[NSFileManager defaultManager] currentDirectoryPath]];
+    DLog(@"Launch %@ %@ in runner %@", path, arguments, runner);
+    runner.maximumOutputSize = @(1024 * 10);
+    __weak __typeof(runner) weakRunner = runner;
+    __weak __typeof(self) weakSelf = self;
+    runner.completion = ^(int status) {
+        __strong __typeof(runner) strongRunner = weakRunner;
+        __strong __typeof(self) strongSelf = weakSelf;
+        DLog(@"Command finished");
+        if (strongSelf && strongRunner) {
+            [strongSelf->_commandRunners removeObject:strongRunner];
+            completion(strongRunner, status);
+        }
+    };
+    [_commandRunners addObject:runner];
+    [runner run];
+}
+
+- (BOOL)openFile:(NSString *)fullPath fragment:(NSString *)fragment {
     DLog(@"Open file %@", fullPath);
-    return [[iTermLaunchServices sharedInstance] openFile:fullPath];
+    return [[iTermLaunchServices sharedInstance] openFile:fullPath
+                                                 fragment:fragment];
 }
 
 - (BOOL)openURL:(NSURL *)url editorIdentifier:(NSString *)editorIdentifier {
@@ -440,7 +676,7 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
                         additionalEventParamDescriptor:nil
                                      launchIdentifiers:NULL];
     } else {
-        return [[NSWorkspace sharedWorkspace] openURL:url];
+        return [[NSWorkspace sharedWorkspace] it_openURL:url];
     }
 }
 
@@ -448,14 +684,28 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
     return [self openURL:url editorIdentifier:nil];
 }
 
-- (BOOL)openPath:(NSString *)cleanedUpPath
+- (NSDictionary *)numericSubstitutions {
+    return @{ @"\\1": @"\\(semanticHistory.path)",
+              @"\\2": @"\\(semanticHistory.lineNumber)",
+              @"\\3": @"\\(semanticHistory.prefix)",
+              @"\\4": @"\\(semanticHistory.suffix)",
+              @"\\5": @"\\(semanticHistory.workingDirectory)" };
+}
+
+- (NSTimeInterval)evaluationTimeout {
+    return 30;
+}
+
+- (void)openPath:(NSString *)cleanedUpPath
    orRawFilename:(NSString *)rawFileName
-       substitutions:(NSDictionary *)substitutions
+        fragment:(NSString *)fragment
+   substitutions:(NSDictionary *)substitutions
+           scope:(iTermVariableScope *)originalScope
       lineNumber:(NSString *)lineNumber
-    columnNumber:(NSString *)columnNumber {
+    columnNumber:(NSString *)columnNumber
+      completion:(void (^)(BOOL))completion {
     DLog(@"openPath:%@ rawFileName:%@ substitutions:%@ lineNumber:%@ columnNumber:%@",
          cleanedUpPath, rawFileName, substitutions, lineNumber, columnNumber);
-    BOOL isDirectory;
 
     NSString *path;
     BOOL isRawAction = [prefs_[kSemanticHistoryActionKey] isEqualToString:kSemanticHistoryRawCommandAction];
@@ -469,67 +719,119 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
         DLog(@"Not a raw action. New path is %@, line number is %@", path, lineNumber);
     }
 
-    NSString *script = [prefs_ objectForKey:kSemanticHistoryTextKey];
-    NSMutableDictionary *augmentedSubs = [[substitutions mutableCopy] autorelease];
-    augmentedSubs[@"1"] = path ? [path stringWithEscapedShellCharactersIncludingNewlines:YES] : @"";
-    augmentedSubs[@"2"] = lineNumber ? lineNumber : @"";
-    augmentedSubs[@"3"] = substitutions[kSemanticHistoryPrefixSubstitutionKey];
-    augmentedSubs[@"4"] = substitutions[kSemanticHistorySuffixSubstitutionKey];
-    augmentedSubs[@"5"] = substitutions[kSemanticHistoryWorkingDirectorySubstitutionKey];
-    script = [script stringByReplacingVariableReferencesWithVariables:augmentedSubs];
+    // Construct a scope with semanticHistory.xxx variables based on the passed-in scope
+    iTermVariables *frame = [[iTermVariables alloc] initWithContext:iTermVariablesSuggestionContextNone owner:self];
+    iTermVariableScope *scope = [originalScope copy];
+    [scope addVariables:frame toScopeNamed:@"semanticHistory"];
+    [scope setValuesFromDictionary:substitutions];
+    NSString *const escapedPath = [path stringWithEscapedShellCharactersIncludingNewlines:YES];
+    [scope setValue:escapedPath forVariableNamed:kSemanticHistoryPathSubstitutionKey];
+    [scope setValue:lineNumber forVariableNamed:kSemanticHistoryLineNumberKey];
+    [scope setValue:columnNumber forVariableNamed:kSemanticHistoryColumnNumberKey];
 
-    DLog(@"After escaping backrefs, script is %@", script);
+    NSDictionary *numericSubstitutions = [self numericSubstitutions];
+    NSString *script = [prefs_ objectForKey:kSemanticHistoryTextKey];
+    script = [script stringByPerformingSubstitutions:numericSubstitutions];
+    _expressionEvaluator = [[iTermExpressionEvaluator alloc] initWithInterpolatedString:script scope:scope];
 
     if (isRawAction) {
-        DLog(@"Launch raw action: /bin/sh -c %@", script);
-        [self launchTaskWithPath:@"/bin/sh" arguments:@[ @"-c", script ] wait:YES];
-        return YES;
+        __weak __typeof(self) weakSelf = self;
+        [_expressionEvaluator evaluateWithTimeout:self.evaluationTimeout completion:^(iTermExpressionEvaluator * _Nonnull evaluator) {
+            DLog(@"Launch raw action: /bin/sh -c %@", evaluator.value);
+            if (evaluator.error) {
+                completion(YES);
+                return;
+            }
+            [weakSelf launchTaskWithPath:@"/bin/sh"
+                               arguments:@[ @"-c", evaluator.value ?: @"" ]
+                               completion:^{
+                                   completion(YES);
+                               }];
+        }];
+        return;
     }
 
+    BOOL isDirectory;
     if (![self.fileManager fileExistsAtPath:path isDirectory:&isDirectory]) {
         DLog(@"No file exists at %@, not running semantic history", path);
-        return NO;
+        completion(NO);
+        return;
     }
 
     if ([prefs_[kSemanticHistoryActionKey] isEqualToString:kSemanticHistoryCommandAction]) {
-        DLog(@"Running /bin/sh -c %@", script);
-        [self launchTaskWithPath:@"/bin/sh" arguments:@[ @"-c", script ] wait:YES];
-        return YES;
+        __weak __typeof(self) weakSelf = self;
+        [_expressionEvaluator evaluateWithTimeout:self.evaluationTimeout completion:^(iTermExpressionEvaluator * _Nonnull evaluator) {
+            DLog(@"Running /bin/sh -c %@", evaluator.value);
+            if (evaluator.error) {
+                completion(YES);
+                return;
+            }
+            [weakSelf launchTaskWithPath:@"/bin/sh"
+                               arguments:@[ @"-c", evaluator.value ?: @"" ]
+                              completion:^{
+                                  completion(YES);
+                              }];
+        }];
+        return;
     }
 
     if ([prefs_[kSemanticHistoryActionKey] isEqualToString:kSemanticHistoryCoprocessAction]) {
-        DLog(@"Launch coprocess with script %@", script);
-        assert(delegate_);
-        [delegate_ semanticHistoryLaunchCoprocessWithCommand:script];
-        return YES;
+        __weak __typeof(self) weakSelf = self;
+        [_expressionEvaluator evaluateWithTimeout:self.evaluationTimeout completion:^(iTermExpressionEvaluator * _Nonnull evaluator) {
+            DLog(@"Launch coprocess with script %@", evaluator.value);
+            if (evaluator.error) {
+                completion(YES);
+            }
+            [weakSelf.delegate semanticHistoryLaunchCoprocessWithCommand:evaluator.value];
+            completion(YES);
+        }];
+        return;
     }
 
     if (isDirectory) {
         DLog(@"Open directory %@", path);
-        [self openFile:path];
-        return YES;
+        [self openFile:path fragment:fragment];
+        completion(YES);
+        return;
     }
 
     if ([prefs_[kSemanticHistoryActionKey] isEqualToString:kSemanticHistoryUrlAction]) {
         NSString *url = prefs_[kSemanticHistoryTextKey];
-        // Replace the path with a non-shell-escaped path.
-        augmentedSubs[@"1"] = path ?: @"";
-        // Percent-escape all the arguments.
-        for (NSString *key in augmentedSubs.allKeys) {
-            augmentedSubs[key] =
-                [augmentedSubs[key] stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLHostAllowedCharacterSet]];
-        }
-        url = [url stringByReplacingVariableReferencesWithVariables:augmentedSubs];
-        DLog(@"Open url %@", url);
-        [self openURL:[NSURL URLWithUserSuppliedString:url]];
-        return YES;
+        // Replace the path with a non-shell-escaped path since we perform escaping later in this code path.
+        [scope setValue:path ?: @"" forVariableNamed:kSemanticHistoryPathSubstitutionKey];
+
+        url = [url stringByPerformingSubstitutions:numericSubstitutions];
+        NSString *(^urlEscapeFunction)(NSString *) = ^NSString *(NSString *string) {
+            return [string stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+        };
+        iTermParsedExpression *parsedExpression = [iTermExpressionParser parsedExpressionWithInterpolatedString:url
+                                                                                               escapingFunction:urlEscapeFunction
+                                                                                                          scope:scope
+                                                                                                         strict:NO];
+        _expressionEvaluator = [[iTermExpressionEvaluator alloc] initWithParsedExpression:parsedExpression
+                                                                               invocation:url
+                                                                                    scope:scope];
+        // Add percent escapes substitutions
+        _expressionEvaluator.escapingFunction = urlEscapeFunction;
+        __weak __typeof(self) weakSelf = self;
+        [_expressionEvaluator evaluateWithTimeout:self.evaluationTimeout completion:^(iTermExpressionEvaluator * _Nonnull evaluator) {
+            DLog(@"URL format is %@. Error is %@. Evaluated value is %@.", url, evaluator.error, evaluator.value);
+            if (!evaluator.error) {
+                [weakSelf openURL:[NSURL URLWithUserSuppliedString:evaluator.value]];
+            } else {
+                [weakSelf openURL:[NSURL URLWithUserSuppliedString:url]];
+            }
+            completion(YES);
+        }];
+        return;
     }
 
     if ([prefs_[kSemanticHistoryActionKey] isEqualToString:kSemanticHistoryEditorAction] &&
         [self preferredEditorIdentifier]) {
         // Action is to open in a specific editor, so open it in the editor.
         [self openFileInEditor:path lineNumber:lineNumber columnNumber:columnNumber];
-        return YES;
+        completion(YES);
+        return;
     }
 
     if (lineNumber) {
@@ -538,12 +840,13 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
             DLog(@"A line number is present and I know how to open this file to the line number using %@. Do so.",
                  appBundleId);
             [self openFile:path inEditorWithBundleId:appBundleId lineNumber:lineNumber columnNumber:columnNumber];
-            return YES;
+            completion(YES);
+            return;
         }
     }
 
-    [self openFile:path];
-    return YES;
+    [self openFile:path fragment:fragment];
+    completion(YES);
 }
 
 - (BOOL)canOpenFileWithLineNumberUsingEditorWithBundleId:(NSString *)appBundleId {
@@ -572,171 +875,63 @@ NSString *const kSemanticHistoryWorkingDirectorySubstitutionKey = @"semanticHist
     return [iTermSemanticHistoryPrefsController bundleIdIsEditor:[self bundleIdForDefaultAppForFile:file]];
 }
 
-- (NSArray<NSString *> *)splitString:(NSString *)string {
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    __block NSRange lastRange = NSMakeRange(0, 0);
-    [string enumerateStringsMatchedByRegex:@"([^\t ()]*)([\t ()])"
-                                   options:0
-                                   inRange:NSMakeRange(0, string.length)
-                                     error:nil
-                        enumerationOptions:0
-                                usingBlock:^(NSInteger captureCount,
-                                             NSString *const *capturedStrings,
-                                             const NSRange *capturedRanges,
-                                             volatile BOOL *const stop) {
-                                    [parts addObject:capturedStrings[1]];
-                                    [parts addObject:capturedStrings[2]];
-                                    lastRange = capturedRanges[2];
-                                }];
-    const NSInteger suffixStartIndex = NSMaxRange(lastRange);
-    if (suffixStartIndex < string.length) {
-        [parts addObject:[string substringFromIndex:suffixStartIndex]];
-    }
-    return parts;
-}
-
 - (NSString *)pathOfExistingFileFoundWithPrefix:(NSString *)beforeStringIn
                                          suffix:(NSString *)afterStringIn
                                workingDirectory:(NSString *)workingDirectory
                            charsTakenFromPrefix:(int *)charsTakenFromPrefixPtr
-                           charsTakenFromSuffix:(int *)suffixChars
+                           charsTakenFromSuffix:(int *)charsTakenFromSuffixPtr
                                  trimWhitespace:(BOOL)trimWhitespace {
-    BOOL workingDirectoryIsOk = [self fileExistsAtPathLocally:workingDirectory];
-    if (!workingDirectoryIsOk) {
-        DLog(@"Working directory %@ is a network share or doesn't exist. Not using it for context.",
-             workingDirectory);
+    iTermPathFinder *pathfinder = [[iTermPathFinder alloc] initWithPrefix:beforeStringIn
+                                                                   suffix:afterStringIn
+                                                         workingDirectory:workingDirectory
+                                                           trimWhitespace:trimWhitespace
+                                                                   ignore:[iTermAdvancedSettingsModel pathsToIgnore]
+                                                       allowNetworkMounts:[iTermAdvancedSettingsModel enableSemanticHistoryOnNetworkMounts]];
+    pathfinder.fileManager = self.fileManager;
+    [pathfinder searchSynchronously];
+    if (charsTakenFromPrefixPtr) {
+        *charsTakenFromPrefixPtr = pathfinder.prefixChars;
     }
-
-    DLog(@"Brute force path from prefix <<%@>>, suffix <<%@>> directory=%@",
-         beforeStringIn, afterStringIn, workingDirectory);
-
-    // Split "Foo Bar" to ["Foo", " ", "Bar"]
-    NSArray *beforeChunks = [self splitString:beforeStringIn];
-    NSArray *afterChunks = [self splitString:afterStringIn];
-
-    NSMutableString *left = [NSMutableString string];
-    int iterationsBeforeQuitting = 100;  // Bail after 100 iterations if nothing is still found.
-    NSMutableSet *paths = [NSMutableSet set];
-    NSCharacterSet *whitespaceCharset = [NSCharacterSet whitespaceAndNewlineCharacterSet];
-    for (int i = [beforeChunks count]; i >= 0; i--) {
-        NSString *beforeChunk = @"";
-        if (i < [beforeChunks count]) {
-            beforeChunk = beforeChunks[i];
-        }
-
-        [left insertString:beforeChunk atIndex:0];
-        NSMutableString *right = [NSMutableString string];
-        // Do not search more than 10 chunks forward to avoid starving leftward search.
-        for (int j = 0; j < MAX(1, afterChunks.count) && j < 10; j++) {
-            NSString *rightChunk = @"";
-            if (j < afterChunks.count) {
-                rightChunk = afterChunks[j];
-            }
-            [right appendString:rightChunk];
-
-            NSString *possiblePath = [left stringByAppendingString:right];
-            NSString *trimmedPath = possiblePath;
-            if (trimWhitespace) {
-                trimmedPath = [trimmedPath stringByTrimmingCharactersInSet:whitespaceCharset];
-            }
-            if ([paths containsObject:[NSString stringWithString:trimmedPath]]) {
-                continue;
-            }
-            [paths addObject:[[trimmedPath copy] autorelease]];
-
-            // Replace \x with x for x in: space, (, [, ], \, ).
-            NSString *removeEscapingSlashes = @"\\\\([ \\(\\[\\]\\\\)])";
-            trimmedPath = [trimmedPath stringByReplacingOccurrencesOfRegex:removeEscapingSlashes withString:@"$1"];
-
-            // Some programs will thoughtlessly print a filename followed by some silly suffix.
-            // We'll try versions with and without a questionable suffix. The version
-            // with the suffix is always preferred if it exists.
-            static NSArray *questionableSuffixes;
-            static dispatch_once_t onceToken;
-            dispatch_once(&onceToken, ^{
-                questionableSuffixes = [@[ @"!", @"?", @".", @",", @";", @":", @"...", @"…" ] retain];
-            });
-            for (NSString *modifiedPossiblePath in [self pathsFromPath:trimmedPath byRemovingBadSuffixes:questionableSuffixes]) {
-                BOOL exists = NO;
-                if (workingDirectoryIsOk || [modifiedPossiblePath hasPrefix:@"/"]) {
-                    exists = ([self cleanedUpPathFromPath:modifiedPossiblePath
-                                                   suffix:nil
-                                         workingDirectory:workingDirectory
-                                      extractedLineNumber:nil
-                                             columnNumber:nil] != nil);
-                }
-                if (exists) {
-                    NSString *extra = @"";
-                    if (j + 1 < afterChunks.count) {
-                        extra = [self columnAndLineNumberFromChunks:[afterChunks subarrayFromIndex:j + 1]];
-                    }
-                    NSString *extendedPath = [modifiedPossiblePath stringByAppendingString:extra];
-                    [right appendString:extra];
-                    
-                    if (charsTakenFromPrefixPtr) {
-                        if (trimWhitespace &&
-                            [[right stringByTrimmingTrailingCharactersFromCharacterSet:whitespaceCharset] length] == 0) {
-                            // trimmedPath is trim(left + right). If trim(right) is empty
-                            // then we don't want to count trailing whitespace from left in the chars
-                            // taken from prefix.
-                            *charsTakenFromPrefixPtr = [[left stringByTrimmingTrailingCharactersFromCharacterSet:whitespaceCharset] length];
-                        } else {
-                            *charsTakenFromPrefixPtr = left.length;
-                        }
-                    }
-                    if (suffixChars) {
-                        NSInteger lengthOfBadSuffix = extra.length ? 0 : trimmedPath.length - modifiedPossiblePath.length;
-                        int n;
-                        if (trimWhitespace) {
-                            n = [[right stringByTrimmingTrailingCharactersFromCharacterSet:whitespaceCharset] length] - lengthOfBadSuffix;
-                        } else {
-                            n = right.length - lengthOfBadSuffix;
-                        }
-                        *suffixChars = MAX(0, n);
-                    }
-                    DLog(@"Using path %@", extendedPath);
-                    return extendedPath;
-                }
-            }
-            if (--iterationsBeforeQuitting == 0) {
-                return nil;
-            }
-        }
+    if (charsTakenFromSuffixPtr) {
+        *charsTakenFromSuffixPtr = pathfinder.suffixChars;
     }
-    return nil;
+    return pathfinder.path;
 }
 
-- (NSString *)columnAndLineNumberFromChunks:(NSArray<NSString *> *)afterChunks {
-    NSString *suffix = [afterChunks componentsJoinedByString:@""];
-    NSArray<NSString *> *regexes = @[ @"^(:\\d+)",
-                                      @"^(\\[\\d+, ?\\d+])",
-                                      @"^(\", line \\d+, column \\d+)",
-                                      @"^(\\(\\d+, ?\\d+\\))"];
-    for (NSString *regex in regexes) {
-        NSString *value = [suffix stringByMatching:regex capture:1];
-        if (value) {
-            return value;
-        }
-    }
-    return @"";
-}
-
-- (NSArray *)pathsFromPath:(NSString *)source byRemovingBadSuffixes:(NSArray *)badSuffixes {
-    NSMutableArray *result = [NSMutableArray array];
-    [result addObject:source];
-    for (NSString *badSuffix in badSuffixes) {
-        if ([source hasSuffix:badSuffix]) {
-            NSString *stripped = [source substringToIndex:source.length - badSuffix.length];
-            if (stripped.length) {
-                [result addObject:stripped];
-            }
-        }
-    }
-    return result;
+- (id<iTermCancelable>)pathOfExistingFileFoundWithPrefix:(NSString *)beforeStringIn
+                                                  suffix:(NSString *)afterStringIn
+                                        workingDirectory:(NSString *)workingDirectory
+                                          trimWhitespace:(BOOL)trimWhitespace
+                                              completion:(void (^)(NSString *path,
+                                                                   int prefixChars,
+                                                                   int suffixChars,
+                                                                   BOOL workingDirectoryIsLocal))completion {
+    DLog(@"SemanticHistoryController got request for %@ + %@",
+          [beforeStringIn substringFromIndex:MAX(10, beforeStringIn.length) - 10],
+          [afterStringIn substringToIndex:MIN(afterStringIn.length, 10)]);
+    id<iTermCancelable> canceler =
+    [[iTermSlowOperationGateway sharedInstance] findExistingFileWithPrefix:beforeStringIn
+                                                                    suffix:afterStringIn
+                                                          workingDirectory:workingDirectory
+                                                            trimWhitespace:trimWhitespace
+                                                             pathsToIgnore:[iTermAdvancedSettingsModel pathsToIgnore]
+                                                        allowNetworkMounts:[iTermAdvancedSettingsModel enableSemanticHistoryOnNetworkMounts]
+                                                                completion:completion];
+    return canceler;
 }
 
 - (NSFileManager *)fileManager {
-    return [NSFileManager defaultManager];
+    return [iTermCachingFileManager cachingFileManager];
+}
+
+#pragma mark - iTermObject
+
+- (iTermBuiltInFunctions *)objectMethodRegistry {
+    return nil;
+}
+
+- (iTermVariableScope *)objectScope {
+    return nil;
 }
 
 @end

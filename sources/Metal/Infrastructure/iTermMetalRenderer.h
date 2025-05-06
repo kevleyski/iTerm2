@@ -15,18 +15,31 @@ NS_ASSUME_NONNULL_BEGIN
 // This is exposed because it's used to set the capacity of mixed-size buffer pools.
 extern const NSInteger iTermMetalDriverMaximumNumberOfFramesInFlight;
 
+@class iTermImageWrapper;
 @class iTermMetalRendererTransientState;
 
 NS_CLASS_AVAILABLE(10_11, NA)
 @interface iTermRenderConfiguration : NSObject
 @property (nonatomic, readonly) vector_uint2 viewportSize;
+@property (nonatomic, readonly) vector_uint2 viewportSizeExcludingLegacyScrollbars;
 @property (nonatomic, readonly) CGFloat scale;
 @property (nonatomic, readonly) BOOL hasBackgroundImage;
+@property (nonatomic, readonly) CGFloat rightExtraPixels;
+
+// NOT flipped. top means top, bottom means bottom.
+@property (nonatomic, readonly) NSEdgeInsets extraMargins;
+@property (nonatomic, readonly) CGFloat maximumExtendedDynamicRangeColorComponentValue;
+@property (nonatomic, readonly) NSColorSpace *colorSpace;
 
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithViewportSize:(vector_uint2)viewportSize
+                legacyScrollbarWidth:(unsigned int)legacyScrollbarWidth
                                scale:(CGFloat)scale
-                  hasBackgroundImage:(BOOL)hasBackgroundImage NS_DESIGNATED_INITIALIZER;
+                  hasBackgroundImage:(BOOL)hasBackgroundImage
+                        extraMargins:(NSEdgeInsets)extraMargins
+maximumExtendedDynamicRangeColorComponentValue:(CGFloat)maximumExtendedDynamicRangeColorComponentValue
+                          colorSpace:(NSColorSpace *)colorSpace
+                    rightExtraPixels:(CGFloat)rightExtraPixels NS_DESIGNATED_INITIALIZER;
 @end
 
 NS_CLASS_AVAILABLE(10_11, NA)
@@ -50,6 +63,11 @@ NS_CLASS_AVAILABLE(10_11, NA)
 @property (nonatomic, weak) iTermMetalDebugInfo *debugInfo;
 @property (nonatomic, strong) NSImage *renderedOutputForDebugging;
 @property (nonatomic) NSUInteger sequenceNumber;
+
+// These values are in points. Scissor rect will be used to prevent drawing in these regions.
+// Use them to prevent drawing over the offscreen command line (top) and the auto composer (bottom).
+@property (nonatomic) CGFloat suppressedTopHeight;
+@property (nonatomic) CGFloat suppressedBottomHeight;
 
 // You don't generally need to assign to this unless you plan to make more than one draw call.
 // You can get a pipeline state from the iTermMetal[Cell]Renderer. See its comments for details.
@@ -82,6 +100,8 @@ NS_CLASS_AVAILABLE(10_11, NA)
 
 // Use this for premultiplied blending.
 + (instancetype)compositeSourceOver;
+
++ (instancetype)atop;
 
 #if ENABLE_TRANSPARENT_METAL_WINDOWS
 + (instancetype)premultipliedCompositing;
@@ -118,10 +138,15 @@ NS_CLASS_AVAILABLE(10_11, NA)
 #pragma mark - For subclasses
 
 - (id<MTLBuffer>)newQuadOfSize:(CGSize)size poolContext:(iTermMetalBufferPoolContext *)poolContext;
+- (id<MTLBuffer>)newQuadOfSize:(CGSize)size origin:(CGPoint)origin poolContext:(iTermMetalBufferPoolContext *)poolContext;
 
 - (id<MTLBuffer>)newQuadWithFrame:(CGRect)quad  // pixel coordinates on viewport with 0,0 at bottom left
                      textureFrame:(CGRect)textureFrame  // normalized coordinates
                       poolContext:(iTermMetalBufferPoolContext *)poolContext;
+
+- (id<MTLBuffer>)newFlippedQuadWithFrame:(CGRect)quad
+                            textureFrame:(CGRect)textureFrame
+                             poolContext:(iTermMetalBufferPoolContext *)poolContext;
 
 // Things in Metal are randomly upside down for no good reason. So make it easy to flip them back.
 - (id<MTLBuffer>)newFlippedQuadOfSize:(CGSize)size poolContext:(iTermMetalBufferPoolContext *)poolContext;
@@ -134,8 +159,8 @@ NS_CLASS_AVAILABLE(10_11, NA)
                fragmentBuffers:(NSDictionary<NSNumber *, id<MTLBuffer>> *)fragmentBuffers
                       textures:(NSDictionary<NSNumber *, id<MTLTexture>> *)textures;
 
-- (nullable id<MTLTexture>)textureFromImage:(NSImage *)image context:(nullable iTermMetalBufferPoolContext *)context;
-- (nullable id<MTLTexture>)textureFromImage:(NSImage *)image context:(nullable iTermMetalBufferPoolContext *)context pool:(nullable iTermTexturePool *)pool;
+- (nullable id<MTLTexture>)textureFromImage:(iTermImageWrapper *)image context:(nullable iTermMetalBufferPoolContext *)context colorSpace:(NSColorSpace *)colorSpace;
+- (nullable id<MTLTexture>)textureFromImage:(iTermImageWrapper *)image context:(nullable iTermMetalBufferPoolContext *)context pool:(nullable iTermTexturePool *)pool colorSpace:(NSColorSpace *)colorSpace;
 
 - (id<MTLRenderPipelineState>)newPipelineWithBlending:(nullable iTermMetalBlending *)blending
                                        vertexFunction:(id<MTLFunction>)vertexFunction
@@ -145,5 +170,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
                                                                                commandBuffer:(id<MTLCommandBuffer>)commandBuffer;
 
 @end
+
+int iTermBitsPerSampleForPixelFormat(MTLPixelFormat format);
 
 NS_ASSUME_NONNULL_END

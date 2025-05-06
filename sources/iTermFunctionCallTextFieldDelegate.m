@@ -10,10 +10,14 @@
 #import "iTermAPIHelper.h"
 #import "iTermBuiltInFunctions.h"
 #import "iTermFunctionCallSuggester.h"
+#import "iTermVariableReference.h"
 #import "iTermVariableScope.h"
+#import "iTermVariables.h"
 #import "NSArray+iTerm.h"
 #import "NSDictionary+iTerm.h"
 #import "NSObject+iTerm.h"
+#import "NSView+iTerm.h"
+#import "iTermExpressionParser.h"
 
 @interface iTermFunctionCallTextFieldDelegate()<
     NSControlTextEditingDelegate>
@@ -26,7 +30,7 @@
 
 @implementation iTermFunctionCallTextFieldDelegate {
     iTermFunctionCallSuggester *_suggester;
-    __weak id _passthrough;
+    NSSet<NSString *> *(^_pathSource)(NSString *prefix);
 }
 
 - (instancetype)initWithPathSource:(NSSet<NSString *> *(^)(NSString *))pathSource
@@ -34,6 +38,7 @@
                 functionsOnly:(BOOL)functionsOnly {
     self = [super init];
     if (self) {
+        _functionsOnly = functionsOnly;
         NSDictionary<NSString *,NSArray<NSString *> *> *registeredSignatures =
             [iTermAPIHelper registeredFunctionSignatureDictionary];
         NSDictionary<NSString *,NSArray<NSString *> *> *bifSignatures =
@@ -43,8 +48,28 @@
         _suggester = [[suggesterClass alloc] initWithFunctionSignatures:combinedSignatures
                                                              pathSource:pathSource];
         _passthrough = passthrough;
+        _pathSource = pathSource;
     }
     return self;
+}
+
+- (BOOL)smellsLikeSessionContext:(NSString *)string {
+    iTermVariableRecordingScope *scope = [[iTermVariableRecordingScope alloc] initWithScope:[[iTermVariableScope alloc] init]];
+    iTermParsedExpression *expression = [iTermExpressionParser parsedExpressionWithInterpolatedString:string scope:scope];
+    if (!expression) {
+        return NO;
+    }
+    NSSet<NSString *> *(^sessionPathSource)(NSString *) = [iTermVariableHistory pathSourceForContext:iTermVariablesSuggestionContextSession];
+    for (iTermVariableReference *ref in scope.recordedReferences) {
+        if ([ref.path containsString:@"."]) {
+            continue;
+        }
+        if (![_pathSource(ref.path) containsObject:ref.path] &&
+            [sessionPathSource(ref.path) containsObject:ref.path]) {
+            return YES;
+        }
+    }
+    return NO;
 }
 
 - (void)controlTextDidChange:(NSNotification *)obj {
@@ -60,6 +85,13 @@
     self.backspaceKey = NO;
     if ([_passthrough respondsToSelector:_cmd]) {
         [_passthrough controlTextDidChange:obj];
+    }
+
+    if (self.canWarnAboutContextMistake &&
+        self.contextMistakeText &&
+        [self smellsLikeSessionContext:[fieldEditor string]]) {
+        [(NSView *)obj.object it_showWarning:self.contextMistakeText];
+        self.canWarnAboutContextMistake = NO;
     }
 }
 
@@ -168,6 +200,7 @@ doCommandBySelector:(SEL)commandSelector {
     if ([_passthrough respondsToSelector:_cmd]) {
         [_passthrough controlTextDidEndEditing:obj];
     }
+    self.canWarnAboutContextMistake = YES;
 }
 
 @end

@@ -7,7 +7,14 @@
 //
 
 #import <Foundation/Foundation.h>
+#import "VT100InlineImageHelper.h"
 #import "VT100Token.h"
+#import "iTermPromise.h"
+
+@class ParsedSSHOutput;
+@class VT100SavedColorsSlot;
+@class iTermKittyImageCommand;
+@class iTermTokenExecutorUnpauser;
 
 typedef NS_ENUM(NSInteger, MouseMode) {
     MOUSE_REPORTING_NONE = -1,
@@ -25,13 +32,6 @@ typedef NS_ENUM(NSInteger, VT100TerminalSemanticTextType) {
     kVT100TerminalSemanticTextTypeMax
 };
 
-typedef NS_ENUM(NSInteger, VT100TerminalUnits) {
-    kVT100TerminalUnitsCells,
-    kVT100TerminalUnitsPixels,
-    kVT100TerminalUnitsPercentage,
-    kVT100TerminalUnitsAuto,
-};
-
 typedef NS_ENUM(NSUInteger, VT100AttentionRequestType) {
     VT100AttentionRequestTypeStartBouncingDockIcon,
     VT100AttentionRequestTypeStopBouncingDockIcon,
@@ -43,8 +43,18 @@ typedef NS_ENUM(NSUInteger, VT100AttentionRequestType) {
 typedef NS_ENUM(int, VT100TerminalColorIndex) {
     VT100TerminalColorIndexText = -1,
     VT100TerminalColorIndexBackground = -2,
+    VT100TerminalColorIndexCursor = -3,
+    VT100TerminalColorIndexSelectionBackground = -4,
+    VT100TerminalColorIndexSelectionForeground = -5,
+
     VT100TerminalColorIndexFirst8BitColorIndex = 0,
     VT100TerminalColorIndexLast8BitColorIndex = 255
+};
+
+typedef NS_ENUM(NSUInteger, VT100TerminalProtectedMode) {
+    VT100TerminalProtectedModeNone = 0,
+    VT100TerminalProtectedModeISO = 1,
+    VT100TerminalProtectedModeDEC = 2
 };
 
 @protocol VT100TerminalDelegate <NSObject>
@@ -81,6 +91,8 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 
 // Returns if it's safe to send reports.
 - (BOOL)terminalShouldSendReport;
+
+- (void)terminalReportVariableNamed:(NSString *)variable;
 
 // Sends a report.
 - (void)terminalSendReport:(NSData *)report;
@@ -120,14 +132,25 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 // Scroll up one line.
 - (void)terminalReverseIndex;
 
+// Move cursor to the right/left one column, scrolling content left/right if at margin.
+- (void)terminalForwardIndex;
+- (void)terminalBackIndex;
+
 // Clear the screen, preserving the cursor's line.
-- (void)terminalResetPreservingPrompt:(BOOL)preservePrompt;
+- (void)terminalResetPreservingPrompt:(BOOL)preservePrompt modifyContent:(BOOL)modifyContent;
 
 // Changes the cursor type.
 - (void)terminalSetCursorType:(ITermCursorType)cursorType;
 
 // Changes whether the cursor blinks.
 - (void)terminalSetCursorBlinking:(BOOL)blinking;
+- (iTermPromise<NSNumber *> *)terminalCursorIsBlinkingPromise;
+
+// Reset type and blink to default
+- (void)terminalResetCursorTypeAndBlink;
+
+// Returns the current cursor style as a DECSCUSR param.
+- (void)terminalGetCursorInfoWithCompletion:(void (^)(ITermCursorType type, BOOL blinking))completion;
 
 // Sets the left/right scroll region.
 - (void)terminalSetLeftMargin:(int)scrollLeft rightMargin:(int)scrollRight;
@@ -142,14 +165,25 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 // Remove the tab stop at the cursor's current column.
 - (void)terminalRemoveTabStopAtCursor;
 
+// Sorted tab stops, 1-based.
+- (NSArray<NSNumber *> *)terminalTabStops;
+
+// Tab stops, 1 based. All numbers will be positive.
+- (void)terminalSetTabStops:(NSArray<NSNumber *> *)tabStops;
+
 // Tries to resize the screen to |width|.
-- (void)terminalSetWidth:(int)width;
+- (void)terminalSetWidth:(int)width
+          preserveScreen:(BOOL)preserveScreen
+           updateRegions:(BOOL)updateRegions
+            moveCursorTo:(VT100GridCoord)newCursorCoord
+              completion:(void (^)(void))completion;
 
 // Moves cursor to previous tab stop.
 - (void)terminalBackTab:(int)n;
 
 // Sets the cursor's x coordinate. 1-based.
 - (void)terminalSetCursorX:(int)x;
+- (void)terminalAdvanceCursorPastLastColumn;
 
 // Sets the cursor's y coordinate. 1-based.
 - (void)terminalSetCursorY:(int)y;
@@ -171,12 +205,18 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 
 // Sets the icon's title.
 - (void)terminalSetIconTitle:(NSString *)title;
+- (void)terminalSetSubtitle:(NSString *)subtitle;
 
 // Pastes a string to the shell.
-- (void)terminalPasteString:(NSString *)string;
+- (void)terminalCopyStringToPasteboard:(NSString *)string;
+- (void)terminalReportPasteboard:(NSString *)pasteboard;
 
 // Inserts |n| blank chars after the cursor, moving chars to the right of them over.
 - (void)terminalInsertEmptyCharsAtCursor:(int)n;
+
+// Shift line left by `n` chars.
+- (void)terminalShiftLeft:(int)n;
+- (void)terminalShiftRight:(int)n;
 
 // Inserts |n| blank lines after the cursor, moving lines below them down.
 - (void)terminalInsertBlankLinesAfterCursor:(int)n;
@@ -223,8 +263,8 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 - (int)terminalScreenWidthInCells;
 
 // Returns the current icon (tab)/window title.
-- (NSString *)terminalIconTitle;
-- (NSString *)terminalWindowTitle;
+- (void)terminalReportIconTitle;
+- (void)terminalReportWindowTitle;
 
 // Saves the current window/icon (depending on isWindow) title in a stack.
 - (void)terminalPushCurrentTitleForWindow:(BOOL)isWindow;
@@ -232,21 +272,20 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 // Restores the window/icon (depending on isWindow) title from a stack.
 - (void)terminalPopCurrentTitleForWindow:(BOOL)isWindow;
 
-// Posts a message to Notification center. Returns YES if the message was posted.
-- (BOOL)terminalPostUserNotification:(NSString *)message;
+// Posts a message to Notification center.
+- (void)terminalPostUserNotification:(NSString *)message;
+
+// Posts a rich notification message to Notification center.
+- (void)terminalPostUserNotification:(NSString *)message rich:(BOOL)rich;
 
 // Enters Tmux mode.
 - (void)terminalStartTmuxModeWithDCSIdentifier:(NSString *)dcsID;
 
 // Handles input during tmux mode. A single line of input will be in the token's string.
 - (void)terminalHandleTmuxInput:(VT100Token *)token;
+- (void)terminalDidTransitionOutOfTmuxMode;
 
-// Are we currently in tmux mode?
-- (BOOL)terminalInTmuxMode;
-
-// Returns the size of the terminal in cells.
-- (int)terminalWidth;
-- (int)terminalHeight;
+- (VT100GridSize)terminalSizeInCells;
 
 // Returns the size of a single cell. May contain non-integer values.
 - (NSSize)terminalCellSizeInPoints:(double *)scale;
@@ -303,20 +342,25 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 // empty string, are treated as the default pasteboard.
 - (void)terminalSetPasteboard:(NSString *)value;
 - (void)terminalCopyBufferToPasteboard;
-- (BOOL)terminalIsAppendingToPasteboard;
 - (void)terminalAppendDataToPasteboard:(NSData *)data;
 
 // Download of a base64-encoded file
-// nil = name unknown, -1 = size unknown.
-- (void)terminalWillReceiveFileNamed:(NSString *)name ofSize:(int)size;
+// nil = name unknown, -1 = size unknown. Return YES to accept it.
+- (void)terminalWillReceiveFileNamed:(NSString *)name
+                              ofSize:(NSInteger)size
+                          completion:(void (^)(BOOL ok))completion;
+
 - (void)terminalWillReceiveInlineFileNamed:(NSString *)name
-                                    ofSize:(int)size
+                                    ofSize:(NSInteger)size
                                      width:(int)width
                                      units:(VT100TerminalUnits)widthUnits
                                     height:(int)height
                                      units:(VT100TerminalUnits)heightUnits
                        preserveAspectRatio:(BOOL)preserveAspectRatio
-                                     inset:(NSEdgeInsets)inset;
+                                     inset:(NSEdgeInsets)inset
+                                      type:(NSString *)type
+                                 forceWide:(BOOL)forceWide
+                                completion:(void (^)(BOOL ok))completion;
 
 // Download completed normally
 - (void)terminalDidFinishReceivingFile;
@@ -349,6 +393,7 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 - (void)terminalSetCursorColor:(NSColor *)color;
 - (void)terminalSetCursorTextColor:(NSColor *)color;
 - (void)terminalSetColorTableEntryAtIndex:(VT100TerminalColorIndex)n color:(NSColor *)color;
+- (void)terminalResetColor:(VT100TerminalColorIndex)color;
 
 // Change the color tint of the current tab.
 - (void)terminalSetCurrentTabColor:(NSColor *)color;
@@ -361,6 +406,7 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 // Returns the current cursor position.
 - (int)terminalCursorX;
 - (int)terminalCursorY;
+- (BOOL)terminalWillAutoWrap;  // Is cursor just past the last column?
 
 // Shows/hides the cursor.
 - (void)terminalSetCursorVisible:(BOOL)visible;
@@ -368,7 +414,7 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 - (void)terminalSetHighlightCursorLine:(BOOL)highlight;
 
 // FinalTerm features
-- (void)terminalPromptDidStart;
+- (void)terminalPromptDidStart:(BOOL)wasInCommand;
 - (void)terminalCommandDidStart;
 - (void)terminalCommandDidEnd;
 - (void)terminalSemanticTextDidStartOfType:(VT100TerminalSemanticTextType)type;
@@ -393,8 +439,10 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 
 - (BOOL)terminalFocusReportingAllowed;
 - (BOOL)terminalCursorVisible;
+- (BOOL)terminalAllowAlternateMouseScroll;
 
 - (BOOL)terminalIsTrusted;
+- (BOOL)terminalCanUseDECRQCRA;
 
 - (void)terminalSetUnicodeVersion:(NSInteger)unicodeVersion;
 - (void)terminalSetColorNamed:(NSString *)name to:(NSString *)value;
@@ -411,11 +459,9 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 - (void)terminalDidFinishReceivingPasteboard;
 - (void)terminalPasteboardReceiptEndedUnexpectedly;
 
-- (NSString *)terminalValueOfVariableNamed:(NSString *)name;
-
 // Links
-- (void)terminalWillEndLinkWithCode:(unsigned short)code;
-- (void)terminalWillStartLinkWithCode:(unsigned short)code;
+- (void)terminalWillEndLinkWithURL:(iTermURL *)url;
+- (void)terminalWillStartLinkWithURL:(iTermURL *)url;
 
 // Custom escape sequences
 - (void)terminalCustomEscapeSequenceWithParameters:(NSDictionary<NSString *, NSString *> *)parameters
@@ -426,8 +472,79 @@ typedef NS_ENUM(int, VT100TerminalColorIndex) {
 - (void)terminalSynchronizedUpdate:(BOOL)begin;
 
 - (void)terminalReportFocusWillChangeTo:(BOOL)reportFocus;
+- (void)terminalPasteBracketingWillChangeTo:(BOOL)bracket;
 - (void)terminalSoftAlternateScreenModeDidChange;
 
 - (void)terminalReportKeyUpDidChange:(BOOL)reportKeyUp;
+
+- (void)terminalAppendSixelData:(NSData *)sixelData;
+
+- (void)terminalDidChangeSendModifiers;
+- (void)terminalKeyReportingFlagsDidChange;
+- (void)terminalClearCapturedOutput;
+
+- (BOOL)terminalIsInAlternateScreenMode;
+
+- (iTermPromise<NSString *> *)terminalStringForKeypressWithCode:(unsigned short)keycode
+                                                          flags:(NSEventModifierFlags)flags
+                                                     characters:(NSString *)characters
+                                    charactersIgnoringModifiers:(NSString *)charactersIgnoringModifiers;
+- (void)terminalApplicationKeypadModeDidChange:(BOOL)mode;
+- (NSString *)terminalTopBottomRegionString;
+- (NSString *)terminalLeftRightRegionString;
+
+- (VT100SavedColorsSlot *)terminalSavedColorsSlot;
+- (void)terminalRestoreColorsFromSlot:(VT100SavedColorsSlot *)slot;
+- (int)terminalMaximumTheoreticalImageDimension;
+- (void)terminalInsertColumns:(int)n;
+- (void)terminalDeleteColumns:(int)n;
+- (void)terminalSetAttribute:(int)sgrAttribute inRect:(VT100GridRect)rect;
+- (void)terminalToggleAttribute:(int)sgrAttribute inRect:(VT100GridRect)rect;
+- (void)terminalCopyFrom:(VT100GridRect)source to:(VT100GridCoord)dest;
+- (void)terminalFillRectangle:(VT100GridRect)rect withCharacter:(unichar)ch;
+- (void)terminalEraseRectangle:(VT100GridRect)rect;
+- (void)terminalSelectiveEraseRectangle:(VT100GridRect)rect;
+- (void)terminalSelectiveEraseInDisplay:(int)mode;
+- (void)terminalSelectiveEraseInLine:(int)mode;
+- (void)terminalProtectedModeDidChangeTo:(VT100TerminalProtectedMode)mode;
+- (VT100TerminalProtectedMode)terminalProtectedMode;
+
+- (dispatch_queue_t)terminalQueue;
+- (iTermTokenExecutorUnpauser *)terminalPause;
+- (void)terminalSendCapabilitiesReport;
+- (void)terminalDidHookSSHConductorWithParams:(NSString *)token;
+- (void)terminalDidReadSSHConductorLine:(NSString *)string depth:(int)depth;
+- (void)terminalDidUnhookSSHConductor;
+- (void)terminalDidBeginSSHConductorCommandWithIdentifier:(NSString *)identifier
+                                                    depth:(int)depth;
+- (void)terminalDidEndSSHConductorCommandWithIdentifier:(NSString *)identifier
+                                                   type:(NSString *)type
+                                                 status:(uint8_t)status
+                                                  depth:(int)depth;
+- (void)terminalHandleSSHSideChannelOutput:(NSString *)string
+                                       pid:(int32_t)pid
+                                   channel:(uint8_t)channel
+                                     depth:(int)depth;
+- (void)terminalDidReadRawSSHData:(NSData *)data
+                              pid:(int)pid
+                          channel:(int)channel;
+
+- (void)terminalHandleSSHTerminatePID:(int)pid withCode:(int)code depth:(int)depth;
+- (void)terminalUpdateEnv:(NSString *)value;
+- (void)terminalBeginSSHIntegeration:(NSString *)args;
+- (void)terminalSendConductor:(NSString *)args;
+- (void)terminalEndSSH:(NSString *)uniqueID;
+- (void)terminalBeginFramerRecoveryForChildOfConductorAtDepth:(int)parentDepth;
+- (void)terminalHandleFramerRecoveryString:(NSString *)string;
+- (void)terminalDidResynchronizeSSH;
+
+- (void)terminalDidExecuteToken:(VT100Token *)token;
+- (void)terminal:(VT100Terminal *)terminal willExecuteToken:(VT100Token *)token defaultChar:(const screen_char_t *)defaultChar encoding:(NSStringEncoding)encoding;
+- (void)terminalOpenURL:(NSURL *)url;
+- (void)terminalBlock:(NSString *)blockID start:(BOOL)start type:(NSString *)type render:(BOOL)render;
+- (void)terminalInsertCopyButtonForBlock:(NSString *)blockID;
+- (void)terminalSetPointerShape:(NSString *)pointerShape;
+- (void)terminalDidReceiveKittyImageCommand:(iTermKittyImageCommand *)kittyImageCommand;
+- (void)terminalStartWrappedCommand:(NSString *)command channel:(NSString *)uid;
 
 @end

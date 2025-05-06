@@ -16,8 +16,11 @@ NS_ASSUME_NONNULL_BEGIN
 // If you access this before calling evaluateWithTimeout you get the result of the synchronous
 // evaluation.
 @property (nonatomic, readonly) id value;
-@property (nonatomic, readonly) NSError *error;
-@property (nonatomic, readonly) NSSet<NSString *> *missingValues;
+@property (nullable, nonatomic, readonly) NSError *error;
+@property (nullable, nonatomic, readonly) NSSet<NSString *> *missingValues;
+@property (nonatomic) BOOL debug;
+@property (nullable, nonatomic, copy) NSString *(^escapingFunction)(NSString *string);
+@property (nullable, nonatomic, strong) NSDate *retryUntil;
 
 - (instancetype)initWithParsedExpression:(iTermParsedExpression *)parsedExpression
                               invocation:(NSString *)invocation
@@ -28,6 +31,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithInterpolatedString:(NSString *)interpolatedString
                                      scope:(iTermVariableScope *)scope;
+
+// Fails on undefined references
+- (instancetype)initWithStrictInterpolatedString:(NSString *)interpolatedString
+                                           scope:(iTermVariableScope *)scope;
 
 - (instancetype)init NS_UNAVAILABLE;
 

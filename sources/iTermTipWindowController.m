@@ -14,8 +14,9 @@
 #import "iTermTipCardActionButton.h"
 #import "iTermTipCardViewController.h"
 #import "iTermFlippedView.h"
-#import "NSView+iTerm.h"
 #import "NSImage+iTerm.h"
+#import "NSView+iTerm.h"
+#import "NSWorkspace+iTerm.h"
 #import "SolidColorView.h"
 
 #import <QuartzCore/QuartzCore.h>
@@ -34,6 +35,9 @@ static NSString *const kShowTipsDailyTitle = @"Show Tips Daily";
 static NSString *const kShareTitle = @"Share";
 
 static const CGFloat kWindowWidth = 400;
+
+static const CGFloat kWindowLeftMargin = 8;
+static const CGFloat kWindowTopMargin = 8;
 
 @interface iTermTipWindowController()<NSWindowDelegate>
 
@@ -67,6 +71,7 @@ static const CGFloat kWindowWidth = 400;
     NSMutableArray *_exitingCardViewControllers;
 
     iTermHotKey *_hotKey;
+    BOOL _dragging;
 }
 
 - (instancetype)initWithTip:(id)tip {
@@ -95,17 +100,22 @@ static const CGFloat kWindowWidth = 400;
 }
 
 - (void)awakeFromNib {
-    if (@available(macOS 10.14, *)) {
-        self.window.backgroundColor = [NSColor clearColor];
-    }
+    self.window.backgroundColor = [NSColor clearColor];
     [super awakeFromNib];
 }
 
 // Expanded means the "more options" is open.
 - (void)loadCardExpanded:(BOOL)expanded {
     iTermTipCardViewController *card =
-        [[[iTermTipCardViewController alloc] initWithNibName:@"iTermTipCardViewController"
-                                                      bundle:[NSBundle bundleForClass:self.class]] autorelease];
+    [[[iTermTipCardViewController alloc] initWithNibName:@"iTermTipCardViewController"
+                                                  bundle:[NSBundle bundleForClass:self.class]] autorelease];
+    __weak __typeof(self) weakSelf = self;
+    card.willDrag = ^{
+        [weakSelf willDrag];
+    };
+    card.didDrag = ^{
+        [weakSelf didDrag];
+    };
     self.cardViewController = card;
     [card view];
     card.titleString = self.tip.title;
@@ -114,6 +124,46 @@ static const CGFloat kWindowWidth = 400;
     [self addButtonsToCard:card expanded:expanded];
     [_intermediateView addSubview:_cardViewController.view];
     [self layoutCard:card animated:NO];
+
+    NSView *view = card.view;
+    while (view.superview) {
+        view.superview.accessibilityChildren = @[view];
+        view.accessibilityElement = NO;
+        view = view.superview;
+    }
+
+}
+
+- (void)willDrag {
+    _dragging = YES;
+}
+
+- (void)didDrag {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self saveWindowPosition];
+    });
+    _dragging = NO;
+}
+
+- (void)windowDidMove:(NSNotification *)notification {
+    if (_dragging) {
+        [self saveWindowPosition];
+    }
+}
+
+- (void)saveWindowPosition {
+    if (!self.window) {
+        return;
+    }
+    const NSRect frame = self.window.frame;
+    const NSRect screenFrame = self.window.screen.visibleFrame;
+    const NSSize offset = NSMakeSize(NSMinX(frame) - NSMinX(screenFrame) - kWindowLeftMargin,
+                                     NSMaxY(screenFrame) - NSMaxY(frame) - kWindowTopMargin);
+    [[NSUserDefaults standardUserDefaults] setObject:NSStringFromSize(offset) forKey:@"NoSyncTipOfTheDayOffset"];
+}
+
+- (NSSize)windowOffset {
+    return NSSizeFromString([[NSUserDefaults standardUserDefaults] objectForKey:@"NoSyncTipOfTheDayOffset"]);
 }
 
 // Add the standard buttons.
@@ -277,6 +327,8 @@ static const CGFloat kWindowWidth = 400;
     [self.window orderFront:nil];
 
     self.window.level = NSModalPanelWindowLevel;
+    self.window.accessibilityElement = YES;
+    self.window.accessibilityLabel = @"iTerm2 Tip of the Day";
     self.window.opaque = NO;
     self.window.alphaValue = 0;
 
@@ -299,6 +351,7 @@ static const CGFloat kWindowWidth = 400;
     if (!_hotKey) {
         NSString *characters = [NSString stringWithFormat:@"%c", 27];
         iTermShortcut *shortcut = [[[iTermShortcut alloc] initWithKeyCode:kVK_Escape
+                                                               hasKeyCode:YES
                                                                 modifiers:0
                                                                characters:characters
                                               charactersIgnoringModifiers:characters] autorelease];
@@ -324,11 +377,10 @@ static const CGFloat kWindowWidth = 400;
     frame.size.height = MAX(frame.size.height, card.view.frame.size.height);
     frame.origin = NSZeroPoint;
 
-    static const CGFloat kWindowLeftMargin = 8;
-    static const CGFloat kWindowTopMargin = 8;
     NSRect screenFrame = self.window.screen.visibleFrame;
-    NSRect windowFrame = NSMakeRect(NSMinX(screenFrame) + kWindowLeftMargin,
-                                    NSMaxY(screenFrame) - NSHeight(frame) - kWindowTopMargin,  // In case menu bar is hidden and later becomes visible
+    const NSSize offset = [self windowOffset];
+    NSRect windowFrame = NSMakeRect(NSMinX(screenFrame) + kWindowLeftMargin + offset.width,
+                                    NSMaxY(screenFrame) - NSHeight(frame) - kWindowTopMargin - offset.height,  // In case menu bar is hidden and later becomes visible
                                     frame.size.width,
                                     frame.size.height);
     [self setWindowFrame:windowFrame];
@@ -338,8 +390,9 @@ static const CGFloat kWindowWidth = 400;
         // Disable buttons until animation is done.
         self.buttonsEnabled = NO;
         CGFloat heightChange = card.postAnimationFrame.size.height - card.view.frame.size.height;
-        NSRect finalWindowFrame = NSMakeRect(NSMinX(screenFrame) + kWindowLeftMargin,
-                                             NSMaxY(screenFrame) - NSHeight(postAnimationFrame) - kWindowTopMargin,
+        const NSSize offset = [self windowOffset];
+        NSRect finalWindowFrame = NSMakeRect(NSMinX(screenFrame) + kWindowLeftMargin + offset.width,
+                                             NSMaxY(screenFrame) - NSHeight(postAnimationFrame) - kWindowTopMargin - offset.height,
                                              postAnimationFrame.size.width,
                                              postAnimationFrame.size.height);
 
@@ -390,7 +443,7 @@ static const CGFloat kWindowWidth = 400;
 }
 
 - (void)openURL {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:self.tip.url]];
+    [[NSWorkspace sharedWorkspace] it_openURL:[NSURL URLWithString:self.tip.url]];
     [self dismiss];
 }
 
@@ -555,6 +608,9 @@ static const CGFloat kWindowWidth = 400;
 
     if (_holdWindowSizeCount == 0 && _desiredWindowFrame.size.width > 0) {
         // Have a saved window shrink.
+        const NSSize offset = [self windowOffset];
+        _desiredWindowFrame.origin.x += offset.width;
+        _desiredWindowFrame.origin.y -= offset.height;
         [self.window setFrame:_desiredWindowFrame display:NO];
         _desiredWindowFrame.size.width = 0;
     }
@@ -570,6 +626,9 @@ static const CGFloat kWindowWidth = 400;
         _desiredWindowFrame = NSZeroRect;
     } else {
         _desiredWindowFrame = frame;
+        const NSSize offset = [self windowOffset];
+        _desiredWindowFrame.origin.x -= offset.width;
+        _desiredWindowFrame.origin.y += offset.height;
     }
 }
 

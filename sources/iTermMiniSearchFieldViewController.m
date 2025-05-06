@@ -9,23 +9,37 @@
 
 #import "DebugLogging.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "iTermApplication.h"
 #import "iTermFindDriver+Internal.h"
+#import "iTermFocusReportingTextField.h"
 #import "iTermSearchFieldCell.h"
+#import "iTermStoplightHotbox.h"
+#import "NSArray+iTerm.h"
 #import "NSColor+iTerm.h"
+#import "NSEvent+iTerm.h"
+#import "NSObject+iTerm.h"
 #import "NSTextField+iTerm.h"
+#import "PSMTabBarControl.h"
 
 @interface iTermMiniSearchFieldViewController ()
 
 @end
 
-@interface iTermMiniSearchField : NSSearchField
-@end
-
 @implementation iTermMiniSearchField
+
+- (BOOL)it_preferredFirstResponder {
+    return YES;
+}
 
 - (BOOL)becomeFirstResponder {
     [self.window.contentView setNeedsDisplay:YES];
     return [super becomeFirstResponder];
+}
+
+#pragma mark -- iTermHotboxSuppressing
+
+- (BOOL)supressesHotbox {
+    return YES;
 }
 
 @end
@@ -73,12 +87,28 @@
     [self updateSubviews];
 }
 
+- (BOOL)shouldUseLargeControls {
+    if (@available(macOS 11.0, *)) {
+        return (iTermAdvancedSettingsModel.statusBarHeight >= 32);
+    }
+    return NO;
+}
+
 - (void)updateSubviews {
     NSSize size = self.view.frame.size;
     NSSize searchFieldSize = _searchField.frame.size;
+    [_searchField sizeToFit];
+    searchFieldSize.height = _searchField.frame.size.height;
+
+    // Shift everything down by this amount.
+    const CGFloat globalOffset = PSMShouldExtendTransparencyIntoMinimalTabBar() ? -0.5 : 0;
 
     // This makes the arrows and close buttons line up visually.
-    const CGFloat verticalOffset = 1;
+    CGFloat verticalOffset = 1 + globalOffset;
+
+    if ([self shouldUseLargeControls]) {
+        verticalOffset = (searchFieldSize.height - _arrowsControl.frame.size.height) / 2.0;
+    }
 
     CGFloat closeWidth = 0;
     if (self.canClose) {
@@ -98,10 +128,49 @@
     const CGFloat margin = 3;
     const CGFloat leftMargin = 2;
     const CGFloat used = leftMargin + _arrowsControl.frame.size.width + closeWidth + margin;
-    _searchField.frame = NSMakeRect(leftMargin, 0, self.view.frame.size.width - used, searchFieldSize.height);
+    if (PSMShouldExtendTransparencyIntoMinimalTabBar()) {
+        _searchField.frame = NSMakeRect(leftMargin, 1 + globalOffset, self.view.frame.size.width - used, searchFieldSize.height);
+    } else {
+        _searchField.frame = NSMakeRect(leftMargin, globalOffset, self.view.frame.size.width - used, searchFieldSize.height);
+    }
+}
+
+- (void)setFont:(NSFont *)font {
+    _searchField.font = font;
+    if (@available(macOS 11.0, *)) {
+        if ([self shouldUseLargeControls]) {
+            _searchField.controlSize = NSControlSizeLarge;
+            _arrowsControl.controlSize = NSControlSizeLarge;
+            _closeButton.controlSize = NSControlSizeLarge;
+        }
+    }
+    [self updateSubviews];
+}
+
+- (void)performFindPanelAction:(id)sender {
+    [self.driver bottomUpPerformFindPanelAction:sender];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    if (menuItem.action == @selector(searchNextPrev:) ||
+        menuItem.action == @selector(changeMode:) ||
+        menuItem.action == @selector(closeButton:) ||
+        menuItem.action == @selector(eraseSearchHistory:)) {
+        menuItem.state = (menuItem.tag == self.driver.mode) ? NSControlStateValueOn : NSControlStateValueOff;
+        return YES;
+    }
+    if ([self.driver bottomUpValidateMenuItem:menuItem]) {
+        return YES;
+    }
+
+    return NO;
 }
 
 #pragma mark - iTermFindViewController
+
+- (void)countDidChange {
+    [_searchField setNeedsDisplay:YES];
+}
 
 - (BOOL)searchBarIsFirstResponder {
     return [_searchField textFieldIsFirstResponder];
@@ -145,6 +214,37 @@
 - (void)makeVisible {
     [self.view.window makeFirstResponder:_searchField];
     [_searchField selectText:nil];
+}
+
+- (void)setFilterHidden:(BOOL)filterHidden {
+}
+
+- (void)setFilterProgress:(double)progress {
+}
+
+- (void)setOffsetFromTopRightOfSuperview:(NSSize)offset {
+}
+
+- (void)toggleFilter {
+}
+
+- (BOOL)filterIsVisible {
+    return NO;
+}
+
+- (BOOL)searchIsVisible {
+    return YES;
+}
+
+- (BOOL)shouldSearchAutomatically {
+    return YES;
+}
+
+- (NSString *)filter {
+    return nil;
+}
+
+- (void)setFilter:(NSString *)filter {
 }
 
 - (void)setFrameOrigin:(NSPoint)p {
@@ -193,11 +293,29 @@
     [self.driver close];
 }
 
+- (IBAction)eraseSearchHistory:(id)sender {
+    [self.driver eraseSearchHistory];
+}
+
 #pragma mark - NSViewController
 
 - (BOOL)validateUserInterfaceItem:(NSMenuItem *)item {
-    item.state = (item.tag == self.driver.mode) ? NSOnState : NSOffState;
+    item.state = (item.tag == self.driver.mode) ? NSControlStateValueOn : NSControlStateValueOff;
     return YES;
+}
+
+#pragma mark - iTermFocusReportingSearchField
+
+- (void)focusReportingSearchFieldWillBecomeFirstResponder:(iTermFocusReportingSearchField *)sender {
+    [self.driver searchFieldWillBecomeFirstResponder:sender];
+}
+
+- (NSInteger)focusReportingSearchFieldNumberOfResults:(iTermFocusReportingSearchField *)sender {
+    return [self.driver numberOfResults];
+}
+
+- (NSInteger)focusReportingSearchFieldCurrentIndex:(iTermFocusReportingSearchField *)sender {
+    return [self.driver currentIndex];
 }
 
 #pragma mark - NSControl
@@ -207,8 +325,24 @@
     if (field != _searchField) {
         return;
     }
-    
-    [self.driver userDidEditSearchQuery:_searchField.stringValue];
+
+    [self.driver userDidEditSearchQuery:_searchField.stringValue
+                            fieldEditor:aNotification.userInfo[@"NSFieldEditor"]];
+}
+
+- (NSArray *)control:(NSControl *)control
+            textView:(NSTextView *)textView
+         completions:(NSArray *)words  // Dictionary words
+ forPartialWordRange:(NSRange)charRange
+ indexOfSelectedItem:(NSInteger *)index {
+    *index = -1;
+    return [self.driver completionsForText:[textView string]
+                                     range:charRange];
+}
+
+- (BOOL)becomeFirstResponder {
+    [self.driver searchFieldWillBecomeFirstResponder:_searchField];
+    return [super becomeFirstResponder];
 }
 
 - (BOOL)control:(NSControl *)control
@@ -217,8 +351,14 @@ doCommandBySelector:(SEL)commandSelector {
     if (control != _searchField) {
         return NO;
     }
-    
-    if (commandSelector == @selector(cancelOperation:)) {
+
+    if (NSApp.currentEvent.type == NSEventTypeKeyDown &&
+        [NSApp.currentEvent.charactersIgnoringModifiers isEqualToString:@"["] &&
+        (NSApp.currentEvent.it_modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagShift | NSEventModifierFlagControl)) == NSEventModifierFlagControl) {
+        // Control-[
+        [self.driver close];
+        return YES;
+    } else if (commandSelector == @selector(cancelOperation:)) {
         // Have the esc key close the find bar instead of erasing its contents.
         [self.driver close];
         return YES;
@@ -233,6 +373,7 @@ doCommandBySelector:(SEL)commandSelector {
         [self.driver copyPasteSelection];
         return YES;
     } else {
+        [self.driver doCommandBySelector:commandSelector];
         return NO;
     }
 }
@@ -242,7 +383,7 @@ doCommandBySelector:(SEL)commandSelector {
     if (postingObject != _searchField) {
         return;
     }
-    
+
     int move = [[[aNotification userInfo] objectForKey:@"NSTextMovement"] intValue];
     switch (move) {
         case NSOtherTextMovement:
@@ -251,7 +392,7 @@ doCommandBySelector:(SEL)commandSelector {
             break;
         case NSReturnTextMovement: {
             // Return key
-            const BOOL shiftPressed = ([[NSApp currentEvent] modifierFlags] & NSEventModifierFlagShift);
+            const BOOL shiftPressed = !!([[iTermApplication sharedApplication] it_modifierFlags] & NSEventModifierFlagShift);
             const BOOL swap = [iTermAdvancedSettingsModel swapFindNextPrevious];
             if  (!shiftPressed ^ swap) {
                 [self.driver searchNext];

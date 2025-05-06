@@ -7,9 +7,31 @@
 
 #import "iTermGenericStatusBarContainer.h"
 
-@implementation iTermGenericStatusBarContainer
+#import "iTermNotificationCenter.h"
+#import "iTermPreferenceDidChangeNotification.h"
+#import "iTermPreferences.h"
+#import "NSView+iTerm.h"
+
+@interface iTermStatusBarBacking : NSVisualEffectView
+@end
+
+@implementation iTermStatusBarBacking
+@end
+
+@implementation iTermGenericStatusBarContainer {
+    iTermStatusBarBacking *_backing NS_AVAILABLE_MAC(10_14);
+}
 
 @synthesize statusBarViewController = _statusBarViewController;
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.wantsLayer = YES;
+        self.layer.masksToBounds = NO;
+    }
+    return self;
+}
 
 - (void)resizeSubviewsWithOldSize:(NSSize)oldSize {
     [super resizeSubviewsWithOldSize:oldSize];
@@ -22,7 +44,9 @@
 }
 
 - (void)setStatusBarViewController:(iTermStatusBarViewController *)statusBarViewController {
-    [_statusBarViewController.view removeFromSuperview];
+    if ([self containsDescendant:_statusBarViewController.view]) {
+        [_statusBarViewController.view removeFromSuperview];
+    }
     _statusBarViewController = statusBarViewController;
     if (statusBarViewController) {
         [self addSubview:statusBarViewController.view];
@@ -31,15 +55,81 @@
 }
 
 - (void)layoutStatusBar {
-    _statusBarViewController.view.frame = NSMakeRect(0,
-                                                     0,
-                                                     self.frame.size.width,
-                                                     iTermStatusBarHeight);
+    const NSRect rect = NSMakeRect(0,
+                                   0,
+                                   self.frame.size.width,
+                                   iTermGetStatusBarHeight());
+    _backing.frame = rect;
+    _statusBarViewController.view.frame = rect;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    dirtyRect = NSIntersectionRect(dirtyRect, self.bounds);
     [[self.delegate genericStatusBarContainerBackgroundColor] set];
     NSRectFill(dirtyRect);
+}
+
+- (void)updateBackingVisible {
+    switch ((iTermPreferencesTabStyle)[iTermPreferences intForKey:kPreferenceKeyTabStyle]) {
+        case TAB_STYLE_MINIMAL:
+            _backing.hidden = YES;
+            break;
+
+        case TAB_STYLE_DARK:
+        case TAB_STYLE_LIGHT:
+        case TAB_STYLE_AUTOMATIC:
+        case TAB_STYLE_COMPACT:
+        case TAB_STYLE_DARK_HIGH_CONTRAST:
+        case TAB_STYLE_LIGHT_HIGH_CONTRAST:
+            _backing.hidden = NO;
+    }
+}
+
+- (BOOL)wantsDefaultClipping {
+    return NO;
+}
+
+- (void)viewDidMoveToWindow {
+    if (!_backing) {
+        _backing = [[iTermStatusBarBacking alloc] init];
+        _backing.wantsLayer = YES;
+        _backing.layer.masksToBounds = NO;
+        _backing.autoresizesSubviews = NO;
+        _backing.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+        _backing.material = NSVisualEffectMaterialTitlebar;
+        _backing.state = NSVisualEffectStateActive;
+        [self updateBackingVisible];
+        [self insertSubview:_backing atIndex:0];
+        __weak __typeof(self) weakSelf = self;
+        [iTermPreferenceDidChangeNotification subscribe:self block:^(iTermPreferenceDidChangeNotification * _Nonnull notification) {
+            if ([notification.key isEqualToString:kPreferenceKeyTabStyle]) {
+                [weakSelf updateBackingVisible];
+            }
+        }];
+    }
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    if (self.window) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(redraw)
+                                                     name:NSWindowDidBecomeKeyNotification
+                                                   object:self.window];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(redraw)
+                                                     name:NSWindowDidResignKeyNotification
+                                                   object:self.window];
+    }
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(redraw)
+                                                 name:NSApplicationDidBecomeActiveNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(redraw)
+                                                 name:NSApplicationDidResignActiveNotification
+                                               object:nil];
+}
+
+- (void)redraw {
+    [self setNeedsDisplay:YES];
 }
 
 @end

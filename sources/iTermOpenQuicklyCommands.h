@@ -15,11 +15,16 @@
 + (NSString *)command;
 
 - (BOOL)supportsSessionLocation;
+- (BOOL)supportsWindowLocation;
 - (BOOL)supportsCreateNewTab;
 - (BOOL)supportsChangeProfile;
 - (BOOL)supportsOpenArrangement;
 - (BOOL)supportsScript;
 - (BOOL)supportsColorPreset;
+- (BOOL)supportsAction;
+- (BOOL)supportsSnippet;
+- (BOOL)supportsNamedMarks;
+- (BOOL)supportsMenuItems;
 @end
 
 @interface iTermOpenQuicklyCommand : NSObject<iTermOpenQuicklyCommand>
@@ -30,6 +35,9 @@
 @end
 
 @interface iTermOpenQuicklySearchSessionsCommand : iTermOpenQuicklyCommand
+@end
+
+@interface iTermOpenQuicklySearchWindowsCommand : iTermOpenQuicklyCommand
 @end
 
 @interface iTermOpenQuicklySwitchProfileCommand : iTermOpenQuicklyCommand
@@ -45,4 +53,10 @@
 @end
 
 @interface iTermOpenQuicklyColorPresetCommand : iTermOpenQuicklyCommand
+@end
+
+@interface iTermOpenQuicklyActionCommand : iTermOpenQuicklyCommand
+@end
+
+@interface iTermOpenQuicklySnippetCommand : iTermOpenQuicklyCommand
 @end

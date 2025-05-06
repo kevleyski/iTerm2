@@ -1,12 +1,17 @@
 #import "iTermOpenQuicklyTextField.h"
+
+#import "NSEvent+iTerm.h"
+#import "NSObject+iTerm.h"
 #import "NSTextField+iTerm.h"
+
+#import <Carbon/Carbon.h>
 
 @implementation iTermOpenQuicklyTextField
 
 - (BOOL)performKeyEquivalent:(NSEvent *)theEvent {
     unsigned int modflag;
     unsigned short keycode;
-    modflag = [theEvent modifierFlags];
+    modflag = [theEvent it_modifierFlags];
     keycode = [theEvent keyCode];
 
     if (![self textFieldIsFirstResponder]) {
@@ -32,3 +37,25 @@
 }
 
 @end
+
+@implementation iTermOpenQuicklyTextView
+
+- (void)keyDown:(NSEvent *)event {
+    const NSEventModifierFlags mask = (NSEventModifierFlagOption |
+                                       NSEventModifierFlagCommand |
+                                       NSEventModifierFlagShift |
+                                       NSEventModifierFlagControl);
+    if (event.keyCode == kVK_Return && (event.modifierFlags & mask) == NSEventModifierFlagOption) {
+        iTermOpenQuicklyTextField *textField = [iTermOpenQuicklyTextField castFrom:self.delegate];
+        [textField.arrowHandler keyDown:event];
+        return;
+    }
+    if (event.keyCode == kVK_Escape) {
+        iTermOpenQuicklyTextField *textField = [iTermOpenQuicklyTextField castFrom:self.delegate];
+        [textField.arrowHandler keyDown:event];
+        return;
+    }
+    [super keyDown:event];
+}
+@end
+

@@ -22,17 +22,15 @@ static BOOL gShowingWarning;
 
 + (instancetype)warningActionWithLabel:(NSString *)label
                                  block:(iTermWarningActionBlock)block {
-    iTermWarningAction *warningAction = [[[self alloc] init] autorelease];
+    iTermWarningAction *warningAction = [[self alloc] init];
     warningAction.label = label;
     warningAction.block = block;
     return warningAction;
 }
 
-- (void)dealloc {
-    [_label release];
-    [_block release];
-    [_keyEquivalent release];
-    [super dealloc];
+- (NSString *)description {
+    return [NSString stringWithFormat:@"<%@: %p label=%@>",
+            NSStringFromClass([self class]), self, _label];
 }
 
 @end
@@ -43,8 +41,7 @@ static BOOL gShowingWarning;
 @implementation iTermWarning
 
 + (void)setWarningHandler:(id<iTermWarningHandler>)handler {
-    [gWarningHandler autorelease];
-    gWarningHandler = [handler retain];
+    gWarningHandler = handler;
 }
 
 + (id<iTermWarningHandler>)warningHandler {
@@ -125,7 +122,7 @@ static BOOL gShowingWarning;
                                       heading:(NSString *)heading
                                   cancelLabel:(NSString *)cancelLabel
                                        window:(NSWindow *)window {
-    iTermWarning *warning = [[[iTermWarning alloc] init] autorelease];
+    iTermWarning *warning = [[iTermWarning alloc] init];
     warning.title = title;
     warning.actionLabels = actions;
     warning.actionToSelectionMap = actionToSelectionMap;
@@ -142,24 +139,15 @@ static BOOL gShowingWarning;
     return [warning runModal];
 }
 
-- (void)dealloc {
-    [_title release];
-    [_warningActions release];
-    [_actionToSelectionMap release];
-    [_accessory release];
-    [_identifier release];
-    [_heading release];
-    [_cancelLabel release];
-    [_showHelpBlock release];
-    [_window release];
-    [_initialFirstResponder release];
-    [super dealloc];
+- (NSString *)description {
+    return [NSString stringWithFormat:@"<%@: %p title=%@ heading=%@ actions=%@ identifier=%@>",
+            NSStringFromClass([self class]), self, _title, _heading, _warningActions, _identifier];
 }
 
 - (void)setActionLabels:(NSArray<NSString *> *)actionLabels {
-    self.warningActions = [[[actionLabels mapWithBlock:^id(NSString *label) {
+    self.warningActions = [[actionLabels mapWithBlock:^id(NSString *label) {
         return [iTermWarningAction warningActionWithLabel:label block:nil];
-    }] mutableCopy] autorelease];
+    }] mutableCopy];
 }
 
 - (NSArray<NSString *> *)actionLabels {
@@ -187,6 +175,33 @@ static BOOL gShowingWarning;
         NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
         NSString *theKey = [self permanentlySilenceKeyForIdentifier:identifier];
         [userDefaults removeObjectForKey:theKey];
+    }
+}
+
++ (void)unsilenceIdentifier:(NSString *)identifier {
+    if (![self identifierIsSilenced:identifier]) {
+        return;
+    }
+    NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
+    NSString *theKey = [self permanentlySilenceKeyForIdentifier:identifier];
+    [userDefaults removeObjectForKey:theKey];
+}
+
++ (void)setIdentifier:(NSString *)identifier isSilenced:(BOOL)silenced {
+    NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
+    NSString *theKey = [self permanentlySilenceKeyForIdentifier:identifier];
+    [userDefaults removeObjectForKey:theKey];
+}
+
++ (void)setIdentifier:(NSString *)identifier permanentSelection:(iTermWarningSelection)selection {
+    NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
+    {
+        NSString *theKey = [self permanentlySilenceKeyForIdentifier:identifier];
+        [userDefaults setBool:YES forKey:theKey];
+    }
+    {
+        NSString *theKey = [self selectionKeyForIdentifier:identifier];
+        return [userDefaults setInteger:selection forKey:theKey];
     }
 }
 
@@ -227,19 +242,25 @@ static BOOL gShowingWarning;
     if (!gWarningHandler &&
         _warningType != kiTermWarningTypePersistent &&
         [self.class identifierIsSilenced:_identifier]) {
-        return [self.class savedSelectionForIdentifier:_identifier];
+        const iTermWarningSelection selection = [self.class savedSelectionForIdentifier:_identifier];
+        DLog(@"%@ is silenced with saved selection %@", self, @(selection));
+        return selection;
     }
 
-    NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+    NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = _heading ?: @"Warning";
     alert.informativeText = _title;
 
     for (iTermWarningAction *action in _warningActions) {
         [alert addButtonWithTitle:action.label];
+        NSButton *button = alert.buttons.lastObject;
+        if (@available(macOS 11, *)) {
+            button.hasDestructiveAction = action.destructive;
+        }
         if (action.keyEquivalent) {
-            alert.buttons.lastObject.keyEquivalent = action.keyEquivalent;
+            button.keyEquivalent = action.keyEquivalent;
         } else {
-            action.keyEquivalent = alert.buttons.lastObject.keyEquivalent;
+            action.keyEquivalent = button.keyEquivalent;
         }
     }
     [self assignKeyEquivalents];
@@ -247,11 +268,12 @@ static BOOL gShowingWarning;
         NSButton *button = alert.buttons[idx];
         if (!button.keyEquivalent.length) {
             button.keyEquivalent = action.keyEquivalent;
+            button.keyEquivalentModifierMask = NSEventModifierFlagCommand;
             if ([iTermAdvancedSettingsModel alertsIndicateShortcuts] && action.shortcutRange.length == 1) {
                 dispatch_async(dispatch_get_main_queue(),
                                ^{
-                                   NSMutableAttributedString *attributedString = [[[NSMutableAttributedString alloc] initWithString:button.title
-                                                                                                                         attributes:nil] autorelease];
+                                   NSMutableAttributedString *attributedString = [[NSMutableAttributedString alloc] initWithString:button.title
+                                                                                                                        attributes:nil];
                                    [attributedString setAttributes:@{ NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle) } range:action.shortcutRange];
                                    button.attributedTitle = attributedString;
                                });
@@ -295,13 +317,18 @@ static BOOL gShowingWarning;
     }
 
     if (_accessory) {
+        iTermAccessoryViewUnfucker *unfucker = [[iTermAccessoryViewUnfucker alloc] initWithView:_accessory];
         iTermDisclosableView *disclosableView = [iTermDisclosableView castFrom:_accessory];
         if (disclosableView) {
             disclosableView.requestLayout = ^{
+                [unfucker layout];
+                [alert layout];
                 [alert layout];
             };
+            [unfucker layout];
         }
-        [alert setAccessoryView:_accessory];
+
+        [alert setAccessoryView:unfucker];
         if (_initialFirstResponder) {
             alert.window.initialFirstResponder = _initialFirstResponder;
         }
@@ -315,12 +342,14 @@ static BOOL gShowingWarning;
     if (gWarningHandler) {
         result = [gWarningHandler warningWouldShowAlert:alert identifier:_identifier];
     } else {
+        DLog(@"Show warning %@\n%@", self, [NSThread callStackSymbols]);
         gShowingWarning = YES;
         if (self.window) {
             result = [alert runSheetModalForWindow:self.window];
         } else {
             result = [alert runModal];
         }
+        DLog(@"Result for %@ is %@", self, @(result));
         gShowingWarning = NO;
     }
 
@@ -348,7 +377,8 @@ static BOOL gShowingWarning;
     }
 
     // Save info if suppression was enabled.
-    if (remember && alert.suppressionButton.state == NSOnState) {
+    if (remember && alert.suppressionButton.state == NSControlStateValueOn) {
+        DLog(@"Remember selection for %@", self);
         NSUserDefaults *userDefaults = [NSUserDefaults standardUserDefaults];
         if (_warningType == kiTermWarningTypeTemporarilySilenceable) {
             NSString *theKey = [self.class temporarySilenceKeyForIdentifier:_identifier];
@@ -365,7 +395,7 @@ static BOOL gShowingWarning;
         [[NSUserDefaults standardUserDefaults] setObject:@(selection)
                                                   forKey:[self.class selectionKeyForIdentifier:_identifier]];
     }
-
+    DLog(@"Return selection %@ for %@", @(selection), self);
     return selection;
 }
 

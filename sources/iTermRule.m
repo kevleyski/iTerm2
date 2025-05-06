@@ -8,11 +8,13 @@
 
 #import "iTermRule.h"
 #import "NSStringITerm.h"
+#import "RegexKitLite.h"
 
 @interface iTermRule()
 @property(nonatomic, copy) NSString *username;
 @property(nonatomic, copy) NSString *hostname;
 @property(nonatomic, copy) NSString *path;
+@property(nonatomic, copy) NSString *job;
 @property(nonatomic, readwrite) BOOL sticky;
 @end
 
@@ -28,6 +30,14 @@
     // username@*:path
     // hostname:path
     // /path
+    // &job
+    // hostname&job
+    // username@&job
+    // username@hostname&job
+    // username@hostname:path&job
+    // username@*:path&job
+    // hostname:path&job
+    // /path&job
 
     NSString *username = nil;
     NSString *hostname = nil;
@@ -38,6 +48,14 @@
         sticky = YES;
         string = [string substringFromIndex:1];
     }
+
+    NSInteger ampersand = [string rangeOfString:@"&"].location;
+    NSString *job = nil;
+    if (ampersand != NSNotFound) {
+        job = [string substringFromIndex:ampersand + 1];
+        string = [string substringToIndex:ampersand];
+    }
+
     NSUInteger atSign = [string rangeOfString:@"@"].location;
     NSUInteger colon = [string rangeOfString:@":"].location;
 
@@ -68,28 +86,18 @@
         // host
         hostname = string;
     }
-    if ([hostname isEqualToString:@"*"]) {
-        // user@*:path or *:path
-        hostname = nil;
-    }
-    iTermRule *rule = [[[iTermRule alloc] init] autorelease];
+    iTermRule *rule = [[iTermRule alloc] init];
     rule.username = username;
     rule.hostname = hostname;
     rule.path = path;
     rule.sticky = sticky;
+    rule.job = job;
     return rule;
 }
 
-- (void)dealloc {
-  [_hostname release];
-  [_username release];
-  [_path release];
-  [super dealloc];
-}
-
 - (NSString *)description {
-    return [NSString stringWithFormat:@"<%@: %p hostname=%@ username=%@ path=%@>",
-            [self class], self, self.hostname, self.username, self.path];
+    return [NSString stringWithFormat:@"<%@: %p hostname=%@ username=%@ path=%@ job=%@>",
+            [self class], self, self.hostname, self.username, self.path, self.job];
 }
 
 // This is a monotonically increasing function whose range is [0, 1) for the domain of nonnegative
@@ -102,21 +110,45 @@
 
 - (double)scoreForHostname:(NSString *)hostname
                   username:(NSString *)username
-                      path:(NSString *)path {
-    const int kHostExactMatchScore = 8;
-    const int kHostPartialMatchScore = 4;
-
-    const int kUserExactMatchScore = 2;
-
-    const int kPathExactMatchScore = 1;
+                      path:(NSString *)path
+                       job:(NSString *)job {
+    int acc = 1;
     const int kPathPartialMatchScore = 0;
+    const int kCatchallRuleScore = acc;
+    acc *= 2;
+    const int kPathExactMatchScore = acc;
+    acc *= 2;
+    const int kUserExactMatchScore = acc;
+    acc *= 2;
+    const int kJobMatchScore = acc;
+    acc *= 2;
+    const int kHostPartialMatchScore = acc;
+    acc *= 2;
+    const int kHostExactMatchScore = acc;
 
     double score = 0;
+
+    if (self.job) {
+        if (![job stringMatchesGlobPattern:self.job caseSensitive:YES]) {
+            return 0;
+        }
+        score += kJobMatchScore;
+    }
 
     if (self.hostname != nil) {
         NSRange wildcardPos = [self.hostname rangeOfString:@"*"];
         if (wildcardPos.location == NSNotFound && [hostname isEqualToString:self.hostname]) {
             score += kHostExactMatchScore;
+        } else if ([self.hostname isEqualToString:@"*"]) {
+            if (![self haveAnyComponentBesidesHostname]) {
+                // This is for backward compatibility. Previously, a hostname of * would be treated the
+                // same as not having a host name at all. That made sense from a scoring POV because
+                // you shouldn't get a higher score than a profile that doesn't specify a hostname at
+                // all, as they are exactly equivalent. However, if you specify only a hostname of *
+                // that should outrank a profile without any APS rules at all. I decided to give the
+                // lowest possible score because it's a catch-all, so any other rule should outrank it.
+                score += kCatchallRuleScore;
+            }
         } else if ([hostname stringMatchesGlobPattern:self.hostname caseSensitive:NO]) {
             score += kHostPartialMatchScore * (1.0 + [self squash:self.hostname.length]);
         } else if (self.hostname.length) {
@@ -131,16 +163,18 @@
     }
 
     if (self.path != nil) {
-        // Make sure path ends in a / so a path glob pattern "/foo/bar/*" will match a path of "/foo/bar".
-        NSString *pathForGlob = path;
-        if (![pathForGlob hasSuffix:@"/"]) {
-            pathForGlob = [pathForGlob stringByAppendingString:@"/"];
+        // An augmented path ends in a / so a path glob pattern "/foo/bar/*" will match a path of "/foo/bar".
+        // The regular path is also tested so that the glob pattern "/foo/*" will match a path of "/foo/bar"
+        NSString *augmentedPath = path;
+        if (![augmentedPath hasSuffix:@"/"]) {
+            augmentedPath = [augmentedPath stringByAppendingString:@"/"];
         }
 
         NSRange wildcardPos = [self.path rangeOfString:@"*"];
         if (wildcardPos.location == NSNotFound && [path isEqualToString:self.path]) {
             score += kPathExactMatchScore;
-        } else if ([pathForGlob stringMatchesGlobPattern:self.path caseSensitive:YES]) {
+        } else if ([augmentedPath stringMatchesGlobPattern:self.path caseSensitive:YES] ||
+                   [path stringMatchesGlobPattern:self.path caseSensitive:YES]) {
             score += kPathPartialMatchScore + [self squash:self.path.length];
         } else if (self.path.length) {
             return 0;
@@ -148,6 +182,12 @@
     }
 
     return score;
+}
+
+- (BOOL)haveAnyComponentBesidesHostname {
+    return (self.username != nil ||
+            self.path != nil ||
+            self.job != nil);
 }
 
 @end

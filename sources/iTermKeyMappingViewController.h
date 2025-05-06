@@ -8,34 +8,37 @@
 
 #import <Cocoa/Cocoa.h>
 
+#import "iTermKeystroke.h"
+
+@class iTermKeyBindingAction;
 @class iTermKeyMappingViewController;
+@class iTermPreferencesBaseViewController;
 
 @protocol iTermKeyMappingViewControllerDelegate <NSObject>
 
 - (NSDictionary *)keyMappingDictionary:(iTermKeyMappingViewController *)viewController;
 
-- (NSArray *)keyMappingSortedKeys:(iTermKeyMappingViewController *)viewController;
-- (NSArray *)keyMappingSortedTouchBarKeys:(iTermKeyMappingViewController *)viewController;
+- (NSArray<iTermKeystroke *> *)keyMappingSortedKeystrokes:(iTermKeyMappingViewController *)viewController;
+- (NSArray<iTermTouchbarItem *> *)keyMappingSortedTouchbarItems:(iTermKeyMappingViewController *)viewController;
 
 - (NSDictionary *)keyMappingTouchBarItems;
 
 - (void)keyMapping:(iTermKeyMappingViewController *)viewController
-      didChangeKey:(NSString *)keyCombo
-    isTouchBarItem:(BOOL)isTouchBarItem
+     didChangeItem:(iTermKeystrokeOrTouchbarItem *)item
            atIndex:(NSInteger)index
-          toAction:(int)action
-         parameter:(NSString *)parameter
-             label:(NSString *)label
+          toAction:(iTermKeyBindingAction *)action
         isAddition:(BOOL)addition;
 
 - (void)keyMapping:(iTermKeyMappingViewController *)viewController
-         removeKey:(NSString *)keyCombo
-    isTouchBarItem:(BOOL)isTouchBarItem;
+  removeKeystrokes:(NSSet<iTermKeystroke *> *)keyCombos
+     touchbarItems:(NSSet<iTermTouchbarItem *> *)touchBarItems;
 
 - (NSArray *)keyMappingPresetNames:(iTermKeyMappingViewController *)viewController;
 
 - (void)keyMapping:(iTermKeyMappingViewController *)viewController
     loadPresetsNamed:(NSString *)presetName;
+
+- (BOOL)keyMapping:(iTermKeyMappingViewController *)viewController shouldImportKeystrokes:(NSSet<iTermKeystroke *> *)keys;
 
 @end
 
@@ -45,7 +48,13 @@
 
 @property(nonatomic, weak) IBOutlet id<iTermKeyMappingViewControllerDelegate> delegate;
 @property(nonatomic, strong) IBOutlet NSView *placeholderView;
+@property(nonatomic) BOOL hapticFeedbackForEscEnabled;
+@property(nonatomic) BOOL soundForEscEnabled;
+@property(nonatomic) BOOL visualIndicatorForEscEnabled;
 
 - (void)hideAddTouchBarItem;
+- (void)addViewsToSearchIndex:(iTermPreferencesBaseViewController *)vc;
+- (NSNumber *)removeBeforeLoading:(NSString *)thing;
+- (void)reloadData;
 
 @end

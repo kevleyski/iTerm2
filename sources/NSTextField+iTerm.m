@@ -8,6 +8,7 @@
 
 #import "NSTextField+iTerm.h"
 
+#import "NSArray+iTerm.h"
 #import "NSStringITerm.h"
 #import "RegexKitLite.h"
 
@@ -20,7 +21,7 @@
     result.editable = NO;
     result.selectable = NO;
     result.drawsBackground = NO;
-    result.usesSingleLineMode = YES;
+    result.usesSingleLineMode = YES;  // THIS CAUSES -sizeToFit TO MISBEHAVE
     result.identifier = identifier;
     return result;
 }
@@ -37,7 +38,7 @@
 }
 
 + (instancetype)newLabelStyledTextField {
-    NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 0, 22)];
+    NSTextField *label = [[self alloc] initWithFrame:NSMakeRect(0, 0, 0, 22)];
     label.editable = NO;
     label.stringValue = @"";
     label.font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
@@ -62,11 +63,7 @@
 }
 
 - (void)setLabelEnabled:(BOOL)enabled {
-    if (@available(macOS 10.14, *)) {
-        self.textColor = enabled ? [NSColor labelColor] : [NSColor disabledControlTextColor];
-    } else {
-        self.textColor = enabled ? [NSColor blackColor] : [NSColor disabledControlTextColor];
-    }
+    self.textColor = enabled ? [NSColor labelColor] : [NSColor disabledControlTextColor];
 }
 
 - (int)separatorTolerantIntValue {
@@ -109,6 +106,43 @@
     [superview addSubview:link];
 
     return link;
+}
+
+- (NSRect)popupWindowHostingInsertionPointFrameInScreenCoordinates {
+    // Get the field editor for the text field
+    NSTextView *fieldEditor = (NSTextView *)[self.window fieldEditor:YES forObject:self];
+
+    // Get the glyph range for the insertion point
+    NSRange glyphRange = [fieldEditor.layoutManager glyphRangeForCharacterRange:fieldEditor.selectedRange
+                                                           actualCharacterRange:nil];
+
+    // Get the bounding rect for the glyph range
+    NSRect boundingRect = [fieldEditor.layoutManager boundingRectForGlyphRange:glyphRange
+                                                               inTextContainer:fieldEditor.textContainer];
+
+    // Convert the rect to window coordinates
+    NSRect windowRect = [fieldEditor convertRect:boundingRect toView:nil];
+
+    // Convert the rect to screen coordinates
+    NSRect screenRect = [self.window convertRectToScreen:windowRect];
+
+    return screenRect;
+}
+
+- (NSArray<NSString *> *)wordsBeforeInsertionPoint:(NSInteger)count {
+    NSString *text = self.stringValue ?: @"";
+    NSArray<NSString *> *words = [[text lastWords:count] reversed];
+    if ([text endsWithWhitespace]) {
+        return [words arrayByAddingObject:@""];
+    }
+    return words;
+}
+
+- (void)popupWindowHostingInsertText:(NSString *)string {
+    [self insertText:string];
+}
+
+- (void)popupWindowHostSetPreview:(NSString *)string {
 }
 
 @end

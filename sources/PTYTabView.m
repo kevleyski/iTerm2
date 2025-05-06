@@ -26,10 +26,17 @@
 
 #import "PTYTabView.h"
 
+#import "DebugLogging.h"
+#import "iTermAdvancedSettingsModel.h"
+#import "iTermSwipeTracker.h"
+
 const NSUInteger kAllModifiers = (NSEventModifierFlagControl |
                                   NSEventModifierFlagCommand |
                                   NSEventModifierFlagOption |
                                   NSEventModifierFlagShift);
+
+@interface PTYTabView()<iTermSwipeTrackerDelegate>
+@end
 
 @implementation PTYTabView {
     // Holds references to tabs with the most recently used one at index 0 and least recently used
@@ -43,6 +50,9 @@ const NSUInteger kAllModifiers = (NSEventModifierFlagControl |
     // Modifiers that are being used for cycling tabs. Only valid if _isCyclingWithModifierPressed
     // is YES.
     NSUInteger _cycleModifierFlags;
+
+    // For handling swipe outside PTYTextView, such as on pane title bar.
+    iTermSwipeTracker *_swipeTracker;
 }
 
 @dynamic delegate;
@@ -51,14 +61,11 @@ const NSUInteger kAllModifiers = (NSEventModifierFlagControl |
     self = [super initWithFrame:aRect];
     if (self) {
         _tabViewItemsInMRUOrder = [[NSMutableArray alloc] init];
+        _swipeTracker = [[iTermSwipeTracker alloc] init];
+        _swipeTracker.delegate = self;
     }
 
     return self;
-}
-
-- (void)dealloc {
-    [_tabViewItemsInMRUOrder release];
-    [super dealloc];
 }
 
 #pragma mark - NSView
@@ -71,6 +78,7 @@ const NSUInteger kAllModifiers = (NSEventModifierFlagControl |
     if (self.drawsBackground) {
         if ([self.window.appearance.name isEqual:NSAppearanceNameVibrantDark]) {
             [[NSColor blackColor] set];
+            dirtyRect = NSIntersectionRect(dirtyRect, self.bounds);
             NSRectFill(dirtyRect);
         } else {
             [super drawRect:dirtyRect];
@@ -92,18 +100,36 @@ const NSUInteger kAllModifiers = (NSEventModifierFlagControl |
     [super addTabViewItem:aTabViewItem];
 }
 
-- (void)removeTabViewItem:(NSTabViewItem *) aTabViewItem {
-    // Let our delegate know
+- (void)removeTabViewItem:(NSTabViewItem *)tabViewItemToRemove {
+    // Let our delegate know.
     id<PSMTabViewDelegate> delegate = self.delegate;
-
     if ([delegate conformsToProtocol:@protocol(PSMTabViewDelegate)]) {
-        [delegate tabView:self willRemoveTabViewItem:aTabViewItem];
+        [delegate tabView:self willRemoveTabViewItem:tabViewItemToRemove];
     }
 
-    [_tabViewItemsInMRUOrder removeObject:aTabViewItem];
+    [_tabViewItemsInMRUOrder removeObject:tabViewItemToRemove];
 
-    // remove the item
-    [super removeTabViewItem:aTabViewItem];
+    if (self.selectedTabViewItem == tabViewItemToRemove) {
+        // Select the next tab to the right if possible
+        NSArray<NSTabViewItem *> *items = self.tabViewItems;
+        NSInteger index = [items indexOfObject:tabViewItemToRemove];
+        if (index != NSNotFound) {
+            if ([iTermAdvancedSettingsModel addNewTabAtEndOfTabs]) {
+                if (index + 1 < items.count) {
+                    [self selectTabViewItem:items[index + 1]];
+                }
+            } else {
+                if (index == 0 && items.count > 1) {
+                    [self selectTabViewItem:items[1]];
+                } else if (index > 0) {
+                    [self selectTabViewItem:items[index - 1]];
+                }
+            }
+        }
+    }
+
+    // Remove the item.
+    [super removeTabViewItem:tabViewItemToRemove];
 }
 
 - (void)insertTabViewItem:(NSTabViewItem *)tabViewItem atIndex:(NSInteger)theIndex {
@@ -196,6 +222,26 @@ const NSUInteger kAllModifiers = (NSEventModifierFlagControl |
         // While this looks like a no-op, it has the effect of re-ordering the MRU list.
         [self selectTabViewItem:[self selectedTabViewItem]];
     }
+}
+
+- (void)scrollWheel:(NSEvent *)event {
+    DLog(@"%@", event);
+    if (![_swipeTracker handleEvent:event]) {
+        [super scrollWheel:event];
+    }
+}
+
+#pragma mark - iTermSwipeTrackerDelegate
+
+- (iTermSwipeState *)swipeTrackerWillBeginNewSwipe:(iTermSwipeTracker *)tracker {
+    if (!self.swipeHandler) {
+        return nil;
+    }
+    return [[iTermSwipeState alloc] initWithSwipeHandler:self.swipeHandler];
+}
+
+- (BOOL)swipeTrackerShouldBeginNewSwipe:(iTermSwipeTracker *)tracker {
+    return [self.swipeHandler swipeHandlerShouldBeginNewSwipe];
 }
 
 @end

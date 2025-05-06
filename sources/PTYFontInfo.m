@@ -11,25 +11,34 @@
 #import "DebugLogging.h"
 #import "FontSizeEstimator.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "NSObject+iTerm.h"
 
 @implementation NSFont(PTYFontInfo)
 
+// System fonts never have ligatures and are commonly used. Don't offer ligatures for them to avoid
+// hitting the much slower ligature code paths.
 - (BOOL)it_fontIsOnLigatureBlacklist {
     static NSSet<NSString *> *blacklist;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        blacklist = [[NSSet setWithArray:@[ @"AndaleMono",
-                                            @"Courier",
-                                            @"LetterGothicStd",
-                                            @"Menlo",
-                                            @"Monaco",
-                                            @"OCRAStd",
-                                            @"OratorStd",
-                                            @"Osaka",
-                                            @"PTMono",
-                                            @"SFMono" ]] retain];
+        blacklist = [NSSet setWithArray:@[ @"AndaleMono",
+                                           @"Courier",
+                                           @"LetterGothicStd",
+                                           @"Monaco",
+                                           @"OCRAStd",
+                                           @"OratorStd",
+                                           @"Osaka",
+                                           @"PTMono",
+                                           @"SFMono" ]];
     });
     NSString *myName = self.fontName;
+    if ([myName hasPrefix:@"MenloNF"]) {
+        return NO;
+    }
+    if ([myName containsString:@"Ligaturized"]) {
+        // Exception for MonacoLigaturizedNFM. Issue 11986.
+        return NO;
+    }
     for (NSString *blacklistedNamePrefix in blacklist) {
         if ([myName hasPrefix:blacklistedNamePrefix]) {
             return YES;
@@ -38,6 +47,12 @@
     return NO;
 }
 
+// This function is obviously an embarrassment.
+// You might think you could look at the font's features (which you can get through
+// fontAttributes[NSFontFeatureSettingsAttribute] and thn looking for the
+// attribute with type kLigaturesType) but it often lies. For example, MenloNF
+// and FiraCode don't indicate ligature support there.
+// All we do here is mitigate the worst outcomes.
 - (NSInteger)it_ligatureLevel {
     if ([self.fontName hasPrefix:@"Iosevka"]) {
         return 2;
@@ -54,7 +69,7 @@
     static NSSet *fontsWithDefaultLigatures;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        fontsWithDefaultLigatures = [[NSSet setWithArray:@[ ]] retain];
+        fontsWithDefaultLigatures = [NSSet setWithArray:@[ ]];
     });
     BOOL result = [fontsWithDefaultLigatures containsObject:self.fontName];
     DLog(@"Default ligatures for '%@' is %@", self.fontName, @(result));
@@ -72,6 +87,19 @@
 @synthesize font = font_;
 @synthesize boldVersion = boldVersion_;
 @synthesize italicVersion = italicVersion_;
+
+- (id)copyWithZone:(NSZone *)zone {
+    PTYFontInfo *copy = [[PTYFontInfo alloc] init];
+    copy->font_ = font_;
+    copy->boldVersion_ = [boldVersion_ copy];
+    copy->italicVersion_ = [italicVersion_ copy];
+    copy->_baselineOffset = _baselineOffset;
+    copy->_underlineOffset = _underlineOffset;
+    copy->_boldItalicVersion = [_boldItalicVersion copy];
+    copy->_ligatureLevel = _ligatureLevel;
+    copy->_hasDefaultLigatures = _hasDefaultLigatures;
+    return copy;
+}
 
 + (PTYFontInfo *)fontForAsciiCharacter:(BOOL)isAscii
                              asciiFont:(PTYFontInfo *)asciiFont
@@ -122,22 +150,14 @@
 }
 
 + (PTYFontInfo *)fontInfoWithFont:(NSFont *)font {
-    PTYFontInfo *fontInfo = [[[PTYFontInfo alloc] init] autorelease];
+    PTYFontInfo *fontInfo = [[PTYFontInfo alloc] init];
     fontInfo.font = font;
     return fontInfo;
 }
 
-- (void)dealloc {
-    [font_ release];
-    [boldVersion_ release];
-    [italicVersion_ release];
-    [_boldItalicVersion release];
-    [super dealloc];
-}
-
 - (void)setFont:(NSFont *)font {
-    [font_ autorelease];
-    font_ = [font retain];
+    assert(font != nil);
+    font_ = font;
 
     _ligatureLevel = font.it_ligatureLevel;
     _hasDefaultLigatures = font.it_defaultLigatures;
@@ -162,7 +182,7 @@
         NSLayoutManager *layoutManager = [FontSizeEstimator layoutManagerForFont:font_ textContainer:textContainer];
         CGFloat lineHeight = [layoutManager usedRectForTextContainer:textContainer].size.height;
         CGFloat baselineOffsetFromTop = [layoutManager defaultBaselineOffsetForFont:font_];
-        return -floorf(lineHeight - baselineOffsetFromTop);
+        return -round(lineHeight - baselineOffsetFromTop);
     } else {
         return -(floorf(font_.leading) - floorf(self.descender));
     }
@@ -170,13 +190,13 @@
 
 // From https://github.com/DrawKit/DrawKit/blob/master/framework/Code/NSBezierPath%2BText.m#L648
 - (CGFloat)computedUnderlineOffset {
-    NSLayoutManager *layoutManager = [[[NSLayoutManager alloc] init] autorelease];
-    NSTextContainer *textContainer = [[[NSTextContainer alloc] init] autorelease];
+    NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
+    NSTextContainer *textContainer = [[NSTextContainer alloc] init];
     [layoutManager addTextContainer:textContainer];
     NSDictionary *attributes = @{ NSFontAttributeName: font_,
                                   NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle) };
-    NSAttributedString *attributedString = [[[NSAttributedString alloc] initWithString:@"M" attributes:attributes] autorelease];
-    NSTextStorage *textStorage = [[[NSTextStorage alloc] initWithAttributedString:attributedString] autorelease];
+    NSAttributedString *attributedString = [[NSAttributedString alloc] initWithString:@"M" attributes:attributes];
+    NSTextStorage *textStorage = [[NSTextStorage alloc] initWithAttributedString:attributedString];
     [textStorage addLayoutManager:layoutManager];
 
     NSUInteger glyphIndex = [layoutManager glyphIndexForCharacterAtIndex:0];
@@ -262,6 +282,15 @@
 - (PTYFontInfo *)computedBoldItalicVersion {
     PTYFontInfo *temp = [self computedBoldVersion];
     return [temp computedItalicVersion];
+}
+
+- (BOOL)isEqual:(id)object {
+    PTYFontInfo *other = [PTYFontInfo castFrom:object];
+    if (!other) {
+        return NO;
+    }
+
+    return [self.font isEqual:other.font];
 }
 
 @end

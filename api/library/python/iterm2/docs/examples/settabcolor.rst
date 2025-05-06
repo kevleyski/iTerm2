@@ -1,4 +1,7 @@
+:orphan:
+
 .. _settabcolor_example:
+
 Set Tab Color
 -------------
 

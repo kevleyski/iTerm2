@@ -7,8 +7,12 @@
 
 #import "iTermTimestampDrawHelper.h"
 
+#import "DebugLogging.h"
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "iTermPreferences.h"
 #import "NSColor+iTerm.h"
+#import "NSFont+iTerm.h"
 #import "RegexKitLite.h"
 
 const CGFloat iTermTimestampGradientWidth = 20;
@@ -28,8 +32,10 @@ const CGFloat iTermTimestampGradientWidth = 20;
     BOOL _useTestingTimezone;
     CGFloat _rowHeight;
     BOOL _isRetina;
-
+    CGFloat _obscured;
     NSMutableArray<iTermTimestampRow *> *_rows;
+    BOOL _fontIsFixedPitch;
+    NSSize _fontPitch;
 }
 
 - (instancetype)initWithBackgroundColor:(NSColor *)backgroundColor
@@ -37,27 +43,45 @@ const CGFloat iTermTimestampGradientWidth = 20;
                                     now:(NSTimeInterval)now
                      useTestingTimezone:(BOOL)useTestingTimezone
                               rowHeight:(CGFloat)rowHeight
-                                 retina:(BOOL)isRetina {
+                                 retina:(BOOL)isRetina
+                                   font:(NSFont *)font
+                               obscured:(CGFloat)obscured {
     self = [super init];
     if (self) {
-        _bgColor = backgroundColor;
-        _fgColor = textColor;
+        _bgColor = backgroundColor ?: [NSColor colorWithRed:0 green:0 blue:0 alpha:1];
+        _fgColor = textColor ?: [NSColor colorWithRed:0 green:0 blue:0 alpha:1];
         _now = now;
         _useTestingTimezone = useTestingTimezone;
         _rowHeight = rowHeight;
         _isRetina = isRetina;
         _rows = [NSMutableArray array];
+        _obscured = obscured;
+        self.font = font ?: [NSFont userFixedPitchFontOfSize:[NSFont systemFontSize]];
     }
     return self;
 }
 
+#pragma mark - Private
+
+- (void)cacheFontPitch {
+    _fontPitch = [self.font it_pitch];
+}
+
 #pragma mark - APIs
+
+- (void)setFont:(NSFont *)font {
+    _font = font;
+    _fontIsFixedPitch = font.isFixedPitch;
+    if (_fontIsFixedPitch) {
+        [self cacheFontPitch];
+    }
+}
 
 - (void)setDate:(NSDate *)timestamp forLine:(int)line {
     NSString *string = [self stringForTimestamp:timestamp
                                             now:_now
                              useTestingTimezone:_useTestingTimezone];
-    NSRect textFrame = [self frameForString:string line:line maxX:0];
+    const NSRect textFrame = [self frameForString:string line:line maxX:0 virtualOffset:0];
     _maximumWidth = MAX(_maximumWidth, NSWidth(textFrame));
 
     iTermTimestampRow *row = [[iTermTimestampRow alloc] init];
@@ -66,9 +90,15 @@ const CGFloat iTermTimestampGradientWidth = 20;
     [_rows addObject:row];
 }
 
-- (void)drawInContext:(NSGraphicsContext *)context frame:(NSRect)frame {
+- (void)drawInContext:(NSGraphicsContext *)context
+                frame:(NSRect)frame
+        virtualOffset:(CGFloat)virtualOffset {
     [_rows enumerateObjectsUsingBlock:^(iTermTimestampRow * _Nonnull row, NSUInteger idx, BOOL * _Nonnull stop) {
-        NSRect stringFrame = [self frameForStringGivenWidth:self->_maximumWidth line:row.line maxX:NSMaxX(frame)];
+        NSRect stringFrame = [self frameForStringGivenWidth:self->_maximumWidth
+                                                     height:[self fontHeight]
+                                                       line:row.line
+                                                       maxX:NSMaxX(frame)
+                                              virtualOffset:virtualOffset];
         [self drawBackgroundInFrame:[self backgroundFrameForTextFrame:stringFrame]
                             bgColor:self->_bgColor
                             context:context];
@@ -76,13 +106,20 @@ const CGFloat iTermTimestampGradientWidth = 20;
     }];
 }
 
-- (void)drawRow:(int)index inContext:(NSGraphicsContext *)context frame:(NSRect)frameWithGradient {
+- (void)drawRow:(int)index
+      inContext:(NSGraphicsContext *)context
+          frame:(NSRect)frameWithGradient
+  virtualOffset:(CGFloat)virtualOffset {
     NSRect frame = frameWithGradient;
     frame.origin.x += iTermTimestampGradientWidth;
     frame.size.width -= iTermTimestampGradientWidth;
 
     iTermTimestampRow *row = _rows[index];
-    NSRect stringFrame = [self frameForStringGivenWidth:_maximumWidth line:0 maxX:NSMaxX(frame)];
+    NSRect stringFrame = [self frameForStringGivenWidth:_maximumWidth
+                                                 height:[self fontHeight]
+                                                   line:0
+                                                   maxX:NSMaxX(frame)
+                                          virtualOffset:virtualOffset];
     stringFrame.origin.y += frame.origin.y;
     [self drawBackgroundInFrame:[self backgroundFrameForTextFrame:stringFrame]
                         bgColor:_bgColor
@@ -94,11 +131,21 @@ const CGFloat iTermTimestampGradientWidth = 20;
     if (index == 0) {
         return NO;
     }
+    if (_rows[index - 1].string.length == 0) {
+        return NO;
+    }
+    if (_obscured > 0 && _rowHeight * index <= _obscured) {
+        return NO;
+    }
     return [_rows[index - 1].string isEqual:_rows[index].string];
 }
 
+- (NSString *)stringForRow:(int)index {
+    return _rows[index].string;
+}
+
 - (CGFloat)suggestedWidth {
-    return _maximumWidth + [iTermAdvancedSettingsModel terminalMargin] + iTermTimestampGradientWidth;
+    return _maximumWidth + [iTermPreferences intForKey:kPreferenceKeySideMargins] + iTermTimestampGradientWidth;
 }
 
 #pragma mark - Draw Methods
@@ -124,19 +171,26 @@ const CGFloat iTermTimestampGradientWidth = 20;
     NSRectFillUsingOperation(solidFrame, NSCompositingOperationSourceOver);
 }
 
-- (void)drawString:(NSString *)s row:(int)index frame:(NSRect)frame {
-    NSDictionary *attributes = [self attributesForTextColor:_fgColor
-                                                     shadow:[self shadowForTextColor:_fgColor]
+- (void)drawString:(NSString *)s
+               row:(int)index
+             frame:(NSRect)frame {
+    NSColor *color = _fgColor;
+    NSDictionary *attributes = [self attributesForTextColor:color ?: [NSColor colorWithRed:0 green:0 blue:0 alpha:1]
+                                                     shadow:[self shadowForTextColor:color ?: [NSColor colorWithRed:1 green:1 blue:1 alpha:1]]
                                                      retina:_isRetina];
-    const CGFloat offset = (_rowHeight - NSHeight(frame)) / 2;
     const BOOL repeat = [self rowIsRepeat:index];
     if (s.length && repeat) {
-        [_fgColor set];
+        [color set];
         const CGFloat center = NSMinX(frame) + 10;
-        NSRectFill(NSMakeRect(center - 1, NSMinY(frame), 1, _rowHeight));
-        NSRectFill(NSMakeRect(center + 1, NSMinY(frame), 1, _rowHeight));
+        const NSRect backgroundFrame = [self backgroundFrameForTextFrame:frame];
+        NSRectFill(NSMakeRect(center - 1, NSMinY(backgroundFrame), 1, _rowHeight));
+        NSRectFill(NSMakeRect(center + 1, NSMinY(backgroundFrame), 1, _rowHeight));
     } else {
-        [s drawAtPoint:NSMakePoint(NSMinX(frame), NSMinY(frame) + offset) withAttributes:attributes];
+        [NSGraphicsContext saveGraphicsState];
+        CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+        CGContextSetShouldSmoothFonts(ctx, NO);
+        [s drawAtPoint:frame.origin withAttributes:attributes];
+        [NSGraphicsContext restoreGraphicsState];
     }
 }
 
@@ -144,24 +198,49 @@ const CGFloat iTermTimestampGradientWidth = 20;
 
 - (NSRect)backgroundFrameForTextFrame:(NSRect)frame {
     return NSMakeRect(NSMinX(frame) - iTermTimestampGradientWidth,
-                      NSMinY(frame),
+                      NSMinY(frame) - [self retinaRound:(_rowHeight - [self fontHeight]) / 2.0],
                       NSWidth(frame) + iTermTimestampGradientWidth,
                       NSHeight(frame));
 }
 
-- (NSRect)frameForString:(NSString *)s line:(int)line maxX:(CGFloat)maxX {
-    NSString *widest = [s stringByReplacingOccurrencesOfRegex:@"[\\d\\p{Alphabetic}]" withString:@"M"];
-    NSSize size = [widest sizeWithAttributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:[iTermAdvancedSettingsModel pointSizeOfTimeStamp]] }];
+- (NSRect)frameForString:(NSString *)s line:(int)line maxX:(CGFloat)maxX virtualOffset:(CGFloat)virtualOffset {
+    NSSize size;
+    if (_fontIsFixedPitch) {
+        size = NSMakeSize(_fontPitch.width * s.length, _fontPitch.height);
+    } else {
+        NSDictionary *attributes = @{ NSFontAttributeName: _font };
+        NSString *widest = [s stringByReplacingOccurrencesOfRegex:@"[\\d\\p{Alphabetic}]" withString:@"M"];
+        size = [widest it_cachingSizeWithAttributes:attributes];
+    }
 
-    return [self frameForStringGivenWidth:size.width line:line maxX:maxX];
+    return [self frameForStringGivenWidth:size.width
+                                   height:[self fontHeight]
+                                     line:line
+                                     maxX:maxX
+                            virtualOffset:virtualOffset];
 }
 
-- (NSRect)frameForStringGivenWidth:(CGFloat)width line:(int)line maxX:(CGFloat)maxX {
-    const int w = width + [iTermAdvancedSettingsModel terminalMargin];
+- (CGFloat)fontHeight {
+    return self.font.capHeight - self.font.descender;
+}
+
+- (NSRect)frameForStringGivenWidth:(CGFloat)width
+                            height:(CGFloat)height
+                              line:(int)line
+                              maxX:(CGFloat)maxX
+                     virtualOffset:(CGFloat)virtualOffset {
+    const int w = width + [iTermPreferences intForKey:kPreferenceKeySideMargins];
     const int x = MAX(0, maxX - w);
-    const CGFloat y = line * _rowHeight;
+    const CGFloat y = line * _rowHeight - virtualOffset + [self retinaRound:(_rowHeight - height) / 2.0];
 
     return NSMakeRect(x, y, w, _rowHeight);
+}
+
+- (CGFloat)retinaRound:(CGFloat)y {
+    if (_isRetina) {
+        return round(y * 2.0) / 2.0;
+    }
+    return round(y);
 }
 
 #pragma mark - String Diddling
@@ -201,30 +280,37 @@ const CGFloat iTermTimestampGradientWidth = 20;
 - (NSString *)stringForTimestamp:(NSDate *)timestamp
                              now:(NSTimeInterval)now
               useTestingTimezone:(BOOL)useTestingTimezone {
-    const NSTimeInterval timeDelta = timestamp.timeIntervalSinceReferenceDate - now;
+    if (!timestamp) {
+        return @"";
+    }
+    const NSTimeInterval timeSinceReference = round(timestamp.timeIntervalSinceReferenceDate);
+    if (!timeSinceReference) {
+        return @"";
+    }
+    const NSTimeInterval timeDelta = timeSinceReference - now;
     NSDateFormatter *fmt = [self dateFormatterWithTimeDelta:timeDelta
                                          useTestingTimezone:useTestingTimezone];
-    NSString *theTimestamp = [fmt stringFromDate:timestamp];
-    if (!timestamp || ![timestamp timeIntervalSinceReferenceDate]) {
-        theTimestamp = @"";
-    }
-    return theTimestamp;
+    NSDate *rounded = [NSDate dateWithTimeIntervalSinceReferenceDate:timeSinceReference];
+    NSString *formattedString = [fmt stringFromDate:rounded];
+    DLog(@"%@ -> %@", timestamp, formattedString);
+    return formattedString;
 }
 
 - (NSDictionary *)attributesForTextColor:(NSColor *)fgColor shadow:(NSShadow *)shadow retina:(BOOL)retina {
     NSDictionary *attributes;
     if (retina) {
-        attributes = @{ NSFontAttributeName: [NSFont userFixedPitchFontOfSize:[iTermAdvancedSettingsModel pointSizeOfTimeStamp]],
+        attributes = @{ NSFontAttributeName: self.font ?: [NSFont userFixedPitchFontOfSize:[NSFont systemFontSize]],
                         NSForegroundColorAttributeName: fgColor,
                         NSShadowAttributeName: shadow };
     } else {
-        NSFont *font = [NSFont userFixedPitchFontOfSize:[iTermAdvancedSettingsModel pointSizeOfTimeStamp]];
+        NSFont *defaultFont = [NSFont userFixedPitchFontOfSize:[NSFont systemFontSize]];
+        NSFont *font = self.font ?: defaultFont;
         font = [[NSFontManager sharedFontManager] fontWithFamily:font.familyName
                                                           traits:NSBoldFontMask
                                                           weight:0
                                                             size:font.pointSize];
-        attributes = @{ NSFontAttributeName: font,
-                        NSForegroundColorAttributeName: fgColor };
+        attributes = @{ NSFontAttributeName: font ?: defaultFont,
+                        NSForegroundColorAttributeName: fgColor ?: [NSColor colorWithDisplayP3Red:1 green:1 blue:1 alpha:1] };
     }
 
     return attributes;

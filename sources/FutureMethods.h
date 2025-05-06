@@ -31,7 +31,25 @@ CPSStealKeyFocusFunction *GetCPSStealKeyFocusFunction(void);
 // Returns a function pointer to CPSReleaseKeyFocus(), or nil.
 CPSReleaseKeyFocusFunction *GetCPSReleaseKeyFocusFunction(void);
 
+#pragma mark - MultitouchSupport
+
+typedef CFTypeRef MTActuatorCreateFromDeviceIDFunction(UInt64 deviceID);
+typedef IOReturn MTActuatorOpenFunction(CFTypeRef actuatorRef);
+typedef IOReturn MTActuatorCloseFunction(CFTypeRef actuatorRef);
+typedef IOReturn MTActuatorActuateFunction(CFTypeRef actuatorRef, SInt32 actuationID, UInt32 unknown1, Float32 unknown2, Float32 unknown3);
+typedef bool MTActuatorIsOpenFunction(CFTypeRef actuatorRef);
+
+MTActuatorCreateFromDeviceIDFunction *iTermGetMTActuatorCreateFromDeviceIDFunction(void);
+MTActuatorOpenFunction *iTermGetMTActuatorOpenFunction(void);
+MTActuatorCloseFunction *iTermGetMTActuatorCloseFunction(void);
+MTActuatorActuateFunction *iTermGetMTActuatorActuateFunction(void);
+MTActuatorIsOpenFunction *iTermGetMTActuatorIsOpenFunction(void);
+
 NS_INLINE BOOL iTermTextIsMonochromeOnMojave(void) NS_AVAILABLE_MAC(10_14) {
+    if (@available(macOS 10.16, *)) {
+        // Issue 9209
+        return YES;
+    }
     static dispatch_once_t onceToken;
     static BOOL subpixelAAEnabled;
     dispatch_once(&onceToken, ^{
@@ -46,15 +64,8 @@ NS_INLINE BOOL iTermTextIsMonochromeOnMojave(void) NS_AVAILABLE_MAC(10_14) {
 }
 
 NS_INLINE BOOL iTermTextIsMonochrome(void) {
-    if (@available(macOS 10.14, *)) {
-        return iTermTextIsMonochromeOnMojave();
-    }
-    return NO;
+    return iTermTextIsMonochromeOnMojave();
 }
-
-@interface NSOpenPanel (Utility)
-- (NSArray *)legacyFilenames;
-@end
 
 @interface NSFont (Future)
 // Does this font look bad without anti-aliasing? Relies on a private method.
@@ -67,3 +78,9 @@ NS_INLINE BOOL iTermTextIsMonochrome(void) {
 - (NSEdgeInsets)futureEdgeInsetsValue;
 
 @end
+
+#ifndef MAC_OS_VERSION_12_0
+@interface NSProcessInfo(iTermMonterey)
+- (BOOL)isLowPowerModeEnabled;
+@end
+#endif  // MAC_OS_VERSION_12_0

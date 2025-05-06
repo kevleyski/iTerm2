@@ -8,13 +8,16 @@
 #import "iTermDependencyEditorWindowController.h"
 
 #import "DebugLogging.h"
+#import "iTermAPIScriptLauncher.h"
+#import "iTermApplicationDelegate.h"
 #import "iTermController.h"
 #import "iTermPythonRuntimeDownloader.h"
 #import "iTermScriptsMenuController.h"
-#import "iTermSetupPyParser.h"
+#import "iTermSetupCfgParser.h"
 #import "iTermTuple.h"
 #import "iTermWarning.h"
 #import "NSArray+iTerm.h"
+#import "NSFileManager+iTerm.h"
 #import "NSStringITerm.h"
 #import "NSTextField+iTerm.h"
 
@@ -30,13 +33,18 @@
     IBOutlet NSTableView *_tableView;
     IBOutlet NSButton *_checkForUpdate;
     IBOutlet NSButton *_remove;
-    NSMutableArray<NSString *> *_scripts;
+    IBOutlet NSView *_mainView;
+    IBOutlet NSView *_upgradeContainer;
+    NSMutableArray<iTermScriptItem *> *_scriptItems;
     NSArray<iTermTuple<NSString *, NSString *> *> *_packageTuples;
-    NSString *_selectedScriptPath;
+    iTermScriptItem *_selectedScriptItem;
     NSString *_pythonVersion;
 }
 
 + (instancetype)sharedInstance {
+    if (![[NSFileManager defaultManager] homeDirectoryDotDir]) {
+        return nil;
+    }
     static id instance;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -52,9 +60,9 @@
 
 - (void)open {
     if (self.windowLoaded) {
-        NSString *preferred = [_selectedScriptPath copy];
+        iTermScriptItem *selectedItem = _selectedScriptItem;
         [self reload];
-        NSInteger index = [_scripts indexOfObject:preferred];
+        NSInteger index = [_scriptItems indexOfObject:selectedItem];
         if (index != NSNotFound) {
             [_scriptsButton selectItemAtIndex:index];
             [self didSelectScriptAtIndex:index];
@@ -67,13 +75,13 @@
 
 - (void)reload {
     [self populateScripts];
-    if (_scripts.count) {
+    if (_scriptItems.count) {
         [self didSelectScriptAtIndex:0];
     }
 }
 
 - (void)fetchVersionOfPackage:(NSString *)packageName completion:(void (^)(BOOL ok, NSString *result))completion {
-    NSURL *container = [NSURL fileURLWithPath:_selectedScriptPath];
+    NSURL *container = [NSURL fileURLWithPath:_selectedScriptItem.path];
     [[iTermPythonRuntimeDownloader sharedInstance] runPip3InContainer:container
                                                         pythonVersion:_pythonVersion
                                                         withArguments:@[ @"show", packageName ]
@@ -93,7 +101,7 @@
 }
 
 - (void)loadPackageAtIndex:(NSInteger)index completion:(void (^)(BOOL ok, NSString *result))completion {
-    NSURL *container = [NSURL fileURLWithPath:_selectedScriptPath];
+    NSURL *container = [NSURL fileURLWithPath:_selectedScriptItem.path];
     iTermTuple<NSString *, NSString *> *tuple = _packageTuples[index];
     __weak __typeof(self) weakSelf = self;
     [self fetchVersionOfPackage:tuple.firstObject completion:^(BOOL ok, NSString *result) {
@@ -144,8 +152,16 @@
 - (void)didSelectScriptAtIndex:(NSInteger)index {
     _checkForUpdate.enabled = NO;
     _remove.enabled = NO;
-    _selectedScriptPath = _scripts[index];
-    iTermSetupPyParser *parser = [[iTermSetupPyParser alloc] initWithPath:[_scripts[index] stringByAppendingPathComponent:@"setup.py"]];
+    _selectedScriptItem = _scriptItems[index];
+
+    const BOOL fullEnvironment = _selectedScriptItem.fullEnvironment;
+    _mainView.hidden = !fullEnvironment;
+    _upgradeContainer.hidden = fullEnvironment;
+    if (!fullEnvironment) {
+        return;
+    }
+
+    iTermSetupCfgParser *parser = [[iTermSetupCfgParser alloc] initWithPath:[_selectedScriptItem.path stringByAppendingPathComponent:@"setup.cfg"]];
     _packageTuples = [[parser.dependencies mapWithBlock:^id(NSString *dep) {
         iTermTuple *tuple = [iTermTuple tupleWithObject:dep andObject:@""];
         return tuple;
@@ -160,7 +176,7 @@
 }
 
 - (void)loadPythonVersionsSelecting:(NSString *)selectedVersion {
-    NSString *const env = [[_selectedScriptPath stringByAppendingPathComponent:@"iterm2env"] stringByAppendingPathComponent:@"versions"];
+    NSString *const env = [[_selectedScriptItem.path stringByAppendingPathComponent:@"iterm2env"] stringByAppendingPathComponent:@"versions"];
     _pythonVersion = selectedVersion ?: [iTermPythonRuntimeDownloader bestPythonVersionAt:env];
     NSArray<NSString *> *versions = [[[[iTermPythonRuntimeDownloader pythonVersionsAt:env] mapWithBlock:^id(NSString *version) {
         return version.it_twoPartVersionNumber;
@@ -174,11 +190,12 @@
 }
 
 - (void)populateScripts {
-    _scripts = [NSMutableArray array];
+    _scriptItems = [NSMutableArray array];
     _checkForUpdate.enabled = NO;
     _remove.enabled = NO;
     [_scriptsButton.menu removeAllItems];
-    [self addScriptItems:[iTermScriptsMenuController scriptItems] breadcrumbs:@[]];
+    iTermApplicationDelegate *itad = [iTermApplication.sharedApplication delegate];
+    [self addScriptItems:[itad.scriptsMenuController scriptItems] breadcrumbs:@[]];
 }
 
 - (void)addScriptItems:(NSArray<iTermScriptItem *> *)scriptItems breadcrumbs:(NSArray<NSString *> *)breadcrumbs {
@@ -189,24 +206,29 @@
             [self addScriptItems:item.children breadcrumbs:[breadcrumbs arrayByAddingObject:item.name]];
             continue;
         }
-        if (!item.fullEnvironment) {
-            continue;
-        }
         NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:[[breadcrumbs arrayByAddingObject:item.name] componentsJoinedByString:@"/"]
                                                           action:nil
                                                    keyEquivalent:@""];
-        menuItem.tag = _scripts.count;
+        menuItem.tag = _scriptItems.count;
         [_scriptsButton.menu addItem:menuItem];
-        [_scripts addObject:item.path];
+        [_scriptItems addObject:item];
     }
 }
 
-- (void)pip3UpgradeDidFinish:(iTermTuple<NSString *, NSString *> *)tuple index:(NSInteger)index {
+- (void)pip3UpgradeDidFinish:(iTermTuple<NSString *, NSString *> *)tuple
+                       index:(NSInteger)index
+                  scriptPath:(NSString *)scriptPath {
     if (_packageTuples.count <= index) {
         return;
     }
     if (_packageTuples[index] == tuple) {
-        [self loadPackageAtIndex:index];
+        [self loadPackageAtIndex:index completion:^(BOOL ok, NSString *result) {
+            if (!ok) {
+                return;
+            }
+            [iTermDependencyEditorWindowController setDependency:[NSString stringWithFormat:@"%@>=%@", tuple.firstObject, result]
+                                                      scriptPath:scriptPath];
+        }];
     }
 }
 
@@ -235,13 +257,14 @@
         return;
     }
 
-    NSString *path = [selectedScriptPath stringByAppendingPathComponent:@"setup.py"];
-    iTermSetupPyParser *parser = [[iTermSetupPyParser alloc] initWithPath:path];
-    [iTermSetupPyParser writeSetupPyToFile:path
-                                      name:parser.name
-                              dependencies:[parser.dependencies arrayByRemovingObject:package]
-                       ensureiTerm2Present:NO
-                             pythonVersion:parser.pythonVersion];
+    NSString *path = [selectedScriptPath stringByAppendingPathComponent:@"setup.cfg"];
+    iTermSetupCfgParser *parser = [[iTermSetupCfgParser alloc] initWithPath:path];
+    [iTermSetupCfgParser writeSetupCfgToFile:path
+                                        name:parser.name
+                                dependencies:[parser.dependencies arrayByRemovingObject:package]
+                         ensureiTerm2Present:NO
+                               pythonVersion:parser.pythonVersion
+                          environmentVersion:parser.minimumEnvironmentVersion];
 
     [self didSelectScriptAtIndex:_scriptsButton.indexOfSelectedItem];
 }
@@ -271,13 +294,14 @@
 }
 
 - (void)runPip3WithArguments:(NSArray<NSString *> *)arguments completion:(void (^)(void))completion {
-    NSURL *container = [NSURL fileURLWithPath:_selectedScriptPath];
+    NSURL *container = [NSURL fileURLWithPath:_selectedScriptItem.path];
     NSString *pip3 = [[iTermPythonRuntimeDownloader sharedInstance] pip3At:[container.path stringByAppendingPathComponent:@"iterm2env"]
                                                              pythonVersion:_pythonVersion];
-    NSArray *augmentedEscapedArgs = [[@[ pip3 ] arrayByAddingObjectsFromArray:arguments] mapWithBlock:^id(NSString *arg) {
-        return [arg stringWithEscapedShellCharactersIncludingNewlines:YES];
-    }];
-    NSString *command = [augmentedEscapedArgs componentsJoinedByString:@" "];
+    NSString *command =
+    [[pip3 stringWithBackslashEscapedShellCharactersIncludingNewlines:YES]
+     stringByAppendingFormat:@" %@", [[arguments mapWithBlock:^id(NSString *anObject) {
+        return [anObject stringWithBackslashEscapedShellCharactersIncludingNewlines:YES];
+    }] componentsJoinedByString:@" "]];
     iTermWarningSelection selection = [iTermWarning showWarningWithTitle:command
                                                                  actions:@[ @"OK", @"Cancel" ]
                                                                accessory:nil
@@ -288,16 +312,21 @@
     if (selection == kiTermWarningSelection1) {
         return;
     }
-    [[iTermController sharedInstance] openSingleUseWindowWithCommand:command
+    // Escape the path to pip3 because it gets evaluated as a swifty string.
+    [[iTermController sharedInstance] openSingleUseWindowWithCommand:pip3
+                                                           arguments:arguments
                                                               inject:nil
                                                          environment:nil
+                                                                 pwd:nil
+                                                             options:iTermSingleUseWindowOptionsCommandNotSwiftyString
+                                                      didMakeSession:nil
                                                           completion:^{
                                                               completion();
                                                           }];
 }
 
 - (void)pip3InstallDidFinish:(NSString *)selectedScriptPath newDependencyName:(NSString *)newDependencyName {
-    if (![selectedScriptPath isEqualToString:_selectedScriptPath]) {
+    if (![selectedScriptPath isEqualToString:_selectedScriptItem.path]) {
         return;
     }
     __weak __typeof(self) weakSelf = self;
@@ -329,44 +358,140 @@
                                     window:self.window];
         return;
     }
-    if (![selectedScriptPath isEqualToString:_selectedScriptPath]) {
+    if (![selectedScriptPath isEqualToString:_selectedScriptItem.path]) {
         return;
     }
-    NSString *path = [selectedScriptPath stringByAppendingPathComponent:@"setup.py"];
-    iTermSetupPyParser *parser = [[iTermSetupPyParser alloc] initWithPath:path];
-    [iTermSetupPyParser writeSetupPyToFile:path
-                                      name:parser.name
-                              dependencies:[parser.dependencies arrayByAddingObject:newDependencyName]
-                       ensureiTerm2Present:NO
-                             pythonVersion:parser.pythonVersion];
+    NSString *path = [selectedScriptPath stringByAppendingPathComponent:@"setup.cfg"];
+    iTermSetupCfgParser *parser = [[iTermSetupCfgParser alloc] initWithPath:path];
+    [iTermSetupCfgParser writeSetupCfgToFile:path
+                                        name:parser.name
+                                dependencies:[parser.dependencies arrayByAddingObject:newDependencyName]
+                         ensureiTerm2Present:NO
+                               pythonVersion:parser.pythonVersion
+                          environmentVersion:parser.minimumEnvironmentVersion];
     [self didSelectScriptAtIndex:_scriptsButton.selectedTag];
+}
+
++ (void)setDependency:(NSString *)dependency scriptPath:(NSString *)scriptPath {
+    DLog(@"Set dependency %@ in %@", dependency, scriptPath);
+    NSString *path = [scriptPath stringByAppendingPathComponent:@"setup.cfg"];
+    iTermSetupCfgParser *parser = [[iTermSetupCfgParser alloc] initWithPath:path];
+    [iTermSetupCfgParser writeSetupCfgToFile:path
+                                        name:parser.name
+                                dependencies:[parser.dependencies ?: @[] arrayBySettingPythonDependency:dependency]
+                         ensureiTerm2Present:NO
+                               pythonVersion:parser.pythonVersion
+                          environmentVersion:parser.minimumEnvironmentVersion];
 }
 
 #pragma mark - Actions
 
-- (IBAction)checkForUpdates:(id)sender {
-    const NSInteger index = _tableView.selectedRow;
-    if (index < 0) {
+- (IBAction)upgrade:(id)sender {
+    if (!_selectedScriptItem) {
         return;
     }
+
+    NSString *name = _selectedScriptItem.path.lastPathComponent.stringByDeletingPathExtension;
+    NSURL *folder = [[[NSURL fileURLWithPath:_selectedScriptItem.path] URLByDeletingLastPathComponent] URLByAppendingPathComponent:name];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:folder.path]) {
+        iTermWarning *warning = [[iTermWarning alloc] init];
+        warning.title = [NSString stringWithFormat:@"Can’t upgrade because %@ already exists", folder.path];
+        warning.heading = @"Error";
+        warning.actionLabels = @[ @"OK" ];
+        warning.warningType = kiTermWarningTypePersistent;
+        warning.window = self.window;
+        [warning runModal];
+        return;
+    }
+
+    iTermScriptItem *item = _selectedScriptItem;
+    __weak __typeof(self) weakSelf = self;
+    NSString *pythonVersion =
+    [iTermAPIScriptLauncher inferredPythonVersionFromScriptAt:item.path];
+    [[iTermPythonRuntimeDownloader sharedInstance] installPythonEnvironmentTo:folder
+                                                                 dependencies:@[]
+                                                                pythonVersion:pythonVersion
+                                                                   completion:^(NSError *errorStatus) {
+        if (errorStatus != nil) {
+            NSAlert *alert = [[NSAlert alloc] init];
+            alert.messageText = @"Installation Failed";
+            alert.informativeText = [NSString stringWithFormat:@"Please file a bug report at https://iterm2.com/bugs. The following error occurred while upgrading a dependency: %@", errorStatus.localizedDescription];
+            [alert runModal];
+            return;
+        }
+        [weakSelf finishUpgradingScriptItem:item toFullEnvironmentAt:folder];
+        // TODO: Rebuild menus
+    }];
+}
+
+- (void)finishUpgradingScriptItem:(iTermScriptItem *)item
+              toFullEnvironmentAt:(NSURL *)url {
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+
+    // Create Scripts/Foo/Foo
+    NSString *innerFolder = [url.path stringByAppendingPathComponent:url.path.lastPathComponent];
+    NSError *error = nil;
+    [fileManager createDirectoryAtPath:innerFolder
+           withIntermediateDirectories:YES
+                            attributes:nil
+                                 error:&error];
+    if (error) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Installation Failed";
+        alert.informativeText = [NSString stringWithFormat:@"Error creating %@: %@", innerFolder, error.localizedDescription];
+        [alert runModal];
+        return;
+    }
+    // Move Scripts/Foo.py to Scripts/Foo/Foo/Foo.py
+    NSString *name = item.path.lastPathComponent;
+    NSString *destination = [innerFolder stringByAppendingPathComponent:name];
+    [fileManager moveItemAtPath:item.path
+                         toPath:destination
+                          error:&error];
+    if (error) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Installation Failed";
+        alert.informativeText = [NSString stringWithFormat:@"Error moving %@ to %@: %@", item.path, destination, error.localizedDescription];
+        [alert runModal];
+        return;
+    }
+
+    [self populateScripts];
+    NSInteger index = [_scriptItems indexOfObjectPassingTest:^BOOL(iTermScriptItem * _Nonnull item, NSUInteger idx, BOOL * _Nonnull stop) {
+        return [item.path isEqual:url.path];
+    }];
+    if (index >= 0 && index < _scriptItems.count) {
+        [_scriptsButton selectItemAtIndex:index];
+        [self didSelectScriptAtIndex:index];
+    }
+}
+
+- (IBAction)checkForUpdates:(id)sender {
+    const NSInteger index = _tableView.selectedRow;
+    if (index < 0 || !_selectedScriptItem) {
+        return;
+    }
+    iTermScriptItem *selectedScriptItem = _selectedScriptItem;
     iTermTuple<NSString *, NSString *> *tuple = _packageTuples[_tableView.selectedRow];
     NSString *selectedDependencyName = tuple.firstObject;
     __weak __typeof(self) weakSelf = self;
     [self runPip3WithArguments:@[ @"install", selectedDependencyName, @"--upgrade" ] completion:^{
-        [weakSelf pip3UpgradeDidFinish:tuple index:index];
+        [weakSelf pip3UpgradeDidFinish:tuple
+                                 index:index
+                            scriptPath:selectedScriptItem.path];
     }];
 }
 
 - (IBAction)add:(id)sender {
-    NSString *selectedScriptPath = [_selectedScriptPath copy];
-    if (!selectedScriptPath) {
+    iTermScriptItem *selectedScriptItem = _selectedScriptItem;
+    if (!selectedScriptItem) {
         return;
     }
     NSString *newDependencyName = [self requestDependencyName];
     if (!newDependencyName) {
         return;
     }
-    [self install:newDependencyName selectedScriptPath:selectedScriptPath completion:nil];
+    [self install:newDependencyName selectedScriptPath:selectedScriptItem.path completion:nil];
 }
 
 - (void)install:(NSString *)newDependencyName selectedScriptPath:(NSString *)selectedScriptPath completion:(void (^)(void))completion {
@@ -386,10 +511,10 @@
     }
     iTermTuple<NSString *, NSString *> *tuple = _packageTuples[_tableView.selectedRow];
     NSString *selectedDependencyName = tuple.firstObject;
-    NSString *selectedScriptPath = [_selectedScriptPath copy];
+    iTermScriptItem *selectedScriptItem = _selectedScriptItem;
     __weak __typeof(self) weakSelf = self;
     [self runPip3WithArguments:@[ @"uninstall", selectedDependencyName ] completion:^{
-        [weakSelf pip3UninstallDidFinish:tuple index:index selectedScriptPath:selectedScriptPath];
+        [weakSelf pip3UninstallDidFinish:tuple index:index selectedScriptPath:selectedScriptItem.path];
     }];
 }
 
@@ -442,16 +567,16 @@
     }
 
     _pythonVersion = selectedVersion;
-    NSString *path = [_selectedScriptPath stringByAppendingPathComponent:@"setup.py"];
-    iTermSetupPyParser *parser = [[iTermSetupPyParser alloc] initWithPath:path];
+    NSString *path = [_selectedScriptItem.path stringByAppendingPathComponent:@"setup.cfg"];
+    iTermSetupCfgParser *parser = [[iTermSetupCfgParser alloc] initWithPath:path];
     NSArray<NSString *> *dependencies = [parser.dependencies copy];
-    [iTermSetupPyParser writeSetupPyToFile:path
-                                      name:parser.name
-                              dependencies:@[]
-                       ensureiTerm2Present:NO
-                             pythonVersion:_pythonVersion];
-    NSString *selectedScriptPath = [_selectedScriptPath copy];
-    [self installPackages:dependencies selectedScriptPath:selectedScriptPath];
+    [iTermSetupCfgParser writeSetupCfgToFile:path
+                                        name:parser.name
+                                dependencies:@[]
+                         ensureiTerm2Present:NO
+                               pythonVersion:_pythonVersion
+                          environmentVersion:parser.minimumEnvironmentVersion];
+    [self installPackages:dependencies selectedScriptPath:_selectedScriptItem.path];
 }
 
 - (void)installPackages:(NSArray<NSString *> *)packages selectedScriptPath:(NSString *)selectedScriptPath {

@@ -19,6 +19,16 @@
 
 static NSString *const kProtocolName = @"api.iterm2.com";
 static const NSInteger kWebSocketVersion = 13;
+NSString *const iTermWebSocketConnectionLibraryVersionTooOldString = @"Library version too old";
+
+// SEE ALSO iTermMinimumPythonEnvironmentVersion
+// NOTE: Modules older than 0.69 did not report too-old errors correctly.
+//
+// *WARNING*****************************************************************************************
+// *WARNING* Think carefully before changing this. It will break existing full-environment scripts.*
+// *WARNING*****************************************************************************************
+//
+static NSString *const iTermWebSocketConnectionMinimumPythonLibraryVersion = @"0.24";
 
 typedef NS_ENUM(NSUInteger, iTermWebSocketConnectionState) {
     iTermWebSocketConnectionStateConnecting,
@@ -107,28 +117,37 @@ typedef NS_ENUM(NSUInteger, iTermWebSocketConnectionState) {
         }
     }
 
-    NSString *libver = headers[@"x-iterm2-library-version"];
-    if (libver) {
+    {
+        NSString *libver = headers[@"x-iterm2-library-version"];
+        if (!libver) {
+            *reason = @"The “x-iterm2-library-version” header was not set. You may need to update your Python runtime to a newer version.";
+            return nil;
+        }
         NSArray<NSString *> *parts = [libver componentsSeparatedByString:@" "];
-        if (parts.count == 2) {
-            NSDictionary *minimums = @{ @"python": [NSDecimalNumber decimalNumberWithString:@"0.24"] };
-            NSString *name = parts[0];
-            NSDecimalNumber *min = minimums[name];
-            NSDecimalNumber *version = [NSDecimalNumber decimalNumberWithString:parts[1]];
-            NSComparisonResult result = [min compare:version];
-            if (result == NSOrderedDescending) {
-                *reason = [NSString stringWithFormat:@"Library version too old. %@ library version reported as %@. Minimum supported by this version of iTerm2 is %@",
-                           name, version, min];
-                return nil;
-            }
+        if (parts.count != 2) {
+            *reason = [NSString stringWithFormat:@"The “x-iterm2-library-version” header was malformed: ”%@”", libver];
+            return nil;
+        }
+
+        NSDictionary *minimums = @{ @"python": [NSDecimalNumber decimalNumberWithString:iTermWebSocketConnectionMinimumPythonLibraryVersion] };
+        NSString *name = parts[0];
+        NSDecimalNumber *min = minimums[name];
+        NSDecimalNumber *version = [NSDecimalNumber decimalNumberWithString:parts[1]];
+        NSComparisonResult result = [min compare:version];
+        if (result == NSOrderedDescending) {
+            *reason = [NSString stringWithFormat:@"%@. %@ library version reported as %@. Minimum supported by this version of iTerm2 is %@",
+                       iTermWebSocketConnectionLibraryVersionTooOldString, name, version, min];
+            return nil;
         }
     }
+    
     DLog(@"Request validates as websocket upgrade request");
     iTermWebSocketConnection *conn = [[self alloc] initWithConnection:connection];
     if (conn) {
         conn->_preauthorized = authenticated;
         NSString *key = headers[@"x-iterm2-key"] ?: [[NSUUID UUID] UUIDString];
         conn->_key = [[iTermAPIConnectionIdentifierController sharedInstance] identifierForKey:key];
+        conn->_advisoryName = headers[@"x-iterm2-advisory-name"];
     }
     return conn;
 }
@@ -157,7 +176,7 @@ typedef NS_ENUM(NSUInteger, iTermWebSocketConnectionState) {
 // queue
 - (void)reallyHandleRequest:(NSURLRequest *)request completion:(void (^)(void))completion {
     DLog(@"Handling websocket request %@", request);
-    NSAssert(_state == iTermWebSocketConnectionStateConnecting, @"Request already handled");
+    ITAssertWithMessage(_state == iTermWebSocketConnectionStateConnecting, @"Request already handled");
 
     [self sendUpgradeResponseWithKey:request.allHTTPHeaderFields[@"sec-websocket-key"]
                              version:[request.allHTTPHeaderFields[@"sec-websocket-version"] integerValue]
@@ -283,12 +302,12 @@ typedef NS_ENUM(NSUInteger, iTermWebSocketConnectionState) {
     });
 
     __weak __typeof(self) weakSelf = self;
-    dispatch_io_write(_channel, 0, dispatchData, _queue, ^(bool done, dispatch_data_t  _Nullable data, int error) {
+    [_connection writeAsynchronously:dispatchData channel:_channel queue:_queue completion:^(bool done, dispatch_data_t  _Nullable data, int error) {
         DLog(@"Write progress: done=%d error=%d", (int)done, (int)error);
         if (error) {
             [weakSelf reallyAbort];
         }
-    });
+    }];
 }
 
 // any queue
@@ -440,7 +459,8 @@ typedef NS_ENUM(NSUInteger, iTermWebSocketConnectionState) {
                @"Upgrade": @"websocket",
                @"Connection": @"Upgrade",
                @"Sec-WebSocket-Accept": [sha1 stringWithBase64EncodingWithLineBreak:@""],
-               @"Sec-WebSocket-Protocol": kProtocolName
+               @"Sec-WebSocket-Protocol": kProtocolName,
+               @"X-iTerm2-Protocol-Version": @"1.11"
              };
         if (version > kWebSocketVersion) {
             NSMutableDictionary *temp = [headers mutableCopy];

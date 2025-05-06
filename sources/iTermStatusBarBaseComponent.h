@@ -25,8 +25,10 @@ extern const double iTermStatusBarBaseComponentDefaultPriority;
 @property (nonatomic, readonly, nullable) iTermVariableScope *scope;
 @property (nonatomic, readonly) NSDictionary<iTermStatusBarComponentConfigurationKey, id> *configuration;
 @property (nonatomic, readonly) NSColor *statusBarBackgroundColor;
-@property (nonatomic, readonly) NSColor *defaultTextColor;
+@property (nonatomic, readonly, nullable) NSColor *defaultTextColor;
 @property (nonatomic, readonly) iTermStatusBarAdvancedConfiguration *advancedConfiguration;
+
++ (NSString *)statusBarComponentIdentifier;
 
 - (instancetype)initWithConfiguration:(NSDictionary<iTermStatusBarComponentConfigurationKey, id> *)configuration
                                 scope:(nullable iTermVariableScope *)scope NS_DESIGNATED_INITIALIZER;
@@ -37,6 +39,7 @@ extern const double iTermStatusBarBaseComponentDefaultPriority;
 - (CGFloat)clampedWidth:(CGFloat)width;
 + (NSDictionary *)defaultMinMaxWidthKnobValues;
 - (iTermStatusBarComponentKnob *)newPriorityKnob;
+- (CGFloat)defaultMinimumWidth;
 
 @end
 

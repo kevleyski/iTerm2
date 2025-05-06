@@ -22,31 +22,29 @@
 // This code has been altered.
 
 #import <Foundation/Foundation.h>
+#import "NSFileManager+CommonAdditions.h"
 
 @interface NSFileManager (iTerm)
+
+extern NSNotificationName iTermScriptsFolderDidChange;
 
 + (NSString *)pathToSaveFileInFolder:(NSString *)destinationDirectory preferredName:(NSString *)preferredName;
 
 - (NSString *)legacyApplicationSupportDirectory;
 - (NSString *)applicationSupportDirectory;
+- (NSString *)applicationSupportDirectoryWithoutCreating;
+- (NSString *)it_cachesDirectory;
 
-// Gives a symlink called ApplicationSupport because shebangs can't handle spaces and this breaks pyenv.
+// Gives a symlink called ApplicationSupport because pip3 can't handle spaces and this breaks pyenv.
 // Creates the symlink if it doesn't already exist
-- (NSString *)applicationSupportDirectoryWithoutSpaces;
-- (NSString *)applicationSupportDirectoryWithoutSpacesWithoutCreatingSymlink;
+- (NSString *)spacelessAppSupportCreatingLink;
+- (NSString *)spacelessAppSupportWithoutCreatingLink;
 
-- (NSString *)temporaryDirectory;
+- (NSString *)it_temporaryDirectory;
 
 - (NSString *)downloadsDirectory;
 
 - (BOOL)directoryIsWritable:(NSString *)dir;
-
-// Returns YES if the file exists on a local (non-network) filesystem.
-- (BOOL)fileExistsAtPathLocally:(NSString *)filename
-         additionalNetworkPaths:(NSArray<NSString *> *)additionalNetworkpaths;
-
-- (BOOL)fileHasForbiddenPrefix:(NSString *)filename
-        additionalNetworkPaths:(NSArray<NSString *> *)additionalNetworkpaths;
 
 // Returns the path to the user's desktop.
 - (NSString *)desktopDirectory;
@@ -58,10 +56,12 @@
 // Directory where scripts live. These are loaded and added to a menu or auto-run at startup.
 - (NSString *)scriptsPath;
 - (NSString *)scriptsPathWithoutSpaces;
+- (BOOL)customScriptsFolderIsValid:(NSString *)candidate;
 
 // Path to special auto-launch script that is run at startup.
 - (NSString *)legacyAutolaunchScriptPath;  // applescript
 - (NSString *)autolaunchScriptPath;  // scripting API
+- (NSString *)autolaunchScriptPathCreatingLink;  // scripting API
 
 // Path to special file that, if it exists at launch time, suppresses autolaunch script and
 // window restoration.
@@ -72,4 +72,9 @@
 - (NSArray<NSString *> *)it_itemsInDirectory:(NSString *)path;
 - (NSString *)libraryDirectoryFor:(NSString *)app;
 
+- (id)monitorFile:(NSString *)file block:(void (^)(long flags))block;
+- (void)stopMonitoringFileWithToken:(id)token;
+
+// Returns ~/.iterm2, creating if needed, or nil.
+- (NSString *)homeDirectoryDotDir;
 @end

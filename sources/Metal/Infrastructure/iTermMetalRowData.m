@@ -7,9 +7,11 @@
 
 #import "iTermMetalRowData.h"
 
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermMetalGlyphKey.h"
 #import "iTermTextRendererCommon.h"
 #import "ScreenChar.h"
+#import "ScreenCharArray.h"
 
 @implementation iTermMetalRowData
 
@@ -17,6 +19,7 @@
     self = [super init];
     if (self) {
         _imageRuns = [NSMutableArray array];
+        _kittyImageRuns = [NSMutableArray array];
     }
     return self;
 }
@@ -27,12 +30,16 @@
                       @"numberOfBackgroundRLEs=%@\n"
                       @"numberOfDrawableGlyphs=%@\n"
                       @"markStyle=%@\n"
-                      @"date=%@\n",
+                      @"belongsToBlock=%@\n"
+                      @"date=%@\n"
+                      @"bidi=%@\n",
                       @(self.y),
                       @(self.numberOfBackgroundRLEs),
                       @(self.numberOfDrawableGlyphs),
                       @(self.markStyle),
-                      self.date];
+                      @(self.belongsToBlock),
+                      self.date,
+                      [self.screenCharArray.bidiInfo description] ];
     [info writeToURL:[folder URLByAppendingPathComponent:@"info.txt"] atomically:NO encoding:NSUTF8StringEncoding error:NULL];
 
     @autoreleasepool {
@@ -66,8 +73,8 @@
 
     @autoreleasepool {
         NSMutableString *lineString = [NSMutableString string];
-        const screen_char_t *const line = (screen_char_t *)_lineData.mutableBytes;
-        for (int i = 0; i < _lineData.length / sizeof(screen_char_t); i++) {
+        const screen_char_t *const line = _screenCharArray.line;
+        for (int i = 0; i < _screenCharArray.length; i++) {
             screen_char_t c = line[i];
             [lineString appendFormat:@"%4d: %@\n", i, [self formatChar:c]];
         }
@@ -79,26 +86,21 @@
 }
 
 - (NSString *)formatChar:(screen_char_t)c {
-    return [NSString stringWithFormat:@"code=%x (%@) foregroundColor=%@ fgGreen=%@ fgBlue=%@ backgroundColor=%@ bgGreen=%@ bgBlue=%@ foregroundColorMode=%@ backgroundColorMode=%@ complexChar=%@ bold=%@ faint=%@ italic=%@ blink=%@ underline=%@ image=%@ unused=%@ urlCode=%@",
-            (int)c.code,
-            ScreenCharToStr(&c),
-            @(c.foregroundColor),
-            @(c.fgGreen),
-            @(c.fgBlue),
-            @(c.backgroundColor),
-            @(c.bgGreen),
-            @(c.bgBlue),
-            @(c.foregroundColorMode),
-            @(c.backgroundColorMode),
-            @(c.complexChar),
-            @(c.bold),
-            @(c.faint),
-            @(c.italic),
-            @(c.blink),
-            @(c.underline),
-            @(c.image),
-            @(c.unused),
-            @(c.urlCode)];
+    return DebugStringForScreenChar(c);
+}
+
+- (BOOL)hasFold {
+    switch (self.markStyle) {
+        case iTermMarkStyleNone:
+        case iTermMarkStyleRegularSuccess:
+        case iTermMarkStyleRegularFailure:
+        case iTermMarkStyleRegularOther:
+            return NO;
+        case iTermMarkStyleFoldedSuccess:
+        case iTermMarkStyleFoldedFailure:
+        case iTermMarkStyleFoldedOther:
+            return YES;
+    }
 }
 
 @end

@@ -11,6 +11,7 @@
 #import "iTermHotKeyController.h"
 #import "iTermProfileHotKey.h"
 #import "iTermScriptingWindow.h"
+#import "iTermSessionLauncher.h"
 #import "NSStringITerm.h"
 #import "PTYSession.h"
 #import "PTYTab.h"
@@ -37,16 +38,23 @@
         NSDictionary *args = [self evaluatedArguments];
         NSString *command = args[@"command"];
         // maybe pass isUTF8 all the way through?
-        PTYSession *session =
-            [[iTermController sharedInstance] launchBookmark:profile
-                                                  inTerminal:nil
-                                                     withURL:nil
-                                            hotkeyWindowType:iTermHotkeyWindowTypeNone
-                                                     makeKey:YES
-                                                 canActivate:YES
-                                                     command:command
-                                                       block:nil];
-        return [iTermScriptingWindow scriptingWindowWithWindow:session.delegate.realParentWindow.window];
+        [self suspendExecution];
+        [iTermSessionLauncher launchBookmark:profile
+                                  inTerminal:nil
+                                     withURL:nil
+                            hotkeyWindowType:iTermHotkeyWindowTypeNone
+                                     makeKey:YES
+                                 canActivate:YES
+                          respectTabbingMode:NO
+                                       index:nil
+                                     command:command
+                                 makeSession:nil
+                              didMakeSession:nil
+                                  completion:^(PTYSession *session, BOOL ok) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                    [self resumeExecutionWithResult:[iTermScriptingWindow scriptingWindowWithWindow:session.delegate.realParentWindow.window]];
+            });
+        }];
     }
     return nil;
 }

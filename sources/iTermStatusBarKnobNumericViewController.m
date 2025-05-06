@@ -7,7 +7,9 @@
 
 #import "iTermStatusBarKnobNumericViewController.h"
 
+#import "DebugLogging.h"
 #import "NSObject+iTerm.h"
+#import "NSStringITerm.h"
 
 @interface iTermStatusBarKnobNumericViewController ()
 
@@ -18,12 +20,20 @@
 - (void)viewDidLoad {
     self.view.autoresizesSubviews = NO;
     self.value = _value;
+    _stepper.maxValue = INFINITY;
+    _stepper.minValue = -INFINITY;
 }
 
 - (void)setValue:(NSNumber *)value {
     _value = value;
     _stepper.doubleValue = _value.doubleValue;
-    _textField.doubleValue = _value.doubleValue;
+    if (_value.doubleValue == INFINITY) {
+        _textField.stringValue = @"∞";
+    } else if (_value.doubleValue == -INFINITY) {
+        _textField.stringValue = @"-∞";
+    } else {
+        _textField.doubleValue = _value.doubleValue;
+    }
 }
 
 - (IBAction)stepperAction:(id)sender {
@@ -32,7 +42,7 @@
 
 - (void)controlTextDidChange:(NSNotification *)obj {
     NSString *string = [(NSControl *)obj.object stringValue];
-    NSNumber *safeValue = @(string.doubleValue);
+    NSNumber *safeValue = @(string.it_localizedDoubleValue);
     _value = safeValue;
     _stepper.doubleValue = safeValue.doubleValue;
 }
@@ -83,6 +93,10 @@
 
 - (void)insertNewline:(id)sender {
     [self.view.window.sheetParent endSheet:self.view.window returnCode:NSModalResponseOK];
+}
+
+- (void)setHelpURL:(NSURL *)url {
+    ITAssertWithMessage(NO, @"Not supported");
 }
 
 @end

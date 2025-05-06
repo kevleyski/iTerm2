@@ -27,6 +27,8 @@
  */
 
 #import "DVRBuffer.h"
+
+#import "iTermMalloc.h"
 #import "NSArray+iTerm.h"
 #import "NSDictionary+iTerm.h"
 
@@ -67,7 +69,7 @@
     self = [super init];
     if (self) {
         capacity_ = maxsize;
-        store_ = malloc(maxsize);
+        store_ = iTermMalloc(maxsize);
         index_ = [[NSMutableDictionary alloc] init];
         firstKey_ = 0;
         nextKey_ = 0;
@@ -97,7 +99,6 @@
 - (NSDictionary *)dictionaryValue {
     NSDictionary *dict =
         @{ @"store": [NSData dataWithBytes:store_ length:capacity_],
-           @"scratchOffset": scratch_ ? @(scratch_ - store_) : [NSNull null],
            @"index": [self exportedIndex],
            @"firstKey": @(firstKey_),
            @"nextKey": @(nextKey_),
@@ -106,19 +107,17 @@
     return [dict dictionaryByRemovingNullValues];
 }
 
-- (BOOL)loadFromDictionary:(NSDictionary *)dict {
+- (BOOL)loadFromDictionary:(NSDictionary *)dict
+                   version:(int)version {
     NSData *store = dict[@"store"];
     if (store.length != capacity_) {
         return NO;
     }
     memmove(store_, store.bytes, store.length);
-
-    id scratch = dict[@"scratchOffset"];
-    if ([scratch isKindOfClass:[NSNull class]]) {
-        scratch_ = nil;
-    } else {
-        scratch_ = store_ + [scratch integerValue];
+    if (version != 3) {
+        _migrateFromVersion = version;
     }
+    scratch_ = 0;
 
     NSDictionary *indexDict = dict[@"index"];
     for (NSNumber *key in indexDict) {
@@ -133,7 +132,13 @@
     firstKey_ = [dict[@"firstKey"] longLongValue];
     nextKey_ = [dict[@"nextKey"] longLongValue];
     begin_ = [dict[@"begin"] longLongValue];
+    if (begin_ >= store.length || begin_ < 0) {
+        begin_ = 0;
+    }
     end_ = [dict[@"end"] longLongValue];
+    if (end_ >= store.length || end_ < 0) {
+        end_ = 0;
+    }
     return YES;
 }
 
@@ -249,6 +254,16 @@
     return scratch_;
 }
 
+- (ptrdiff_t)offsetOfPointer:(char *)pointer {
+    if (pointer == NULL) {
+        return -1;
+    }
+    if (store_ == NULL) {
+        return -2;
+    }
+    return pointer - store_;
+}
+
 - (long long)capacity
 {
     return capacity_;
@@ -259,5 +274,17 @@
     return [index_ count] == 0;
 }
 
+- (NSData *)dataAtOffset:(ptrdiff_t)offset length:(size_t)length {
+    if (offset < 0 || offset >= capacity_) {
+        return nil;
+    }
+    if (length > capacity_) {
+        return nil;
+    }
+    if (offset + length >= capacity_) {
+        return nil;
+    }
+    return [NSData dataWithBytes:store_ + offset length:length];
+}
 
 @end

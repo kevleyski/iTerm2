@@ -35,7 +35,6 @@
 
 extern NSString *const kRefreshTerminalNotification;
 extern NSString *const kUpdateLabelsNotification;
-extern NSString *const kKeyBindingsChangedNotification;
 extern NSString *const kPreferencePanelDidUpdateProfileFields;
 extern NSString *const kSessionProfileDidChange;  // Posted by a session when it changes to update the Get Info window.
 extern NSString *const kPreferencePanelDidLoadNotification;
@@ -43,6 +42,8 @@ extern NSString *const kPreferencePanelWillCloseNotification;
 
 // All profiles should be reloaded.
 extern NSString *const kReloadAllProfiles;
+
+CGFloat iTermPreferencePanelGetWindowMinimumWidth(BOOL session);
 
 // Constants for KEY_PROMPT_CLOSE
 // Never prompt on close
@@ -54,13 +55,20 @@ extern NSString *const kReloadAllProfiles;
 
 @class iTermController;
 @class iTermSemanticHistoryPrefsController;
+@class iTermShortcutInputView;
 @protocol iTermSessionScope;
 @class SmartSelectionController;
 @class TriggerController;
 
 void LoadPrefsFromCustomFolder(void);
 
+@protocol iTermPrefsPanelDelegate<NSObject>
+- (void)prefsPanelDidChangeFrameTo:(NSRect)newFrame;
+- (void)responderWillBecomeFirstResponder:(NSResponder *)responder;
+@end
+
 @interface iTermPrefsPanel : NSPanel
+@property (nonatomic, weak) id<iTermPrefsPanelDelegate> prefsPanelDelegate;
 @end
 
 @interface PreferencePanel : NSWindowController <
@@ -87,16 +95,16 @@ void LoadPrefsFromCustomFolder(void);
 
 - (IBAction)showGlobalTabView:(id)sender;
 - (IBAction)showAppearanceTabView:(id)sender;
-- (IBAction)showBookmarksTabView:(id)sender;
+- (IBAction)showProfilesTabView:(id)sender;
 - (IBAction)showKeyboardTabView:(id)sender;
 - (IBAction)showArrangementsTabView:(id)sender;
 - (IBAction)showMouseTabView:(id)sender;
 
-- (void)underlyingBookmarkDidChange;
+- (void)underlyingProfileDidChange;
 
 - (WindowArrangements *)arrangements;
 - (void)run;
-- (NSTextField*)hotkeyField;
+- (iTermShortcutInputView *)hotkeyField;
 
 - (void)changeFont:(id)fontManager;
 - (void)selectProfilesTab;
@@ -107,5 +115,10 @@ void LoadPrefsFromCustomFolder(void);
 andEditComponentWithIdentifier:(NSString *)identifier
                          tmux:(BOOL)tmux
                         scope:(iTermVariableScope<iTermSessionScope> *)scope;
+
+- (void)openToProfileWithGuid:(NSString *)guid
+                          key:(NSString *)key;
+
+- (void)openToPreferenceWithKey:(NSString *)key;
 
 @end

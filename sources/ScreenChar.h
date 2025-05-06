@@ -35,31 +35,43 @@
 
 @class iTermImage;
 @class iTermImageInfo;
+@protocol iTermImageInfoReading;
+
+#define ITERM2_PRIVATE_BEGIN 0x0001
+#define ITERM2_PRIVATE_END 0x0007
 
 // This is used in the rightmost column when a double-width character would
 // have been split in half and was wrapped to the next line. It is nonprintable
 // and not selectable. It is not copied into the clipboard. A line ending in this
 // character should always have EOL_DWC. These are stripped when adding a line
 // to the scrollback buffer.
-#define DWC_SKIP 0xf000
+#define DWC_SKIP (ITERM2_PRIVATE_BEGIN + 0)
 
 // When a tab is received, we insert some number of TAB_FILLER characters
 // preceded by a \t character. This allows us to reconstruct the tab for
 // copy-pasting.
-#define TAB_FILLER 0xf001
+#define TAB_FILLER (ITERM2_PRIVATE_BEGIN + 1)
 
 // If DWC_SKIP appears in the input, we convert it to this to avoid causing confusion.
 // NOTE: I think this isn't used because DWC_SKIP is caught early and converted to a '?'.
-#define BOGUS_CHAR 0xf002
+#define BOGUS_CHAR (ITERM2_PRIVATE_BEGIN + 2)
 
 // Double-width characters have their "real" code in one cell and this code in
 // the right-hand cell.
-#define DWC_RIGHT 0xf003
+#define DWC_RIGHT (ITERM2_PRIVATE_BEGIN + 3)
+
+// Placed in searchings while searching to match ^ or $
+#define REGEX_START (ITERM2_PRIVATE_BEGIN + 4)
+#define REGEX_END (ITERM2_PRIVATE_BEGIN + 5)
+
+// This never occurs in a string.
+#define IMPOSSIBLE_CHAR (ITERM2_PRIVATE_BEGIN + 6)
 
 // The range of private codes we use, with specific instances defined
 // above here.
-#define ITERM2_PRIVATE_BEGIN 0xf000
-#define ITERM2_PRIVATE_END 0xf003
+#define ITERM2_LEGACY_PRIVATE_BEGIN 0xf000
+#define ITERM2_LEGACY_PRIVATE_END 0xf003
+
 
 // These codes go in the continuation character to the right of the
 // rightmost column.
@@ -101,7 +113,12 @@ typedef NS_ENUM(NSUInteger, kiTermScreenCharAnsiColor) {
     kiTermScreenCharAnsiColorBrightWhite
 };
 
-
+typedef NS_ENUM(int, iTermTriState) {
+    iTermTriStateFalse,
+    iTermTriStateTrue,
+    iTermTriStateOther
+};
+iTermTriState iTermTriStateFromBool(BOOL b);
 
 // Max unichars in a glyph.
 static const int kMaxParts = 20;
@@ -113,9 +130,23 @@ typedef enum {
     ColorModeInvalid = 3
 } ColorMode;
 
+// Note that this is a bit field in screen_char_t. If you add to it ensure there is space to grow.
+typedef NS_ENUM(unsigned int, VT100UnderlineStyle) {
+    VT100UnderlineStyleSingle,
+    VT100UnderlineStyleCurly,
+    VT100UnderlineStyleDouble
+};
 
-typedef struct screen_char_t
-{
+typedef struct {
+    int red;
+    int green;
+    int blue;
+    ColorMode mode;
+} VT100TerminalColorValue;
+
+NSString *VT100TerminalColorValueDescription(VT100TerminalColorValue value, BOOL fg);
+
+typedef struct legacy_screen_char_t {
     // Normally, 'code' gives a utf-16 code point. If 'complexChar' is set then
     // it is a key into a string table of multiple utf-16 code points (for
     // example, a surrogate pair or base char+combining mark). These must render
@@ -134,9 +165,9 @@ typedef struct screen_char_t
     //       magenta, cyan, and white.
     //     Values between 8 and 15 are bright versions of 0-7.
     //     Values between 16 and 255 are used for 256 color mode:
-    //       16-232: rgb value given by 16 + r*36 + g*6 + b, with each color in
+    //       16-231: rgb value given by 16 + r*36 + g*6 + b, with each color in
     //         the range [0,5].
-    //       233-255: Grayscale values from dimmest gray 233 (which is not black)
+    //       232-255: Grayscale values from dimmest gray 233 (which is not black)
     //         to brightest 255 (not white).
     // With alternate background semantics:
     //   ALTSEM_xxx (see comments above)
@@ -176,56 +207,139 @@ typedef struct screen_char_t
     // foregroundColor, and backgroundColor (see notes above).
     unsigned int image : 1;
 
-    // These bits aren't used but are defined here so that the entire memory
-    // region can be initialized.
-    unsigned int unused : 5;
+    unsigned int strikethrough : 1;
+    VT100UnderlineStyle underlineStyle : 2;  // VT100UnderlineStyle
+
+    unsigned int invisible : 1;
+
+    // fg and bg are swapped. Note that this flag doesn't affect rendering; it simply notes that the
+    // colors in this struct were *already* exchanged because of SGR 7.
+    unsigned int inverse : 1;
 
     // This comes after unused so it can be byte-aligned.
     // If the current text is part of a hypertext link, this gives an index into the URL store.
     unsigned short urlCode;
+} legacy_screen_char_t;
+
+typedef NS_ENUM(unsigned int, RTLStatus) {
+    RTLStatusUnknown = 0,
+    RTLStatusLTR = 1,
+    RTLStatusRTL = 2
+};
+
+typedef struct screen_char_t {
+    // Normally, 'code' gives a utf-16 code point. If 'complexChar' is set then
+    // it is a key into a string table of multiple utf-16 code points (for
+    // example, a surrogate pair or base char+combining mark). These must render
+    // to a single glyph. 'code' can take some special values which are valid
+    // regardless of the setting of 'complexChar':
+    //   0: Signifies no character was ever set at this location. Not selectable.
+    //   DWC_SKIP, TAB_FILLER, BOGUS_CHAR, or DWC_RIGHT: See comments above.
+    // In the WIDTH+1 position on a line, this takes the value of EOL_HARD,
+    //  EOL_SOFT, or EOL_DWC. See the comments for those constants.
+    // If this is an image:
+    //   - If it is a virtualPlacement, it acts like a complexChar (code indexes into string table)
+    //   - If it is *not* a virtualPlacement, code is an image number.
+    unichar code;
+
+    // With normal background semantics:
+    //   The lower 9 bits have the same semantics for foreground and background
+    //   color:
+    //     Low three bits give color. 0-7 are black, red, green, yellow, blue,
+    //       magenta, cyan, and white.
+    //     Values between 8 and 15 are bright versions of 0-7.
+    //     Values between 16 and 255 are used for 256 color mode:
+    //       16-231: rgb value given by 16 + r*36 + g*6 + b, with each color in
+    //         the range [0,5].
+    //       232-255: Grayscale values from dimmest gray 233 (which is not black)
+    //         to brightest 255 (not white).
+    // With alternate background semantics:
+    //   ALTSEM_xxx (see comments above)
+    // With 24-bit semantics:
+    //   foreground/backgroundColor gives red component and fg/bgGreen, fg/bgBlue
+    //     give the rest of the color's components
+    // For non-virtualPlacement images, foregroundColor doubles as the x index.
+    unsigned int foregroundColor : 8;
+    unsigned int fgGreen : 8;
+    unsigned int fgBlue  : 8;
+
+    // For non-virtualPlacement images, backgroundColor doubles as the y index.
+    unsigned int backgroundColor : 8;
+    unsigned int bgGreen : 8;
+    unsigned int bgBlue  : 8;
+
+    // These determine the interpretation of foreground/backgroundColor.
+    unsigned int foregroundColorMode : 2;
+    unsigned int backgroundColorMode : 2;
+
+    // If set, the 'code' field does not give a utf-16 value but is instead a
+    // key into a string table of more complex chars (combined, surrogate pairs,
+    // etc.). Valid 'code' values for a complex char are in [1, 0xefff] and will
+    // be recycled as needed.
+    // See the notes in `code` about how this interacts with images.
+    unsigned int complexChar : 1;
+
+    // Various bits affecting text appearance. The bold flag here is semantic
+    // and may be rendered as some combination of font choice and color
+    // intensity.
+    unsigned int bold : 1;
+    unsigned int faint : 1;
+    unsigned int italic : 1;
+    unsigned int blink : 1;
+    unsigned int underline : 1;
+
+    // Is this actually an image? Changes the semantics of code, complexChar,
+    // foregroundColor, and backgroundColor (see notes above).
+    unsigned int image : 1;  // See also virtualPlaceholder, below.
+
+    unsigned int strikethrough : 1;
+    VT100UnderlineStyle underlineStyle : 2;  // VT100UnderlineStyle
+
+    unsigned int invisible : 1;
+
+    // fg and bg are swapped. Note that this flag doesn't affect rendering; it simply notes that the
+    // colors in this struct were *already* exchanged because of SGR 7.
+    unsigned int inverse : 1;
+
+    // Character can't be erased when screen is in protected mode. See DECSCA, SPA, and EPA.
+    unsigned int guarded : 1;
+
+    // Only valid when this is an image. If set, this is a Kitty-style virtual placeholder.
+    unsigned int virtualPlaceholder : 1;
+
+    // BiDi disposition, if any.
+    RTLStatus rtlStatus : 2;
+
+    unsigned int unused : 12;
 } screen_char_t;
 
-// Typically used to store a single screen line.
-@interface ScreenCharArray : NSObject {
-    screen_char_t *_line;  // Array of chars
-    int _length;  // Number of chars in _line
-    int _eol;  // EOL_SOFT, EOL_HARD, or EOL_DWC
-}
-
-@property (nonatomic, assign) screen_char_t *line;  // Assume const unless instructed otherwise
-@property (nonatomic, assign) int length;
-@property (nonatomic, assign) int eol;
-@property (nonatomic) screen_char_t continuation;
-
-- (instancetype)initWithLine:(screen_char_t *)line
-                      length:(int)length
-                continuation:(screen_char_t)continuation;
-- (BOOL)isEqualToScreenCharArray:(ScreenCharArray *)other;
-@end
 
 // Standard unicode replacement string. Is a double-width character.
-static inline NSString* ReplacementString()
-{
+static inline NSString* ReplacementString(void) {
     const unichar kReplacementCharacter = UNICODE_REPLACEMENT_CHAR;
     return [NSString stringWithCharacters:&kReplacementCharacter length:1];
 }
 
-static inline BOOL ScreenCharacterAttributesEqual(screen_char_t *c1, screen_char_t *c2) {
-    return (c1->foregroundColor == c2->foregroundColor &&
-            c1->fgGreen == c2->fgGreen &&
-            c1->fgBlue == c2->fgBlue &&
-            c1->backgroundColor == c2->backgroundColor &&
-            c1->bgGreen == c2->bgGreen &&
-            c1->bgBlue == c2->bgBlue &&
-            c1->foregroundColorMode == c2->foregroundColorMode &&
-            c1->backgroundColorMode == c2->backgroundColorMode &&
-            c1->bold == c2->bold &&
-            c1->faint == c2->faint &&
-            c1->italic == c2->italic &&
-            c1->blink == c2->blink &&
-            c1->underline == c2->underline &&
-            !c1->urlCode == !c2->urlCode &&  // Only tests if urlCode is zero/nonzero in both
-            c1->image == c2->image);
+static inline BOOL ScreenCharacterAttributesEqual(const screen_char_t c1, const screen_char_t c2) {
+    return (c1.foregroundColor == c2.foregroundColor &&
+            c1.fgGreen == c2.fgGreen &&
+            c1.fgBlue == c2.fgBlue &&
+            c1.backgroundColor == c2.backgroundColor &&
+            c1.bgGreen == c2.bgGreen &&
+            c1.bgBlue == c2.bgBlue &&
+            c1.foregroundColorMode == c2.foregroundColorMode &&
+            c1.backgroundColorMode == c2.backgroundColorMode &&
+            c1.bold == c2.bold &&
+            c1.faint == c2.faint &&
+            c1.italic == c2.italic &&
+            c1.blink == c2.blink &&
+            c1.invisible == c2.invisible &&
+            c1.underline == c2.underline &&
+            c1.underlineStyle == c2.underlineStyle &&
+            c1.strikethrough == c2.strikethrough &&
+            c1.image == c2.image &&
+            c1.virtualPlaceholder == c2.virtualPlaceholder &&
+            c1.rtlStatus == c2.rtlStatus);
 }
 
 // Copy foreground color from one char to another.
@@ -239,9 +353,15 @@ static inline void CopyForegroundColor(screen_char_t* to, const screen_char_t fr
     to->faint = from.faint;
     to->italic = from.italic;
     to->blink = from.blink;
+    to->invisible = from.invisible;
     to->underline = from.underline;
-    to->urlCode = from.urlCode;
+    to->underlineStyle = from.underlineStyle;
+    to->strikethrough = from.strikethrough;
+    to->unused = from.unused;
     to->image = from.image;
+    to->virtualPlaceholder = from.virtualPlaceholder;
+    to->inverse = from.inverse;
+    to->guarded = from.guarded;
 }
 
 // Copy background color from one char to another.
@@ -273,35 +393,8 @@ static inline BOOL BackgroundColorsEqual(const screen_char_t a,
     }
 }
 
-// Returns true iff two foreground colors are equal.
-static inline BOOL ForegroundAttributesEqual(const screen_char_t a,
-                                             const screen_char_t b)
-{
-    if (a.bold != b.bold ||
-        a.faint != b.faint ||
-        a.italic != b.italic ||
-        a.blink != b.blink ||
-        a.underline != b.underline ||
-        !a.urlCode != !b.urlCode) {
-        return NO;
-    }
-    if (a.foregroundColorMode == b.foregroundColorMode) {
-        if (a.foregroundColorMode != ColorMode24bit) {
-            // for normal and alternate ColorMode
-            return a.foregroundColor == b.foregroundColor;
-        } else {
-            // RGB must all be equal for 24bit color
-            return a.foregroundColor == b.foregroundColor &&
-                a.fgGreen == b.fgGreen &&
-                a.fgBlue == b.fgBlue;
-        }
-    } else {
-        // different ColorMode == different colors
-        return NO;
-    }
-}
-
-static inline BOOL ScreenCharHasDefaultAttributesAndColors(const screen_char_t s) {
+static inline BOOL ScreenCharHasDefaultAttributesAndColors(const screen_char_t s,
+                                                           unsigned int urlCode) {
     return (s.backgroundColor == ALTSEM_DEFAULT &&
             s.foregroundColor == ALTSEM_DEFAULT &&
             s.backgroundColorMode == ColorModeAlternate &&
@@ -311,8 +404,11 @@ static inline BOOL ScreenCharHasDefaultAttributesAndColors(const screen_char_t s
             !s.faint &&
             !s.italic &&
             !s.blink &&
+            !s.invisible &&
             !s.underline &&
-            !s.urlCode);
+            s.underlineStyle == VT100UnderlineStyleSingle &&
+            !s.strikethrough &&
+            urlCode == 0);
 }
 
 // Represents an array of screen_char_t's as a string and facilitates mapping a
@@ -326,8 +422,10 @@ static inline BOOL ScreenCharHasDefaultAttributesAndColors(const screen_char_t s
 // characters. It's useful if you need a string line that doesn't represent actual characters on
 // the screen, though.
 + (instancetype)stringLineWithString:(NSString *)string;
++ (instancetype)bell;
 
-- (instancetype)initWithScreenChars:(screen_char_t *)screenChars
+// Note: this strips controls and private use characters.
+- (instancetype)initWithScreenChars:(const screen_char_t *)screenChars
                              length:(NSInteger)length;
 
 - (NSRange)rangeOfScreenCharsForRangeInString:(NSRange)rangeInString;
@@ -336,36 +434,24 @@ static inline BOOL ScreenCharHasDefaultAttributesAndColors(const screen_char_t s
 
 // Look up the string associated with a complex char's key.
 NSString* ComplexCharToStr(int key);
+BOOL ComplexCharCodeIsSpacingCombiningMark(unichar code);
 
 // Return a string with the contents of a screen char, which may or may not
 // be complex.
 NSString* ScreenCharToStr(const screen_char_t *const sct);
 NSString* CharToStr(unichar code, BOOL isComplex);
-
-// Performs the appropriate normalization.
-NSString *StringByNormalizingString(NSString *theString, iTermUnicodeNormalization normalization);
+NSString* ScreenCharToKittyPlaceholder(const screen_char_t *const sct);
 
 // This is a faster version of ScreenCharToStr if what you want is an array of
 // unichars. Returns the number of code points appended to dest.
-int ExpandScreenChar(screen_char_t* sct, unichar* dest);
-
-// Convert a code into a utf-32 char.
-UTF32Char CharToLongChar(unichar code, BOOL isComplex);
+int ExpandScreenChar(const screen_char_t *sct, unichar* dest);
 
 // Add a code point to the end of an existing complex char. A replacement key is
 // returned.
-int AppendToComplexChar(int key, unichar codePoint);
+unichar AppendToComplexChar(unichar key, unichar codePoint);
 
-// Takes a non-complex character and adds a combining mark to it. It may or may not
-// become complex as a result, depending on whether there is an NFC form for the
-// new composite.
-void BeginComplexChar(screen_char_t *screenChar, unichar combiningChar, iTermUnicodeNormalization normalization);
-
-// Place a complex char in a screen char.
-void SetComplexCharInScreenChar(screen_char_t *screenChar, NSString *theString, iTermUnicodeNormalization normalization);
-
-// Create or lookup & return the code for a complex char.
-int GetOrSetComplexChar(NSString* str);
+// Add a code point to the end of an existing char, whether complex or not.
+void AppendToChar(screen_char_t *dest, unichar c);
 
 // Translate a surrogate pair into a single utf-32 char.
 UTF32Char DecodeSurrogatePair(unichar high, unichar low);
@@ -382,7 +468,7 @@ BOOL IsHighSurrogate(unichar c);
 // the result string to indices in the original array.
 // In other words:
 // part or all of [result characterAtIndex:i] refers to all or part of screenChars[i - (*deltasPtr)[i]].
-NSString* ScreenCharArrayToString(screen_char_t* screenChars,
+NSString* ScreenCharArrayToString(const screen_char_t *screenChars,
                                   int start,
                                   int end,
                                   unichar** backingStorePtr,
@@ -391,7 +477,7 @@ NSString* ScreenCharArrayToString(screen_char_t* screenChars,
 // Number of chars before a sequence of nuls at the end of the line.
 int EffectiveLineLength(screen_char_t* theLine, int totalLength);
 
-NSString* ScreenCharArrayToStringDebug(screen_char_t* screenChars,
+NSString* ScreenCharArrayToStringDebug(const screen_char_t* screenChars,
                                        int lineLength);
 
 NSString *DebugStringForScreenChar(screen_char_t c);
@@ -421,7 +507,9 @@ void StringToScreenChars(NSString *s,
                          int *cursorIndex,
                          BOOL *foundDwc,
                          iTermUnicodeNormalization normalization,
-                         NSInteger unicodeVersion);
+                         NSInteger unicodeVersion,
+                         BOOL softAlternateScreenMode,
+                         BOOL *rtlFound);
 
 // Copy attributes from fg and bg, and zero out other fields. Text attributes like bold, italic, etc.
 // come from fg.
@@ -457,7 +545,8 @@ void SetDecodedImage(unichar code, iTermImage *image, NSData *data);
 void ReleaseImage(unichar code);
 
 // Returns image info for a code found in a screen_char_t with field image==1.
-iTermImageInfo *GetImageInfo(unichar code);
+id<iTermImageInfoReading> GetImageInfo(unichar code);
+iTermImageInfo* GetMutableImageInfo(unichar code);
 
 // Returns the position of a character within an image in cells with the origin
 // at the top left.
@@ -465,5 +554,78 @@ VT100GridCoord GetPositionOfImageInChar(screen_char_t c);
 
 // Returns a dictionary of restorable state
 NSDictionary *ScreenCharEncodedRestorableState(void);
+NSInteger ScreenCharGeneration(void);
 void ScreenCharDecodeRestorableState(NSDictionary *state);
+void ScreenCharGarbageCollectImages(void);
+void ScreenCharClearProvisionalFlagForImageWithCode(int code);
 
+NSString *ScreenCharDescription(screen_char_t c);
+void ScreenCharInvert(screen_char_t *c);
+
+// Returns true if any RTL was found. Sets the rtlState on all characters in c.
+BOOL AnnotateRightToLeftInScreenChars(screen_char_t *c, int len);
+
+// This may return a value for the next cell if `cellOffset` points at something without a corresponding
+// code point, such as a DWC_RIGHT.
+int UTF16OffsetFromCellOffset(int cellOffset,  // search for utf-16 offset with this cell offset
+                              const int *deltas,  // indexed by code point
+                              int numCodePoints);
+
+// Converts an offset into an NSString to a cell index in the SCA that created it with ScreenCharArrayToString.
+int CellOffsetFromUTF16Offset(int utf16Offset,
+                              const int *deltas);
+
+NS_INLINE BOOL ScreenCharIsDWC_SKIP(screen_char_t c) {
+    if (c.complexChar) {
+        return NO;
+    }
+    if (c.image) {
+        return NO;
+    }
+    return c.code == DWC_SKIP;
+}
+
+NS_INLINE BOOL ScreenCharIsDWC_RIGHT(screen_char_t c) {
+    // These tests are arranged in order of most- to least-likely for performance.
+    if (c.code != DWC_RIGHT) {
+        return NO;
+    }
+    if (c.complexChar) {
+        return NO;
+    }
+    if (c.image) {
+        return NO;
+    }
+    return YES;
+}
+
+NS_INLINE BOOL ScreenCharIsTAB_FILLER(screen_char_t c) {
+    if (c.complexChar) {
+        return NO;
+    }
+    if (c.image) {
+        return NO;
+    }
+    return c.code == TAB_FILLER;
+}
+
+NS_INLINE void ScreenCharSetDWC_SKIP(screen_char_t *c) {
+    c->complexChar = NO;
+    c->image = NO;
+    c->virtualPlaceholder = NO;
+    c->code = DWC_SKIP;
+}
+
+NS_INLINE void ScreenCharSetTAB_FILLER(screen_char_t *c) {
+    c->complexChar = NO;
+    c->image = NO;
+    c->virtualPlaceholder = NO;
+    c->code = TAB_FILLER;
+}
+
+NS_INLINE void ScreenCharSetDWC_RIGHT(screen_char_t *c) {
+    c->complexChar = NO;
+    c->image = NO;
+    c->virtualPlaceholder = NO;
+    c->code = DWC_RIGHT;
+}

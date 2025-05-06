@@ -22,9 +22,17 @@ typedef NS_ENUM(NSInteger, PreferenceInfoType) {
     kPreferenceInfoTypeMatrix,
     kPreferenceInfoTypeColorWell,
     // a view whose children that are buttons are all radio buttons with distinct tags controlling the same preference
-    kPreferenceInfoTypeRadioButton
+    kPreferenceInfoTypeRadioButton,
+    kPreferenceInfoTypeStringPopup,
+    kPreferenceInfoTypePasswordTextField
 };
 
+@class iTermPreferencesSearchDocument;
+@class PreferenceInfo;
+
+@protocol PreferenceController<NSObject>
+- (void)updateEnabledStateForInfo:(PreferenceInfo *)info;
+@end
 
 @interface PreferenceInfo : NSObject
 
@@ -32,6 +40,9 @@ typedef NS_ENUM(NSInteger, PreferenceInfoType) {
 @property(nonatomic) PreferenceInfoType type;
 @property(nonatomic, strong) NSControl *control;
 @property(nonatomic) NSRange range;  // For integer fields, the range of legal values.
+@property(nonatomic, readonly) NSArray<NSString *> *searchKeywords;
+@property(nonatomic, strong) NSStepper *associatedStepper;
+@property(nonatomic, strong) NSView *relatedView;
 
 // If set to YES, don't process changes until keyboard focus exits the control. Defaults to NO.
 // Only supported on controls of type kPreferenceInfoTypeIntegerTextField.
@@ -78,8 +89,19 @@ typedef NS_ENUM(NSInteger, PreferenceInfoType) {
 // For text controls, this is called when editing ends.
 @property(nonatomic, copy) void (^controlTextDidEndEditing)(NSNotification *notification);
 
+// Use this when the value is not backed by user defaults.
+@property(nonatomic, copy) id (^syntheticGetter)(void);
+@property(nonatomic, copy) void (^syntheticSetter)(id newValue);
+
+// If you define a customSettingChangedHandler and don't store the setting in user defaults under `key`,
+// then you should also override this to indicate whether the current value is the default value.
+@property(nonatomic, copy) BOOL (^hasDefaultValue)(void);
+
 + (instancetype)infoForPreferenceWithKey:(NSString *)key
                                     type:(PreferenceInfoType)type
                                  control:(NSControl *)control;
+
+- (void)addShouldBeEnabledDependencyOnUserDefault:(NSString *)key
+                                       controller:(id<PreferenceController>)controller;
 
 @end

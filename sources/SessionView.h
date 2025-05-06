@@ -26,7 +26,9 @@
  */
 
 #import <Cocoa/Cocoa.h>
+#import "iTermBackgroundColorView.h"
 #import "iTermFindDriver.h"
+#import "iTermLegacyView.h"
 #import "iTermMetalDriver.h"
 #import "PTYScrollView.h"
 #import "PTYSession.h"
@@ -35,14 +37,20 @@
 
 @class iTermAnnouncementViewController;
 @class iTermFindDriver;
+@class iTermImageWrapper;
+@class iTermIncrementalMinimapView;
+@class iTermLegacyView;
+@class iTermMTKView;
 @class iTermMetalDriver;
+@protocol iTermSearchResultsMinimapViewDelegate;
+@class iTermSearchResultsMinimapView;
 @class PTYSession;
 @class SplitSelectionView;
 @class SessionTitleView;
 
 extern NSString *const SessionViewWasSelectedForInspectionNotification;
 
-@protocol iTermSessionViewDelegate<iTermFindDriverDelegate, NSObject>
+@protocol iTermSessionViewDelegate<iTermFindDriverDelegate, iTermLegacyViewDelegate, NSObject>
 
 // Mouse entered the view.
 - (void)sessionViewMouseEntered:(NSEvent *)event;
@@ -65,11 +73,6 @@ extern NSString *const SessionViewWasSelectedForInspectionNotification;
 // Is this this view part of a visible tab?
 - (BOOL)sessionViewIsVisible;
 
-// Requests to draw part of the background image/color.
-- (void)sessionViewDrawBackgroundImageInView:(NSView *)view
-                                    viewRect:(NSRect)rect
-                      blendDefaultBackground:(BOOL)blendDefaultBackground;
-
 // Drag entered this view.
 - (NSDragOperation)sessionViewDraggingEntered:(id<NSDraggingInfo>)sender;
 - (void)sessionViewDraggingExited:(id<NSDraggingInfo>)sender;
@@ -91,6 +94,7 @@ extern NSString *const SessionViewWasSelectedForInspectionNotification;
 
 // Is this session's text view the first responder?
 - (BOOL)sessionViewTerminalIsFirstResponder;
+- (BOOL)sessionViewShouldDimOnlyText;
 - (NSColor *)sessionViewBackgroundColor;
 
 // Gives the tab color for this session.
@@ -113,6 +117,7 @@ extern NSString *const SessionViewWasSelectedForInspectionNotification;
 
 // Returns the accepted size.
 - (NSSize)sessionViewScrollViewWillResize:(NSSize)proposedSize;
+- (void)sessionViewScrollViewDidResize;
 
 // User double clicked on title view.
 - (void)sessionViewDoubleClickOnTitleBar;
@@ -139,13 +144,22 @@ extern NSString *const SessionViewWasSelectedForInspectionNotification;
 - (iTermVariableScope *)sessionViewScope;
 
 - (BOOL)sessionViewUseSeparateStatusBarsPerPane;
+- (CGFloat)sessionViewTransparencyAlpha;
+- (NSRect)sessionViewFrameForLegacyView;
+- (void)sessionViewDidChangeEffectiveAppearance;
+- (BOOL)sessionViewCaresAboutMouseMovement;
+
+- (NSRect)sessionViewOffscreenCommandLineFrameForView:(NSView *)view;
+- (void)sessionViewUpdateComposerFrame;
+- (NSDictionary *)sessionViewStatusBarAdvancedConfigurationDictionary;
+- (CGFloat)desiredRightExtra;
 
 @end
 
 typedef NS_ENUM(NSUInteger, iTermSessionViewFindDriver) {
-    iTermSessionViewFindDriverDropDown,
-    iTermSessionViewFindDriverTemporaryStatusBar,
-    iTermSessionViewFindDriverPermanentStatusBar
+    iTermSessionViewFindDriverDropDown,  // There is no status bar
+    iTermSessionViewFindDriverTemporaryStatusBar,  // The find component will be added to the status bar while it's in use
+    iTermSessionViewFindDriverPermanentStatusBar  // The find component is always in the status bar
 };
 
 @interface SessionView : NSView <SessionTitleViewDelegate>
@@ -156,10 +170,12 @@ typedef NS_ENUM(NSUInteger, iTermSessionViewFindDriver) {
 @property(nonatomic, assign) int ordinal;
 @property(nonatomic, readonly) iTermAnnouncementViewController *currentAnnouncement;
 @property(nonatomic, weak) id<iTermSessionViewDelegate> delegate;
+@property(nonatomic, readonly) iTermSearchResultsMinimapView *searchResultsMinimap NS_AVAILABLE_MAC(10_14);
+@property(nonatomic, readonly) iTermIncrementalMinimapView *marksMinimap NS_AVAILABLE_MAC(10_14);
 @property(nonatomic, readonly) PTYScrollView *scrollview;
 @property(nonatomic, readonly) PTYScroller *verticalScroller;
 @property(nonatomic, readonly) iTermMetalDriver *driver NS_AVAILABLE_MAC(10_11);
-@property(nonatomic, readonly) MTKView *metalView NS_AVAILABLE_MAC(10_11);
+@property(nonatomic, readonly) iTermMTKView *metalView NS_AVAILABLE_MAC(10_11);
 @property(nonatomic, readonly) BOOL useMetal NS_AVAILABLE_MAC(10_11);
 
 @property(nonatomic, readonly) BOOL isDropDownSearchVisible;
@@ -167,12 +183,44 @@ typedef NS_ENUM(NSUInteger, iTermSessionViewFindDriver) {
 @property(nonatomic, readonly) BOOL findViewIsHidden;
 @property(nonatomic, readonly) BOOL findViewHasKeyboardFocus;
 @property(nonatomic, readonly) iTermFindDriver *findDriver;
+@property(nonatomic, readonly) iTermFindDriver *findDriverCreatingIfNeeded;
 @property(nonatomic, readonly) NSSize internalDecorationSize;
 @property(nonatomic, readonly) iTermSessionViewFindDriver findDriverType;
+@property(nonatomic, weak) id<iTermSearchResultsMinimapViewDelegate> searchResultsMinimapViewDelegate NS_AVAILABLE_MAC(10_14);
+@property(nonatomic, strong) iTermImageWrapper *image;
+@property(nonatomic) iTermBackgroundImageMode imageMode;
+@property(nonatomic, readonly) BOOL statusBarIsInPaneTitleBar;
+@property(nonatomic, readonly) double adjustedDimmingAmount;
+@property(nonatomic, readonly) iTermLegacyView *legacyView;
+
+@property(nonatomic) CGFloat composerHeight;
+@property(nonatomic, strong) NSNumber *preferredWidth;
+@property(nonatomic, readonly) CGFloat desiredRightExtra;
+
+// For macOS 10.14+ when subpixel AA is OFF, this draws the default background color. When there's
+// a background image it will be translucent to effect blending. When subpixel AA is ON or the OS
+// is 10.13 or earlier then this is hidden. It can't be used with subpixel AA because macOS isn't
+// able to take the color it's drawing over into account when choosing the subpixel colors and it
+// looks horrible.
+@property(nonatomic, strong) iTermSessionBackgroundColorView *backgroundColorView;
+
+// How far the metal view extends beyond the visible part of the viewport, such as under the title
+// bar or bottom per-pane status bar.
+@property(nonatomic, readonly) NSEdgeInsets extraMargins;
+@property (nonatomic) CGFloat actualRightExtra;
+
+- (void)setTerminalBackgroundColor:(NSColor *)color;
 
 - (void)showFindUI;
+- (void)createFindDriverIfNeeded;
+- (void)showFilter;
+
 - (void)findViewDidHide;
+- (void)findDriverInvalidateFrame;
 - (void)setUseMetal:(BOOL)useMetal dataSource:(id<iTermMetalDriverDataSource>)dataSource NS_AVAILABLE_MAC(10_11);;
+- (void)didChangeMetalViewAlpha;
+- (void)setTransparencyAlpha:(CGFloat)transparencyAlpha
+                       blend:(CGFloat)blend;
 
 + (double)titleHeight;
 + (NSDate*)lastResizeDate;
@@ -212,20 +260,25 @@ typedef NS_ENUM(NSUInteger, iTermSessionViewFindDriver) {
 
 // Layout subviews if automatic updates are allowed by the delegate.
 - (void)updateLayout;
+- (void)updateAnnouncementFrame;
 
 // The frame excluding the per-pane titlebar.
 - (NSRect)contentRect;
+
+// Insets the rect by the titlebar and status bar if they are present.
+- (NSRect)insetRect:(NSRect)rect flipped:(BOOL)flipped includeBottomStatusBar:(BOOL)includeBottomStatusBar;
 
 - (void)addAnnouncement:(iTermAnnouncementViewController *)announcement;
 
 - (void)createSplitSelectionView;
 - (SplitSessionHalf)removeSplitSelectionView;
 
-- (void)setHoverURL:(NSString *)url;
+- (BOOL)setHoverURL:(NSString *)url anchorFrame:(NSRect)anchorFrame;
 - (BOOL)hasHoverURL;
 - (void)reallyUpdateMetalViewFrame;
 - (void)invalidateStatusBar;
 - (void)updateFindDriver;
+- (void)takeStatusBarViewFrom:(SessionView *)donor;
 
 - (void)addSubviewBelowFindView:(NSView *)aView;
 
@@ -235,5 +288,15 @@ typedef NS_ENUM(NSUInteger, iTermSessionViewFindDriver) {
 
 - (void)tabColorDidChange;
 - (void)didBecomeVisible;
+- (void)showUnobtrusiveMessage:(NSString *)message;
+- (void)showUnobtrusiveMessage:(NSString *)message duration:(NSTimeInterval)duration;
+- (void)setSuppressLegacyDrawing:(BOOL)suppressLegacyDrawing;
+- (void)takeFindDriverFrom:(SessionView *)donorView delegate:(id<iTermFindDriverDelegate>)delegate;
+
+// Sets the next responder for the dropdown find view controller so you can still use menu items
+// vended by PTYTextView when it is focused.
+- (void)setMainResponder:(NSResponder *)responder;
+- (void)updateForAppearanceChange;
+- (void)smearCursorFrom:(NSRect)from to:(NSRect)to color:(NSColor *)color;
 
 @end

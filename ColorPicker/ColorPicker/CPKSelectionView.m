@@ -1,9 +1,13 @@
 #import "CPKSelectionView.h"
+
+#import "CPKAlphaSliderView.h"
+#import "CPKColor.h"
 #import "CPKColorComponentSliderView.h"
 #import "CPKFlippedView.h"
 #import "CPKGradientView.h"
-#import "CPKAlphaSliderView.h"
+#import "CPKLogging.h"
 #import "NSColor+CPK.h"
+#import "NSColorSpace+CPK.h"
 #import "NSObject+CPK.h"
 
 static const CGFloat kLeftMargin = 8;
@@ -16,7 +20,7 @@ static const CGFloat kColorComponentSliderHeight = 24;
 static const CGFloat kAlphaSliderHeight = 12;
 static const CGFloat kMarginBetweenTextFields = 4;
 static const CGFloat kMarginBetweenLastSliderAndTextFields = 8;
-static const CGFloat kColorTextFieldWidth = 32;
+static const CGFloat kColorTextFieldWidth = 34;
 static const CGFloat kMarginBetweenTextFieldAndLabel = 0;
 static const CGFloat kBottomMargin = 4;
 static const CGFloat kMarginBetweenComponentSliders = 4;
@@ -58,7 +62,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
 @property(nonatomic) CPKColorComponentSliderView *blueSliderView;
 
 @property(nonatomic) CPKAlphaSliderView *alphaSliderView;
-@property(nonatomic, copy) void (^block)(NSColor *);
+@property(nonatomic, copy) void (^block)(CPKColor *);
 
 @property(nonatomic) NSView *rgbTextFields;
 @property(nonatomic) NSView *hsbTextFields;
@@ -90,6 +94,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
 @property(nonatomic) NSTextField *blueTextFieldLabel;
 @property(nonatomic) NSTextField *alphaTextFieldLabel;
 @property(nonatomic) NSTextField *rgbHexTextFieldLabel;
+@property(nonatomic) NSTextField *colorSpaceTextFieldLabel;
 
 @property(nonatomic) NSTextField *alphaTextField;
 
@@ -101,13 +106,14 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
 @implementation CPKSelectionView
 
 - (instancetype)initWithFrame:(NSRect)frameRect
-                        block:(void (^)(NSColor *))block
-                        color:(NSColor *)color
+                        block:(void (^)(CPKColor *))block
+                        color:(CPKColor *)color
+                   colorSpace:(NSColorSpace *)colorSpace
                  alphaAllowed:(BOOL)alphaAllowed {
     self = [super initWithFrame:frameRect];
     if (self) {
         self.autoresizesSubviews = NO;
-
+        _colorSpace = colorSpace;
         _selectedColor = color;
         self.alphaAllowed = alphaAllowed;
 
@@ -127,13 +133,15 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.gradientView =
     [[CPKGradientView alloc] initWithFrame:NSZeroRect
                                       type:kCPKGradientViewTypeSaturationBrightness
-                                     block:^(NSColor *newColor) {
+                                colorSpace:self.colorSpace
+                                     block:^(CPKColor *newColor) {
                                          [weakSelf setColorFromGradient:newColor];
                                      }];
 
     self.colorComponentSliderView =
         [[CPKColorComponentSliderView alloc] initWithFrame:NSZeroRect
                                                      color:_selectedColor
+                                                colorSpace:self.colorSpace
                                                       type:kCPKColorComponentSliderTypeHue
                                                      block:^(CGFloat newValue) {
                                                          [weakSelf setSliderValue:newValue];
@@ -143,6 +151,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
         self.alphaSliderView = [[CPKAlphaSliderView alloc] initWithFrame:NSZeroRect
                                                                    alpha:_selectedColor.alphaComponent
                                                                    color:_selectedColor
+                                                              colorSpace:self.colorSpace
                                                                    block:^(CGFloat newAlpha) {
                                                                        [weakSelf setAlpha:newAlpha];
                                                                    }];
@@ -167,6 +176,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
                        self.rgbSliders,
                        self.gradientView,
                        self.colorComponentSliderView,
+                       self.colorSpaceTextFieldLabel,
                        self.hexTextField,
                        self.rgbTextFields,
                        self.hsbTextFields,
@@ -177,7 +187,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
         [self addSubview:self.alphaSliderView];
     }
     [self addSubview:self.hexTextField];
-    self.rgbHexTextFieldLabel = [self addLabel:@"RGB Hex" belowView:self.hexTextField toContainer:self];
+    self.rgbHexTextFieldLabel = [self addLabel:@"Hex" belowView:self.hexTextField toContainer:self];
     [self setTextFieldsRGB:![[NSUserDefaults standardUserDefaults] boolForKey:kCPKSelectionViewShowHSBTextFieldsKey]];
     // Update for the default mode
     [self modeDidChange:self.modeButton];
@@ -216,7 +226,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     }
 }
 
-- (void)createSlidersWithColor:(NSColor *)color {
+- (void)createSlidersWithColor:(CPKColor *)color {
     __weak __typeof(self) weakSelf = self;
     self.rgbSliders = [[CPKFlippedView alloc] initWithFrame:NSZeroRect];
     self.hsbSliders = [[CPKFlippedView alloc] initWithFrame:NSZeroRect];
@@ -225,6 +235,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.hueSliderView =
         [[CPKColorComponentSliderView alloc] initWithFrame:NSZeroRect
                                                      color:color
+                                                colorSpace:self.colorSpace
                                                       type:kCPKColorComponentSliderTypeHue
                                                      block:^(CGFloat newValue) {
                                                          [weakSelf updateSelectedColorFromHSBSliders];
@@ -236,6 +247,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.saturationSliderView =
         [[CPKColorComponentSliderView alloc] initWithFrame:NSZeroRect
                                                      color:color
+                                                colorSpace:self.colorSpace
                                                       type:kCPKColorComponentSliderTypeSaturation
                                                      block:^(CGFloat newValue) {
                                                          [weakSelf updateSelectedColorFromHSBSliders];
@@ -247,6 +259,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.brightnessSliderView =
         [[CPKColorComponentSliderView alloc] initWithFrame:NSZeroRect
                                                      color:color
+                                                colorSpace:self.colorSpace
                                                       type:kCPKColorComponentSliderTypeBrightness
                                                      block:^(CGFloat newValue) {
                                                          [weakSelf updateSelectedColorFromHSBSliders];
@@ -260,6 +273,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.redSliderView =
         [[CPKColorComponentSliderView alloc] initWithFrame:NSZeroRect
                                                      color:color
+                                                colorSpace:self.colorSpace
                                                       type:kCPKColorComponentSliderTypeRed
                                                      block:^(CGFloat newValue) {
                                                          [weakSelf updateSelectedColorFromRGBSliders];
@@ -272,6 +286,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.greenSliderView =
         [[CPKColorComponentSliderView alloc] initWithFrame:NSZeroRect
                                                      color:color
+                                                colorSpace:self.colorSpace
                                                       type:kCPKColorComponentSliderTypeGreen
                                                      block:^(CGFloat newValue) {
                                                          [weakSelf updateSelectedColorFromRGBSliders];
@@ -283,6 +298,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.blueSliderView =
         [[CPKColorComponentSliderView alloc] initWithFrame:NSZeroRect
                                                      color:color
+                                                colorSpace:self.colorSpace
                                                       type:kCPKColorComponentSliderTypeBlue
                                                      block:^(CGFloat newValue) {
                                                          [weakSelf updateSelectedColorFromRGBSliders];
@@ -327,6 +343,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.redTextField.delegate = self;
 
     self.hexTextField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    self.colorSpaceTextFieldLabel = [self labelWithTitle:self.colorSpace.cpk_shortLocalizedName origin:NSZeroPoint];
 
     self.hexTextField.delegate = self;
 
@@ -565,12 +582,19 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
                                          0);
     x -= self.redTextField.frame.size.width + kMarginBetweenTextFields;
 
-    self.hexTextField.frame = NSMakeRect(kLeftMargin,
+    [self layoutHeightOfTextField:self.hexTextField];
+
+    const NSSize colorSpaceTextFieldLabelSize = [self.colorSpaceTextFieldLabel fittingSize];
+    self.colorSpaceTextFieldLabel.frame = NSMakeRect(kLeftMargin,
+                                                     y + 3,
+                                                     colorSpaceTextFieldLabelSize.width,
+                                                     colorSpaceTextFieldLabelSize.height);
+    self.hexTextField.frame = NSMakeRect(NSMaxX(self.colorSpaceTextFieldLabel.frame) + kMarginBetweenTextFields,
                                          y,
                                          NSMinX(self.rgbTextFields.frame) -
-                                             kLeftMargin -
+                                             NSMaxX(self.colorSpaceTextFieldLabel.frame) -
                                              kMarginBetweenTextFields,
-                                         0);
+                                         NSHeight(self.hexTextField.frame));
 
     [self layoutHeightOfTextField:self.redTextField];
     [self layoutHeightOfTextField:self.greenTextField];
@@ -580,7 +604,6 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     [self layoutHeightOfTextField:self.saturationTextField];
     [self layoutHeightOfTextField:self.brightnessTextField];
 
-    [self layoutHeightOfTextField:self.hexTextField];
 
     [self layoutLabel:self.rgbHexTextFieldLabel belowView:self.hexTextField];
     [self layoutLabel:self.redTextFieldLabel belowView:self.redTextField];
@@ -669,7 +692,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
               toContainer:(NSView *)container {
     NSTextField *label = [self labelWithTitle:string origin:NSZeroPoint];
     [self layoutLabel:label belowView:view];
-    label.alignment = NSCenterTextAlignment;
+    label.alignment = NSTextAlignmentCenter;
     [container addSubview:label];
     return label;
 }
@@ -679,113 +702,120 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
 }
 
 - (void)updateSelectedColorFromHSBSliders {
-    self.selectedColor = [NSColor cpk_colorWithHue:self.hueSliderView.selectedValue
-                                        saturation:self.saturationSliderView.selectedValue
-                                        brightness:self.brightnessSliderView.selectedValue
-                                             alpha:self.selectedColor.alphaComponent];
+    self.selectedColor = [[CPKColor alloc] initWithHue:self.hueSliderView.selectedValue
+                                            saturation:self.saturationSliderView.selectedValue
+                                            brightness:self.brightnessSliderView.selectedValue
+                                                 alpha:self.selectedColor.alphaComponent];
     [self updateSliderGradients];
 }
 
 - (void)updateSliderGradients {
-    [self.hueSliderView setGradientColor:[NSColor cpk_colorWithHue:0
-                                                        saturation:self.saturationSliderView.selectedValue
-                                                        brightness:self.brightnessSliderView.selectedValue
-                                                             alpha:1]];
-    [self.saturationSliderView setGradientColor:[NSColor cpk_colorWithHue:self.hueSliderView.selectedValue
-                                                               saturation:1
-                                                               brightness:self.brightnessSliderView.selectedValue
-                                                                    alpha:1]];
-    [self.brightnessSliderView setGradientColor:[NSColor cpk_colorWithHue:self.hueSliderView.selectedValue
-                                                               saturation:self.saturationSliderView.selectedValue
-                                                               brightness:1
-                                                                    alpha:1]];
+    [self.hueSliderView setGradientColor:[[CPKColor alloc] initWithHue:0
+                                                            saturation:self.saturationSliderView.selectedValue
+                                                            brightness:self.brightnessSliderView.selectedValue
+                                                                 alpha:1]];
+    [self.saturationSliderView setGradientColor:[[CPKColor alloc] initWithHue:self.hueSliderView.selectedValue
+                                                                   saturation:1
+                                                                   brightness:self.brightnessSliderView.selectedValue
+                                                                        alpha:1]];
+    [self.brightnessSliderView setGradientColor:[[CPKColor alloc] initWithHue:self.hueSliderView.selectedValue
+                                                                   saturation:self.saturationSliderView.selectedValue
+                                                                   brightness:1
+                                                                        alpha:1]];
 
-    [self.redSliderView setGradientColor:[NSColor cpk_colorWithRed:0
-                                                             green:self.greenSliderView.selectedValue
-                                                              blue:self.blueSliderView.selectedValue
-                                                             alpha:1]];
-    [self.greenSliderView setGradientColor:[NSColor cpk_colorWithRed:self.redSliderView.selectedValue
-                                                             green:0
-                                                              blue:self.blueSliderView.selectedValue
-                                                             alpha:1]];
-    [self.blueSliderView setGradientColor:[NSColor cpk_colorWithRed:self.redSliderView.selectedValue
-                                                             green:self.greenSliderView.selectedValue
-                                                              blue:0
-                                                             alpha:1]];
+    [self.redSliderView setGradientColor:[[CPKColor alloc] initWithRed:0
+                                                                 green:self.greenSliderView.selectedValue
+                                                                  blue:self.blueSliderView.selectedValue
+                                                                 alpha:1
+                                                            colorSpace:self.colorSpace]];
+    [self.greenSliderView setGradientColor:[[CPKColor alloc] initWithRed:self.redSliderView.selectedValue
+                                                                   green:0
+                                                                    blue:self.blueSliderView.selectedValue
+                                                                   alpha:1
+                                                              colorSpace:self.colorSpace]];
+    [self.blueSliderView setGradientColor:[[CPKColor alloc] initWithRed:self.redSliderView.selectedValue
+                                                                  green:self.greenSliderView.selectedValue
+                                                                   blue:0
+                                                                  alpha:1
+                                                             colorSpace:self.colorSpace]];
 }
 
 - (void)updateSelectedColorFromRGBSliders {
-    self.selectedColor = [NSColor cpk_colorWithRed:self.redSliderView.selectedValue
-                                             green:self.greenSliderView.selectedValue
-                                              blue:self.blueSliderView.selectedValue
-                                             alpha:self.selectedColor.alphaComponent];
+    self.selectedColor = [[CPKColor alloc] initWithRed:self.redSliderView.selectedValue
+                                                 green:self.greenSliderView.selectedValue
+                                                  blue:self.blueSliderView.selectedValue
+                                                 alpha:self.selectedColor.alphaComponent
+                                            colorSpace:self.colorSpace];
     [self updateSliderGradients];
 }
 
 - (void)setSliderValue:(CGFloat)newValue {
     switch (self.modeButton.selectedTag) {
         case kCPKRGBViewModeHSBWithHueSliderTag:
-            _selectedColor = [NSColor cpk_colorWithHue:newValue
-                                            saturation:self.selectedColor.saturationComponent
-                                            brightness:self.selectedColor.brightnessComponent
-                                                 alpha:self.selectedColor.alphaComponent];
+            _selectedColor = [[CPKColor alloc] initWithHue:newValue
+                                                saturation:self.selectedColor.saturationComponent
+                                                brightness:self.selectedColor.brightnessComponent
+                                                     alpha:self.selectedColor.alphaComponent];
             self.gradientView.hue = newValue;
             break;
         case kCPKRGBViewModeHSBWithSaturationSliderTag:
-            _selectedColor = [NSColor cpk_colorWithHue:self.selectedColor.hueComponent
-                                            saturation:newValue
-                                            brightness:self.selectedColor.brightnessComponent
-                                                 alpha:self.selectedColor.alphaComponent];
+            _selectedColor = [[CPKColor alloc] initWithHue:self.selectedColor.hueComponent
+                                                saturation:newValue
+                                                brightness:self.selectedColor.brightnessComponent
+                                                     alpha:self.selectedColor.alphaComponent];
             self.gradientView.saturation = newValue;
             break;
         case kCPKRGBViewModeHSBWithBrightnessSliderTag:
-            _selectedColor = [NSColor cpk_colorWithHue:self.selectedColor.hueComponent
-                                            saturation:self.selectedColor.saturationComponent
-                                            brightness:newValue
-                                                 alpha:self.selectedColor.alphaComponent];
+            _selectedColor = [[CPKColor alloc] initWithHue:self.selectedColor.hueComponent
+                                                saturation:self.selectedColor.saturationComponent
+                                                brightness:newValue
+                                                     alpha:self.selectedColor.alphaComponent];
             self.gradientView.brightness = newValue;
             break;
         case kCPKRGBViewModeRGBWithRedSliderTag:
-            _selectedColor = [NSColor cpk_colorWithRed:newValue
+            _selectedColor = [[CPKColor alloc] initWithRed:newValue
                                                  green:self.selectedColor.greenComponent
                                                   blue:self.selectedColor.blueComponent
-                                                 alpha:self.selectedColor.alphaComponent];
+                                                 alpha:self.selectedColor.alphaComponent
+                                                colorSpace:self.colorSpace];
             self.gradientView.red = newValue;
             break;
         case kCPKRGBViewModeRGBWithGreenSliderTag:
-            _selectedColor = [NSColor cpk_colorWithRed:self.selectedColor.redComponent
+            _selectedColor = [[CPKColor alloc] initWithRed:self.selectedColor.redComponent
                                                  green:newValue
                                                   blue:self.selectedColor.blueComponent
-                                                 alpha:self.selectedColor.alphaComponent];
+                                                 alpha:self.selectedColor.alphaComponent
+                                                colorSpace:self.colorSpace];
             self.gradientView.green = newValue;
             break;
         case kCPKRGBViewModeRGBWithBlueSliderTag:
-            _selectedColor = [NSColor cpk_colorWithRed:self.selectedColor.redComponent
+            _selectedColor = [[CPKColor alloc] initWithRed:self.selectedColor.redComponent
                                                  green:self.selectedColor.greenComponent
                                                   blue:newValue
-                                                 alpha:self.selectedColor.alphaComponent];
+                                                 alpha:self.selectedColor.alphaComponent
+                                                colorSpace:self.colorSpace];
             self.gradientView.blue = newValue;
             break;
     }
     self.alphaSliderView.color = _selectedColor;
     [self.alphaSliderView setNeedsDisplay:YES];
     dispatch_async(dispatch_get_main_queue(), ^{
-        [_gradientView setNeedsDisplay:YES];
+        [self->_gradientView setNeedsDisplay:YES];
     });
     [self updateTextFieldsForColor:self.selectedColor];
     self.block(self.selectedColor);
 }
 
 - (void)setAlpha:(CGFloat)newAlpha {
-    _selectedColor = [NSColor cpk_colorWithHue:self.selectedColor.hueComponent
-                                    saturation:self.selectedColor.saturationComponent
-                                    brightness:self.selectedColor.brightnessComponent
-                                         alpha:newAlpha];
+    _selectedColor = [[CPKColor alloc] initWithHue:self.selectedColor.hueComponent
+                                        saturation:self.selectedColor.saturationComponent
+                                        brightness:self.selectedColor.brightnessComponent
+                                             alpha:newAlpha];
     [self updateTextFieldsForColor:self.selectedColor];
     self.block(self.selectedColor);
 }
 
-- (void)setColorFromGradient:(NSColor *)newColor {
+- (void)setColorFromGradient:(CPKColor *)newColor {
     if (self.alphaAllowed && _selectedColor) {
         _selectedColor =
             [newColor colorWithAlphaComponent:_selectedColor.alphaComponent];
@@ -799,7 +829,8 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.block(_selectedColor);
 }
 
-- (void)setSelectedColor:(NSColor *)selectedColor {
+- (void)setSelectedColor:(CPKColor *)selectedColor {
+    CPKLog(@"CPKSelectionView.setSelectedColor(%@)", selectedColor);
     if (!self.alphaAllowed) {
         selectedColor = [selectedColor colorWithAlphaComponent:1];
     }
@@ -820,7 +851,7 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
         self.brightnessSliderView.color = selectedColor;
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            [_gradientView setNeedsDisplay:YES];
+            [self->_gradientView setNeedsDisplay:YES];
         });
         [self updateTextFieldsForColor:self.selectedColor];
     }
@@ -828,11 +859,12 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     self.block(selectedColor);
 }
 
-- (void)updateTextFieldsForColor:(NSColor *)color {
+- (void)updateTextFieldsForColor:(CPKColor *)color {
     self.hexTextField.stringValue = [NSString stringWithFormat:@"%02x%02x%02x",
                                         (int)floor(color.redComponent * 255),
                                         (int)floor(color.greenComponent * 255),
                                         (int)floor(color.blueComponent * 255)];
+    CPKLog(@"updateTextFieldsForColor:%@ hex=%@", color, self.hexTextField.stringValue);
     self.redTextField.stringValue =
         [NSString stringWithFormat:@"%d", (int)floor(color.redComponent * 255)];
     self.greenTextField.stringValue =
@@ -874,63 +906,67 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
     int i;
     BOOL isInteger = [scanner scanInt:&i] && i >= 0 && i < 256;
     if (textField == self.hexTextField) {
-        NSColor *color = [self colorWithHexString:self.hexTextField.stringValue];
+        CPKColor *color = [self colorWithHexString:self.hexTextField.stringValue];
         if (color) {
             self.selectedColor = color;
         }
     } else if (textField == self.redTextField) {
         if (isInteger) {
-            self.selectedColor = [NSColor cpk_colorWithRed:i / 255.0
-                                                     green:_selectedColor.greenComponent
-                                                      blue:_selectedColor.blueComponent
-                                                     alpha:_selectedColor.alphaComponent];
+            self.selectedColor = [[CPKColor alloc] initWithRed:i / 255.0
+                                                         green:_selectedColor.greenComponent
+                                                          blue:_selectedColor.blueComponent
+                                                         alpha:_selectedColor.alphaComponent
+                                                    colorSpace:self.colorSpace];
         }
     } else if (textField == self.greenTextField) {
         if (isInteger) {
-            self.selectedColor = [NSColor cpk_colorWithRed:_selectedColor.redComponent
-                                                     green:i / 255.0
-                                                      blue:_selectedColor.blueComponent
-                                                     alpha:_selectedColor.alphaComponent];
+            self.selectedColor = [[CPKColor alloc] initWithRed:_selectedColor.redComponent
+                                                         green:i / 255.0
+                                                          blue:_selectedColor.blueComponent
+                                                         alpha:_selectedColor.alphaComponent
+                                                    colorSpace:self.colorSpace];
         }
     } else if (textField == self.blueTextField) {
         if (isInteger) {
-            self.selectedColor = [NSColor cpk_colorWithRed:_selectedColor.redComponent
-                                                     green:_selectedColor.greenComponent
-                                                      blue:i / 255.0
-                                                     alpha:_selectedColor.alphaComponent];
+            self.selectedColor = [[CPKColor alloc] initWithRed:_selectedColor.redComponent
+                                                         green:_selectedColor.greenComponent
+                                                          blue:i / 255.0
+                                                         alpha:_selectedColor.alphaComponent
+                                                    colorSpace:self.colorSpace];
         }
     } else if (textField == self.hueTextField) {
         if (isInteger) {
-            self.selectedColor = [NSColor cpk_colorWithHue:i / 255.0
-                                                saturation:_selectedColor.saturationComponent
-                                                brightness:_selectedColor.brightnessComponent
-                                                     alpha:_selectedColor.alphaComponent];
+            self.selectedColor = [[CPKColor alloc] initWithHue:i / 255.0
+                                                    saturation:_selectedColor.saturationComponent
+                                                    brightness:_selectedColor.brightnessComponent
+                                                         alpha:_selectedColor.alphaComponent];
         }
     } else if (textField == self.saturationTextField) {
         if (isInteger) {
-            self.selectedColor = [NSColor cpk_colorWithHue:_selectedColor.hueComponent
-                                                saturation:i / 255.0
-                                                brightness:_selectedColor.brightnessComponent
-                                                     alpha:_selectedColor.alphaComponent];
+            self.selectedColor = [[CPKColor alloc] initWithHue:_selectedColor.hueComponent
+                                                    saturation:i / 255.0
+                                                    brightness:_selectedColor.brightnessComponent
+                                                         alpha:_selectedColor.alphaComponent];
         }
     } else if (textField == self.brightnessTextField) {
         if (isInteger) {
-            self.selectedColor = [NSColor cpk_colorWithHue:_selectedColor.hueComponent
-                                                saturation:_selectedColor.saturationComponent
-                                                brightness:i / 255.0
-                                                     alpha:_selectedColor.alphaComponent];
+            self.selectedColor = [[CPKColor alloc] initWithHue:_selectedColor.hueComponent
+                                                    saturation:_selectedColor.saturationComponent
+                                                    brightness:i / 255.0
+                                                         alpha:_selectedColor.alphaComponent];
         }
     } else if (self.alphaAllowed && textField == self.alphaTextField) {
         if (isInteger) {
-            self.selectedColor = [NSColor cpk_colorWithRed:_selectedColor.redComponent
-                                                     green:_selectedColor.greenComponent
-                                                      blue:_selectedColor.blueComponent
-                                                     alpha:i / 255.0];
+            self.selectedColor = [[CPKColor alloc] initWithRed:_selectedColor.redComponent
+                                                         green:_selectedColor.greenComponent
+                                                          blue:_selectedColor.blueComponent
+                                                         alpha:i / 255.0
+                                                    colorSpace:self.colorSpace];
         }
     }
 }
 
-- (NSColor *)colorWithHexString:(NSString *)hexString {
+- (CPKColor *)colorWithHexString:(NSString *)hexString {
     NSScanner *scanner = [NSScanner scannerWithString:hexString];
     unsigned int value;
     if (![scanner scanHexInt:&value]) {
@@ -947,10 +983,11 @@ typedef NS_ENUM(NSInteger, CPKRGBViewMode) {
         return nil;
     }
 
-    return [NSColor cpk_colorWithRed:r / 255.0
-                               green:g / 255.0
-                                blue:b / 255.0
-                               alpha:_selectedColor.alphaComponent];
+    return [[CPKColor alloc] initWithRed:r / 255.0
+                                   green:g / 255.0
+                                    blue:b / 255.0
+                                   alpha:_selectedColor.alphaComponent
+                              colorSpace:self.colorSpace];
 }
 
 - (void)showGradientAndColorComponentSlider {

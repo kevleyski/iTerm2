@@ -80,12 +80,15 @@ static const char* siTermPublisherAttachment = "siTermPublisherAttachment";
     // be a dumpster fire I'll go my own way.
     NSMutableArray<iTermSubscriber *> *_subscribers;
     uint64_t _updateTime;
+    NSMutableArray *_historicalValues;
 }
 
-- (instancetype)init {
+- (instancetype)initWithCapacity:(NSInteger)capacity {
     self = [super init];
     if (self) {
         _subscribers = [NSMutableArray array];
+        _capacity = capacity;
+        _historicalValues = [NSMutableArray array];
     }
     return self;
 }
@@ -95,9 +98,10 @@ static const char* siTermPublisherAttachment = "siTermPublisherAttachment";
     __weak __typeof(self) weakSelf = self;
     iTermSubscriber *subscriber = [[iTermSubscriber alloc] initWithWeakReferenceToObject:object
                                                                                    block:block];
+    __weak iTermSubscriber *weakSubscriber = subscriber;
     attachment.willDealloc = ^{
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf didDeallocObjectForSubscriber:subscriber];
+            [weakSelf didDeallocObjectForSubscriber:weakSubscriber];
         });
     };
     [object it_setAssociatedObject:attachment
@@ -107,8 +111,10 @@ static const char* siTermPublisherAttachment = "siTermPublisherAttachment";
 }
 
 - (void)didDeallocObjectForSubscriber:(iTermSubscriber *)subscriber {
-    [_subscribers removeObject:subscriber];
-    [self countDidChange];
+    if (subscriber) {
+        [_subscribers removeObject:subscriber];
+        [self countDidChange];
+    }
 }
 
 - (BOOL)haveSubscribers {
@@ -132,8 +138,13 @@ static const char* siTermPublisherAttachment = "siTermPublisherAttachment";
 }
 
 - (void)publish:(id)payload {
+    [_historicalValues addObject:payload];
+    while (_historicalValues.count > _capacity && _capacity >= 0) {
+        [_historicalValues removeObjectAtIndex:0];
+    }
     _updateTime = mach_absolute_time();
-    for (iTermSubscriber *obj in _subscribers) {
+    NSArray<iTermSubscriber *> *subs = [_subscribers copy];
+    for (iTermSubscriber *obj in subs) {
         if (obj.object) {
             obj.block(payload);
         }

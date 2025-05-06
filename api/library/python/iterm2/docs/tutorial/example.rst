@@ -1,3 +1,5 @@
+:orphan:
+
 Example Script
 ==============
 
@@ -11,7 +13,7 @@ Here's the example script that iTerm2 provides for you, minus some comments:
 
     async def main(connection):
         app = await iterm2.async_get_app(connection)
-        window = app.current_terminal_window
+        window = app.current_window
         if window is not None:
             await window.async_create_tab()
         else:
@@ -84,14 +86,14 @@ with `async_`.
 
 .. code-block:: python
 
-        window = app.current_terminal_window
+        window = app.current_window
 
 This fetches the "current terminal window" from the app. The current terminal
 window is the terminal window (and not, for example, the preferences window or
 some other non-terminal window) that receives keyboard input when iTerm2 is
-active. 
+active.
 
-If there are no terminal windows then :meth:`iterm2.App.current_terminal_window`
+If there are no terminal windows then :meth:`iterm2.App.current_window`
 returns `None`.
 
 .. code-block:: python
@@ -135,6 +137,7 @@ Other Sections
     * :doc:`daemons`
     * :doc:`rpcs`
     * :doc:`hooks`
+    * :doc:`troubleshooting`
 
 Indices and tables
 ==================

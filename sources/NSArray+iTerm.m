@@ -8,12 +8,50 @@
 
 #import "NSArray+iTerm.h"
 
+#import "iTermMalloc.h"
 #import "iTermTuple.h"
+#import "iTermWeakBox.h"
+#import "NSData+iTerm.h"
 #import "NSLocale+iTerm.h"
 #import "NSMutableAttributedString+iTerm.h"
+#import "NSObject+iTerm.h"
 #import "NSStringITerm.h"
 
 @implementation NSArray (iTerm)
+
++ (instancetype)mapIntegersFrom:(NSInteger)min to:(NSInteger)noninclusiveUpperBound block:(id (^NS_NOESCAPE)(NSInteger i))block {
+    assert(min <= noninclusiveUpperBound);
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:noninclusiveUpperBound - min];
+    for (NSInteger i = min; i < noninclusiveUpperBound; i++) {
+        id obj = block(i);
+        if (obj) {
+            [result addObject:obj];
+        }
+    }
+    return result;
+}
+
+- (NSIndexSet *)it_indexSetWithIndexesOfObjects:(NSArray *)objects {
+    NSMutableIndexSet *indexes = [NSMutableIndexSet indexSet];
+    for (id object in objects) {
+        const NSInteger index = [self indexOfObject:object];
+        if (index == NSNotFound) {
+            continue;
+        }
+        [indexes addIndex:index];
+    }
+    return indexes;
+}
+
+- (NSIndexSet *)it_indexSetWithObjectsPassingTest:(BOOL (^ NS_NOESCAPE)(id))block {
+    NSMutableIndexSet *indexes = [NSMutableIndexSet indexSet];
+    [self enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        if (block(obj)) {
+            [indexes addIndex:idx];
+        }
+    }];
+    return indexes;
+}
 
 + (NSArray<NSNumber *> *)sequenceWithRange:(NSRange)range {
     NSMutableArray<NSNumber *> *temp = [NSMutableArray array];
@@ -21,6 +59,20 @@
         [temp addObject:@(i + range.location)];
     }
     return temp;
+}
+
++ (NSArray<NSString *> *)stringSequenceWithRange:(NSRange)range {
+    NSMutableArray<NSString *> *temp = [NSMutableArray array];
+    for (NSUInteger i = 0; i < range.length; i++) {
+        [temp addObject:[@(i + range.location) stringValue]];
+    }
+    return temp;
+}
+
+- (NSArray *)it_arrayByRemovingObjectsAtIndexes:(NSIndexSet *)indexes {
+    NSMutableArray *result = [self mutableCopy];
+    [result removeObjectsAtIndexes:indexes];
+    return [result autorelease];
 }
 
 - (NSArray *)objectsOfClasses:(NSArray *)classes {
@@ -47,18 +99,18 @@
     return result;
 }
 
-- (NSArray *)mapWithBlock:(id (^)(id anObject))block {
+- (NSArray *)mapEnumeratedWithBlock:(id (^NS_NOESCAPE)(NSUInteger, id anObject, BOOL *stop))block {
     NSMutableArray *temp = [NSMutableArray array];
-    for (id anObject in self) {
-        id mappedObject = block(anObject);
+    [self enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        id mappedObject = block(idx, obj, stop);
         if (mappedObject) {
             [temp addObject:mappedObject];
         }
-    }
+    }];
     return temp;
 }
 
-- (NSArray *)flatMapWithBlock:(NSArray *(^)(id anObject))block {
+- (NSArray *)flatMapWithBlock:(NSArray *(^NS_NOESCAPE)(id anObject))block {
     NSMutableArray *temp = [NSMutableArray array];
     for (id anObject in self) {
         NSArray *mappedObjects = block(anObject);
@@ -125,7 +177,7 @@
     return max;
 }
 
-- (NSArray *)minimumsWithComparator:(NSComparisonResult (^)(id, id))comparator {
+- (NSArray *)minimumsWithComparator:(NSComparisonResult (^ NS_NOESCAPE)(id, id))comparator {
     id min = nil;
     for (id object in self) {
         if (min == nil || comparator(min, object) == NSOrderedDescending) {
@@ -143,6 +195,11 @@
     return result;
 }
 
+- (NSArray *)maximumsWithComparator:(NSComparisonResult (^ NS_NOESCAPE)(id, id))comparator {
+    return [self minimumsWithComparator:^NSComparisonResult(id lhs, id rhs) {
+        return comparator(rhs, lhs);
+    }];
+}
 - (BOOL)anyWithBlock:(BOOL (^)(id anObject))block {
     for (id object in self) {
         if (block(object)) {
@@ -198,16 +255,20 @@
 }
 
 - (NSString *)componentsJoinedWithOxfordComma {
+    return [self componentsJoinedWithOxfordCommaAndConjunction:@"and"];
+}
+
+- (NSString *)componentsJoinedWithOxfordCommaAndConjunction:(NSString *)conjunction {
     if (self.count == 0) {
         return @"";
     } else if (self.count == 1) {
         return [self firstObject];
     } else if (self.count == 2) {
-        return [self componentsJoinedByString:@" and "];
+        return [self componentsJoinedByString:[NSString stringWithFormat:@" %@ ", conjunction]];
     } else {
         NSArray *allButLastArray = [self subarrayWithRange:NSMakeRange(0, self.count - 1)];
         NSString *allButLastString = [allButLastArray componentsJoinedByString:@", "];
-        NSString *result = [NSString stringWithFormat:@"%@, and %@", allButLastString, self.lastObject];
+        NSString *result = [NSString stringWithFormat:@"%@, %@ %@", allButLastString, conjunction, self.lastObject];
         return result;
     }
 }
@@ -222,16 +283,6 @@
 
 - (NSArray *)subarrayToIndexInclusive:(NSUInteger)index {
     return [self subarrayToIndex:index + 1];
-}
-
-- (NSArray *)subarrayFromIndex:(NSUInteger)index {
-    NSUInteger length;
-    if (self.count >= index) {
-        length = self.count - index;
-    } else {
-        length = 0;
-    }
-    return [self subarrayWithRange:NSMakeRange(index, length)];
 }
 
 - (NSArray *)arrayByRemovingObject:(id)objectToRemove {
@@ -259,6 +310,22 @@
     return hash;
 }
 
+- (NSData *)hashWithSHA256 {
+    NSData *hash = [[NSData data] it_sha256];
+    for (id object in self) {
+        NSData *objectHash = nil;
+        if ([object respondsToSelector:@selector(hashWithSHA256)]) {
+            // This handles string and other arrays, at least.
+            objectHash = [object hashWithSHA256];
+        } else {
+            objectHash = hash;
+        }
+
+        hash = [[hash dataByAppending:objectHash] it_sha256];
+    }
+    return hash;
+}
+
 - (BOOL)isEqualIgnoringOrder:(NSArray *)other {
     NSSet *mySet = [[[NSCountedSet alloc] initWithArray:self] autorelease];
     NSSet *otherSet = [[[NSCountedSet alloc] initWithArray:other] autorelease];
@@ -267,6 +334,19 @@
 
 - (NSArray *)arrayByRemovingDuplicates {
     return [[[[NSSet alloc] initWithArray:self] autorelease] allObjects];
+}
+
+- (NSArray *)arrayByRemovingDuplicatesStably {
+    NSMutableSet *members = [NSMutableSet set];
+    NSMutableArray *result = [NSMutableArray array];
+    [self enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        if ([members containsObject:obj]) {
+            return;
+        }
+        [members addObject:obj];
+        [result addObject:obj];
+    }];
+    return result;
 }
 
 - (NSArray *)uniq {
@@ -298,7 +378,11 @@
         if (![number isKindOfClass:[NSNumber class]]) {
             continue;
         }
-        [result appendFormat:@"%@0x%x", separator, number.intValue];
+        if (number.intValue == 0) {
+            [result appendFormat:@"%@C-Space", separator];
+        } else {
+            [result appendFormat:@"%@0x%x", separator, number.intValue];
+        }
         separator = @" ";
     }
     return result;
@@ -407,12 +491,41 @@
     return dict;
 }
 
+- (NSDictionary<id, NSArray *> *)classifyUniquelyWithBlock:(id (^)(id))block {
+    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
+    [self enumerateObjectsUsingBlock:^(id  _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        id theClass = block(obj);
+        if (theClass) {
+            dict[theClass] = obj;
+        }
+    }];
+    return dict;
+}
+
 - (id)uncheckedObjectAtIndex:(NSInteger)index {
     if (index < 0 || index >= self.count) {
         return nil;
     } else {
         return [self objectAtIndex:index];
     }
+}
+
+- (NSUInteger)indexOfMaxWithBlock:(NSComparisonResult (^)(id, id))block {
+    __block NSUInteger maxIndex = NSNotFound;
+    __block id max = nil;
+    [self enumerateObjectsUsingBlock:^(id  _Nonnull object, NSUInteger idx, BOOL * _Nonnull stop) {
+        if (max) {
+            NSComparisonResult result = block(max, object);
+            if (result == NSOrderedAscending) {
+                max = object;
+                maxIndex = idx;
+            }
+        } else {
+            max = object;
+            maxIndex = idx;
+        }
+    }];
+    return maxIndex;
 }
 
 - (id)maxWithBlock:(NSComparisonResult (^)(id, id))block {
@@ -457,6 +570,13 @@
         return self;
     }
     return [self subarrayToIndex:n];
+}
+
+- (NSArray *)it_arrayByKeepingLastN:(NSUInteger)n {
+    if (n >= self.count) {
+        return self;
+    }
+    return [self subarrayFromIndex:self.count - n];
 }
 
 // Convert an array like ["a", "b", "b", "c"] into
@@ -520,6 +640,62 @@
     return sum;
 }
 
+- (NSArray *)it_arrayByReplacingOccurrencesOf:(id)pattern with:(id)replacement {
+    return [self mapWithBlock:^id(id obj) {
+        if ([obj isEqual:pattern]) {
+            return replacement;
+        } else {
+            return obj;
+        }
+    }];
+}
+
+- (char **)nullTerminatedCStringArray {
+    char **array = iTermMalloc(sizeof(char *) * (self.count + 1));
+    [self enumerateObjectsUsingBlock:^(NSString *_Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        array[idx] = strdup(obj.UTF8String);
+    }];
+    array[self.count] = NULL;
+    return array;
+}
+
+void iTermFreeeNullTerminatedCStringArray(char **array) {
+    for (size_t i = 0; array[i] != NULL; i++) {
+        free((void *)array[i]);
+    }
+    free(array);
+}
+
+- (NSArray *)reversed {
+    const NSUInteger count = self.count;
+    if (count < 2) {
+        return self;
+    }
+    return [self mapEnumeratedWithBlock:^id(NSUInteger i, id object, BOOL *stop) {
+        return self[count - i - 1];
+    }];
+}
+
+- (NSArray *)arrayByStrongifyingWeakBoxes {
+    if (self.count == 0) {
+        return @[];
+    }
+    return [self mapWithBlock:^id(id anObject) {
+        iTermWeakBox *box = [iTermWeakBox castFrom:anObject];
+        return box.object;
+    }];
+}
+
+- (NSArray *)arrayByRemovingNulls {
+    return [self filteredArrayUsingBlock:^BOOL(id anObject) {
+        return ![anObject isKindOfClass:[NSNull class]];
+    }];
+}
+
+- (BOOL)it_hasZeroValue {
+    return [self isEqualToArray:@[]];
+}
+
 @end
 
 @implementation NSMutableArray (iTerm)
@@ -548,3 +724,4 @@
 }
 
 @end
+

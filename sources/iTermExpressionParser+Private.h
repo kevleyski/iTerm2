@@ -12,9 +12,12 @@ NS_ASSUME_NONNULL_BEGIN
 @interface iTermFunctionArgument : NSObject
 @property (nonatomic, copy) NSString *name;
 @property (nonatomic, strong) iTermParsedExpression *expression;
+@property (nonatomic) BOOL passByReference;
 @end
 
-@interface iTermExpressionParser (Private)
+@class CPSLRParser;
+
+@interface iTermExpressionParser ()
 
 + (CPTokeniser *)newTokenizer;
 + (id<CPTokenRecogniser>)stringRecognizerWithClass:(Class)theClass;

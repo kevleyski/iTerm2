@@ -6,10 +6,15 @@
 //
 
 #import "BellTrigger.h"
-#import "PTYSession.h"
+
+#import "DebugLogging.h"
 #import "VT100Screen.h"
 
 @implementation BellTrigger
+
+- (NSString *)description {
+    return @"Ring Bell";
+}
 
 + (NSString *)title
 {
@@ -21,15 +26,15 @@
     return NO;
 }
 
-- (BOOL)performActionWithCapturedStrings:(NSString *const *)capturedStrings
+- (BOOL)performActionWithCapturedStrings:(NSArray<NSString *> *)stringArray
                           capturedRanges:(const NSRange *)capturedRanges
-                            captureCount:(NSInteger)captureCount
-                               inSession:(PTYSession *)aSession
+                               inSession:(id<iTermTriggerSession>)aSession
                                 onString:(iTermStringLine *)stringLine
                     atAbsoluteLineNumber:(long long)lineNumber
                         useInterpolation:(BOOL)useInterpolation
                                     stop:(BOOL *)stop {
-    [aSession.screen activateBell];
+    DLog(@"Ring bell trigger running");
+    [aSession triggerSessionRingBell:self];
     return YES;
 }
 

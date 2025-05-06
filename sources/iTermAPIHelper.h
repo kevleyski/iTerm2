@@ -14,16 +14,36 @@ extern NSString *const iTermAPIRegisteredFunctionsDidChangeNotification;
 extern NSString *const iTermAPIDidRegisterSessionTitleFunctionNotification;
 extern NSString *const iTermAPIDidRegisterStatusBarComponentNotification;  // object is the unique id of the status bar component
 extern NSString *const iTermAPIHelperDidStopNotification;
+extern NSString *const iTermAPIHelperDidDetectChangeOfPythonAuthMethodNotification;
+extern NSString *const iTermAPIHelperErrorDomain;
 
-extern const NSInteger iTermAPIHelperFunctionCallUnregisteredErrorCode;
-extern const NSInteger iTermAPIHelperFunctionCallOtherErrorCode;
 extern NSString *const iTermAPIHelperFunctionCallErrorUserInfoKeyConnection;
 
 @class iTermParsedExpression;
 @class iTermScriptHistoryEntry;
 @class iTermVariableScope;
+@class NSWindow;
+
+typedef NS_ENUM(NSUInteger, iTermAPIHelperErrorCode) {
+    iTermAPIHelperErrorCodeRegistrationFailed,
+    iTermAPIHelperErrorCodeInvalidJSON,
+    iTermAPIHelperErrorCodeUnregisteredFunction,
+    iTermAPIHelperErrorCodeFunctionCallFailed,
+    iTermAPIHelperErrorCodeAPIDisabled,
+    iTermAPIHelperErrorCodeTimeout,
+    iTermAPIHelperErrorCodeInvalidIdentifier
+};
 
 typedef void (^iTermServerOriginatedRPCCompletionBlock)(id, NSError *);
+
+@protocol iTermSubscribable<NSObject>
+
+- (NSString *)subscribableIdentifier;
+
+- (ITMNotificationResponse *)handleAPINotificationRequest:(ITMNotificationRequest *)request
+                                            connectionKey:(NSString *)connectionKey;
+
+@end
 
 @interface iTermSessionTitleProvider : NSObject
 @property (nonatomic, readonly) NSString *displayName;
@@ -36,15 +56,28 @@ typedef void (^iTermServerOriginatedRPCCompletionBlock)(id, NSError *);
 + (BOOL)confirmShouldStartServerAndUpdateUserDefaultsForced:(BOOL)forced;
 + (instancetype)sharedInstance;
 + (instancetype)sharedInstanceFromExplicitUserAction;
++ (instancetype)sharedInstanceIfEnabled;
 
-+ (NSString *)invocationWithName:(NSString *)name
-                        defaults:(NSArray<ITMRPCRegistrationRequest_RPCArgument*> *)defaultsArray;
++ (BOOL)requireApplescriptAuth;
++ (void)setRequireApplescriptAuth:(BOOL)requireApplescriptAuth
+                           window:(NSWindow *)window;
+typedef NS_ENUM(NSUInteger, iTermNoAuthStatus) {
+    iTermNoAuthStatusNone,
+    iTermNoAuthStatusValid,
+    iTermNoAuthStatusCorrupt
+};
+
++ (iTermNoAuthStatus)noAuthStatus:(out NSString **)contentsPtr;
+
++ (NSString *)invocationWithFullyQualifiedName:(NSString *)fqname
+                                      defaults:(NSArray<ITMRPCRegistrationRequest_RPCArgument*> *)defaultsArray;
 + (ITMRPCRegistrationRequest *)registrationRequestForStatusBarComponentWithUniqueIdentifier:(NSString *)uniqueIdentifier;
 
 - (instancetype)init NS_UNAVAILABLE;
 
 + (void)setEnabled:(BOOL)enabled;
 + (BOOL)isEnabled;
++ (void)reportFunctionCallError:(NSError *)error forInvocation:(NSString *)invocation origin:(NSString *)origin window:(NSWindow *)window;
 
 - (void)postAPINotification:(ITMNotification *)notification toConnectionKey:(NSString *)connectionKey;
 
@@ -58,17 +91,11 @@ typedef void (^iTermServerOriginatedRPCCompletionBlock)(id, NSError *);
 + (NSArray<iTermSessionTitleProvider *> *)sessionTitleFunctions;
 
 + (NSArray<ITMRPCRegistrationRequest *> *)statusBarComponentProviderRegistrationRequests;
++ (NSArray<ITMRPCRegistrationRequest *> *)contextMenuProviderRegistrationRequests;
+
 + (NSString *)nameOfScriptVendingStatusBarComponentWithUniqueIdentifier:(NSString *)uniqueID;
 
-// Performs block either when the function becomes registered, immediately if it's already
-// registered, or after timeout (with an argument of YES) if it does not become registered
-// soon enough.
-- (void)performBlockWhenFunctionRegisteredWithName:(NSString *)name
-                                         arguments:(NSArray<NSString *> *)arguments
-                                           timeout:(NSTimeInterval)timeout
-                                             block:(void (^)(BOOL timedOut))block;
-
-// stringSignature is like func(arg1,arg2). Use iTermFunctionSignatureFromNameAndArguments to construct it safely.
+// stringSignature is like func(arg1,arg2) or title.com.example.foo::func(arg1,arg2). Use iTermFunctionSignatureFromNamespaceAndNameAndArguments to construct it safely.
 - (BOOL)haveRegisteredFunctionWithSignature:(NSString *)stringSignature;
 - (NSString *)connectionKeyForRPCWithSignature:(NSString *)signature;
 - (NSString *)connectionKeyForRPCWithName:(NSString *)name
@@ -89,4 +116,7 @@ typedef void (^iTermServerOriginatedRPCCompletionBlock)(id, NSError *);
 // This gives the string signature.
 @property (nonatomic, readonly) NSString *it_stringRepresentation;
 - (BOOL)it_rpcRegistrationRequestValidWithError:(out NSError **)error;
+
+// returns namespace.name
+- (NSString *)it_fullyQualifiedName;
 @end

@@ -29,15 +29,19 @@
 }
 
 - (BOOL)consumeCookie:(NSString *)cookie {
-    if ([_cookies containsObject:cookie]) {
-        [_cookies removeObject:cookie];
-        return YES;
-    } else {
-        return NO;
+    @synchronized( _cookies) {
+        if ([_cookies containsObject:cookie]) {
+            if (![cookie hasSuffix:@"_"]) {
+                [_cookies removeObject:cookie];
+            }
+            return YES;
+        } else {
+            return NO;
+        }
     }
 }
 
-- (NSString *)randomStringForCooke {
+- (NSString *)randomString {
     FILE *fp = fopen("/dev/random", "r");
 
     if (!fp) {
@@ -55,9 +59,25 @@
         [cookie appendFormat:@"%02x", b];
     }
     fclose(fp);
-
-    [_cookies addObject:cookie];
     return cookie;
+}
+
+- (void)addCookie:(NSString *)cookie {
+    @synchronized(_cookies) {
+        [_cookies addObject:cookie];
+    }
+}
+
+- (NSString *)randomStringForCookie {
+    NSString *cookie = [self randomString];
+    [self addCookie:cookie];
+    return cookie;
+}
+
+- (void)removeCookie:(NSString *)cookie {
+    @synchronized(_cookies) {
+        [_cookies removeObject:cookie];
+    }
 }
 
 @end

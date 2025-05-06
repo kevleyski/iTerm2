@@ -9,11 +9,13 @@
 
 #import "ITAddressBookMgr.h"
 #import "iTermKeyMapper.h"
+#import "VT100Terminal.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class iTermTermkeyKeyMapper;
 
+// Update iTermTermkeyKeyMapperConfigurationDictionary when modifying this.
 typedef struct {
     NSStringEncoding encoding;
     iTermOptionKeyBehavior leftOptionKey;
@@ -21,6 +23,8 @@ typedef struct {
     BOOL applicationCursorMode;
     BOOL applicationKeypadMode;
 } iTermTermkeyKeyMapperConfiguration;
+
+NSDictionary *iTermTermkeyKeyMapperConfigurationDictionary(iTermTermkeyKeyMapperConfiguration *config);
 
 @protocol iTermTermkeyKeyMapperDelegate<NSObject>
 - (void)termkeyKeyMapperWillMapKey:(iTermTermkeyKeyMapper *)termkeyKeyMaper;
@@ -30,6 +34,7 @@ typedef struct {
 
 @property (nonatomic, weak) id<iTermTermkeyKeyMapperDelegate> delegate;
 @property (nonatomic) iTermTermkeyKeyMapperConfiguration configuration;
+@property (nonatomic) VT100TerminalKeyReportingFlags flags;
 
 @end
 

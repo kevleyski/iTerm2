@@ -7,9 +7,9 @@
 //
 
 #import "FutureMethods.h"
-#import "NSSavePanel+iTerm.h"
 
 static NSString *const kApplicationServicesFramework = @"/System/Library/Frameworks/ApplicationServices.framework";
+static NSString *const kMultitouchSupportFramework =  @"/System/Library/PrivateFrameworks/MultitouchSupport.framework";
 
 static void *GetFunctionByName(NSString *library, char *func) {
     CFBundleRef bundle;
@@ -65,15 +65,56 @@ CGSSetWindowBackgroundBlurRadiusFunction* GetCGSSetWindowBackgroundBlurRadiusFun
     return function;
 }
 
-@implementation NSOpenPanel (Utility)
-- (NSArray *)legacyFilenames {
-    NSMutableArray *filenames = [NSMutableArray array];
-    for (NSURL *url in self.URLs) {
-        [filenames addObject:url.path];
-    }
-    return filenames;
+MTActuatorCreateFromDeviceIDFunction *iTermGetMTActuatorCreateFromDeviceIDFunction(void) {
+    static dispatch_once_t onceToken;
+    static MTActuatorCreateFromDeviceIDFunction *function;
+    dispatch_once(&onceToken, ^{
+        function = GetFunctionByName(kMultitouchSupportFramework,
+                                     "MTActuatorCreateFromDeviceID");
+    });
+    return function;
 }
-@end
+
+MTActuatorOpenFunction *iTermGetMTActuatorOpenFunction(void) {
+    static dispatch_once_t onceToken;
+    static MTActuatorOpenFunction *function;
+    dispatch_once(&onceToken, ^{
+        function = GetFunctionByName(kMultitouchSupportFramework,
+                                     "MTActuatorOpen");
+    });
+    return function;
+}
+
+MTActuatorCloseFunction *iTermGetMTActuatorCloseFunction(void) {
+    static dispatch_once_t onceToken;
+    static MTActuatorCloseFunction *function;
+    dispatch_once(&onceToken, ^{
+        function = GetFunctionByName(kMultitouchSupportFramework,
+                                     "MTActuatorClose");
+    });
+    return function;
+}
+
+MTActuatorActuateFunction *iTermGetMTActuatorActuateFunction(void) {
+    static dispatch_once_t onceToken;
+    static MTActuatorActuateFunction *function;
+    dispatch_once(&onceToken, ^{
+        function = GetFunctionByName(kMultitouchSupportFramework,
+                                     "MTActuatorActuate");
+    });
+    return function;
+}
+
+MTActuatorIsOpenFunction *iTermGetMTActuatorIsOpenFunction(void) {
+    static dispatch_once_t onceToken;
+    static MTActuatorIsOpenFunction *function;
+    dispatch_once(&onceToken, ^{
+        function = GetFunctionByName(kMultitouchSupportFramework,
+                                     "MTActuatorIsOpen");
+    });
+    return function;
+}
+
 
 @implementation NSFont(Future)
 
@@ -106,3 +147,11 @@ CGSSetWindowBackgroundBlurRadiusFunction* GetCGSSetWindowBackgroundBlurRadiusFun
 }
 
 @end
+
+#ifndef MAC_OS_VERSION_12_0
+@implementation NSProcessInfo(iTermMonterey)
+- (BOOL)isLowPowerModeEnabled {
+    return NO;
+}
+@end
+#endif  // MAC_OS_VERSION_12_0

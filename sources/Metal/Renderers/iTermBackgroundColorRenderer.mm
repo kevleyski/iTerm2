@@ -18,25 +18,30 @@
 - (void)setColorRLEs:(const iTermMetalBackgroundColorRLE *)rles
                count:(size_t)count
                  row:(int)row
-       repeatingRows:(int)repeatingRows {
+       repeatingRows:(int)repeatingRows
+           omitClear:(BOOL)omitClear {
     vector_float2 cellSize = simd_make_float2(self.cellConfiguration.cellSize.width, self.cellConfiguration.cellSize.height);
     const int height = self.cellConfiguration.gridSize.height;
     for (int i = 0; i < count; i++) {
+        if (omitClear && rles[i].color.w == 0) {
+            continue;
+        }
         iTermBackgroundColorPIU &piu = *_pius.get_next();
         piu.color = rles[i].color;
-        piu.color.x *= piu.color.w;
-        piu.color.y *= piu.color.w;
-        piu.color.z *= piu.color.w;
         piu.runLength = rles[i].count;
         piu.numRows = repeatingRows;
         piu.offset = simd_make_float2(cellSize.x * (float)rles[i].origin,
-                                      cellSize.y * (height - row - repeatingRows));
+                                      _verticalOffset + cellSize.y * (height - row - repeatingRows));
+        piu.isDefault = rles[i].isDefault;
     }
 }
 
-- (void)enumerateSegments:(void (^)(const iTermBackgroundColorPIU *, size_t))block {
+- (void)enumerateSegments:(void (^NS_NOESCAPE)(const iTermBackgroundColorPIU *, size_t))block {
     const int n = _pius.get_number_of_segments();
     for (int segment = 0; segment < n; segment++) {
+        if (_pius.size_of_segment(segment) == 0) {
+            continue;
+        }
         const iTermBackgroundColorPIU *array = _pius.start_of_segment(segment);
         size_t size = _pius.size_of_segment(segment);
         block(array, size);
@@ -51,6 +56,8 @@
 @implementation iTermBackgroundColorRenderer {
     iTermMetalCellRenderer *_blendingRenderer;
     iTermMetalCellRenderer *_nonblendingRenderer NS_AVAILABLE_MAC(10_14);
+    iTermMetalBufferPool *_infoPool;
+    iTermMetalBufferPool *_suppressedRegionVertexBufferPool;
 
 #if ENABLE_TRANSPARENT_METAL_WINDOWS
     iTermMetalCellRenderer *_compositeOverRenderer NS_AVAILABLE_MAC(10_14);
@@ -61,6 +68,7 @@
 - (instancetype)initWithDevice:(id<MTLDevice>)device {
     self = [super init];
     if (self) {
+        _suppressedRegionVertexBufferPool = [[iTermMetalBufferPool alloc] initWithDevice:device bufferSize:sizeof(iTermVertex) * 6];
 #if ENABLE_TRANSPARENT_METAL_WINDOWS
         if (iTermTextIsMonochrome()) {
             _nonblendingRenderer = [[iTermMetalCellRenderer alloc] initWithDevice:device
@@ -91,6 +99,7 @@
         _piuPool = [[iTermMetalMixedSizeBufferPool alloc] initWithDevice:device
                                                                 capacity:512
                                                                     name:@"background color PIU"];
+        _infoPool = [[iTermMetalBufferPool alloc] initWithDevice:device bufferSize:sizeof(iTermMetalBackgroundColorInfo)];
     }
     return self;
 }
@@ -132,25 +141,119 @@
     tState.vertexBuffer.label = @"Vertices";
 }
 
+- (id<MTLBuffer>)infoBufferForTransientState:(iTermBackgroundColorRendererTransientState *)tState {
+    iTermMetalBackgroundColorInfo info;
+    memset(&info, 0, sizeof(info));
+    info.defaultBackgroundColor = tState.defaultBackgroundColor;
+    info.mode = self.mode;
+    id<MTLBuffer> buffer = [self->_infoPool requestBufferFromContext:tState.poolContext
+                                                           withBytes:&info
+                                                      checkIfChanged:YES];
+    buffer.label = @"BG color info";
+    return buffer;
+}
+
 - (void)drawWithFrameData:(iTermMetalFrameData *)frameData
            transientState:(__kindof iTermMetalRendererTransientState *)transientState {
     iTermBackgroundColorRendererTransientState *tState = transientState;
+    id<MTLBuffer> infoBuffer = [self infoBufferForTransientState:tState];
+    const NSUInteger suppressedBottomPx = static_cast<NSUInteger>(tState.suppressedBottomHeight * tState.cellConfiguration.scale - tState.margins.top);
     [tState enumerateSegments:^(const iTermBackgroundColorPIU *pius, size_t numberOfInstances) {
+        if (numberOfInstances == 0) {
+            return;
+        }
         id<MTLBuffer> piuBuffer = [self->_piuPool requestBufferFromContext:tState.poolContext
                                                                       size:numberOfInstances * sizeof(*pius)
                                                                      bytes:pius];
         piuBuffer.label = @"PIUs";
         iTermMetalCellRenderer *cellRenderer = [self rendererForConfiguration:tState.cellConfiguration];
+
         [cellRenderer drawWithTransientState:tState
                                renderEncoder:frameData.renderEncoder
                             numberOfVertices:6
                                 numberOfPIUs:numberOfInstances
                                vertexBuffers:@{ @(iTermVertexInputIndexVertices): tState.vertexBuffer,
                                                 @(iTermVertexInputIndexPerInstanceUniforms): piuBuffer,
-                                                @(iTermVertexInputIndexOffset): tState.offsetBuffer }
+                                                @(iTermVertexInputIndexOffset): tState.offsetBuffer,
+                                                @(iTermVertexInputIndexDefaultBackgroundColorInfo): infoBuffer
+                               }
                              fragmentBuffers:@{}
                                     textures:@{} ];
     }];
+    if (tState.suppressedBottomHeight > 0) {
+        // Fill in the suppressed region with default background color.
+        // Note that we also draw the margins for simplicity.
+        CGRect quad = CGRectMake(0,
+                                 0,
+                                 tState.cellConfiguration.cellSize.width * tState.cellConfiguration.gridSize.width,
+                                 suppressedBottomPx);
+        const CGRect textureFrame = CGRectMake(0, 0, 1, 1);
+        const iTermVertex bottomRight = (iTermVertex) {
+            .position = simd_make_float2(NSMaxX(quad), NSMinY(quad)),
+            .textureCoordinate = simd_make_float2(NSMaxX(textureFrame),
+                                                  NSMaxY(textureFrame))
+        };
+        const iTermVertex bottomLeft = (iTermVertex) {
+            .position = simd_make_float2(NSMinX(quad), NSMinY(quad)),
+            .textureCoordinate = simd_make_float2(NSMinX(textureFrame),
+                                                  NSMaxY(textureFrame))
+        };
+
+        const iTermVertex topLeft = (iTermVertex) {
+            .position = simd_make_float2(NSMinX(quad), NSMaxY(quad)),
+            .textureCoordinate = simd_make_float2(NSMinX(textureFrame),
+                                                  NSMinY(textureFrame))
+        };
+
+        const iTermVertex topRight = (iTermVertex) {
+            .position = simd_make_float2(NSMaxX(quad), NSMaxY(quad)),
+            .textureCoordinate = simd_make_float2(NSMaxX(textureFrame),
+                                                  NSMinY(textureFrame))
+        };
+
+        iTermVertex vertices[] = {
+            bottomRight, bottomLeft, topLeft,
+            bottomRight, topLeft, topRight
+        };
+        id<MTLBuffer> vertexBuffer = [_suppressedRegionVertexBufferPool requestBufferFromContext:tState.poolContext
+                                                                                      withBytes:vertices
+                                                                                 checkIfChanged:YES];
+
+        iTermBackgroundColorPIU piu = {
+            .offset = simd_make_float2(0, 0),
+            .runLength = 1,
+            .numRows = 1,
+            .color = tState.defaultBackgroundColor,
+            .isDefault = 1
+        };
+        piu.color.w = 0;
+        id<MTLBuffer> piuBuffer = [self->_piuPool requestBufferFromContext:tState.poolContext
+                                                                      size:sizeof(piu)
+                                                                     bytes:&piu];
+        piuBuffer.label = @"PIUs for suppressed region";
+
+        iTermMetalCellRenderer *cellRenderer = [self rendererForConfiguration:tState.cellConfiguration];
+
+        const CGFloat savedTop = tState.suppressedTopHeight;
+        const CGFloat savedBottom = tState.suppressedBottomHeight;
+        tState.suppressedTopHeight = 0;
+        tState.suppressedBottomHeight = 0;
+
+        [cellRenderer drawWithTransientState:tState
+                               renderEncoder:frameData.renderEncoder
+                            numberOfVertices:6
+                                numberOfPIUs:1
+                               vertexBuffers:@{ @(iTermVertexInputIndexVertices): vertexBuffer,
+                                                @(iTermVertexInputIndexPerInstanceUniforms): piuBuffer,
+                                                @(iTermVertexInputIndexOffset): tState.offsetBuffer,
+                                                @(iTermVertexInputIndexDefaultBackgroundColorInfo): infoBuffer
+                               }
+                             fragmentBuffers:@{}
+                                    textures:@{} ];
+
+        tState.suppressedTopHeight = savedTop;
+        tState.suppressedBottomHeight = savedBottom;
+    }
 }
 
 #pragma mark - iTermMetalDebugInfoFormatter
@@ -176,3 +279,7 @@
 }
 
 @end
+
+@implementation iTermOffscreenCommandLineBackgroundColorRenderer
+@end
+

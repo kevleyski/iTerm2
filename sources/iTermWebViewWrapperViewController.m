@@ -9,6 +9,7 @@
 #import "iTermWebViewWrapperViewController.h"
 
 #import "DebugLogging.h"
+#import "iTermAdvancedSettingsModel.h"
 #import "iTermFlippedView.h"
 #import "iTermScriptFunctionCall.h"
 #import "iTermSystemVersion.h"
@@ -16,6 +17,7 @@
 #import "NSJSONSerialization+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSStringITerm.h"
+#import "NSWorkspace+iTerm.h"
 #import <WebKit/WebKit.h>
 
 static char iTermWebViewFactoryUserControllerDelegateKey;
@@ -25,10 +27,6 @@ NSString *const iTermWebViewErrorDomain = @"com.iterm2.webview";
 @interface iTermWebViewWrapperViewController ()
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, copy) NSURL *backupURL;
-@end
-
-@interface WKPreferences(Private)
-- (void)_setWebSecurityEnabled:(BOOL)enabled;
 @end
 
 @implementation iTermWebViewWrapperViewController
@@ -49,11 +47,11 @@ NSString *const iTermWebViewErrorDomain = @"com.iterm2.webview";
     CGFloat y;
     if (_backupURL != nil) {
         NSButton *button = [[NSButton alloc] init];
-        [button setButtonType:NSMomentaryPushInButton];
+        [button setButtonType:NSButtonTypeMomentaryPushIn];
         [button setTarget:self];
         [button setAction:@selector(openInBrowserButtonPressed:)];
         [button setTitle:[NSString stringWithFormat:@"Open in %@", [self browserName]]];
-        [button setBezelStyle:NSTexturedRoundedBezelStyle];
+        [button setBezelStyle:NSBezelStyleTexturedRounded];
         [button sizeToFit];
         NSRect frame = button.frame;
         frame.origin.x = self.view.frame.origin.x + 8;
@@ -77,7 +75,7 @@ NSString *const iTermWebViewErrorDomain = @"com.iterm2.webview";
     if ([URL isEqual:[NSURL URLWithString:@"about:blank"]]) {
         URL = self.backupURL;
     }
-    [[NSWorkspace sharedWorkspace] openURL:URL];
+    [[NSWorkspace sharedWorkspace] it_openURL:URL];
 }
 
 - (NSString *)browserName {
@@ -125,13 +123,14 @@ NSString *const iTermWebViewErrorDomain = @"com.iterm2.webview";
     Class WKWebViewConfigurationClass = NSClassFromString(@"WKWebViewConfiguration");
     WKWebViewConfiguration *configuration = [[WKWebViewConfigurationClass alloc] init];
 
-    configuration.applicationNameForUserAgent = @"iTerm2";
+    NSString *webUserAgent = [iTermAdvancedSettingsModel webUserAgent];
+    if (!webUserAgent.length) {
+        configuration.applicationNameForUserAgent = @"iTerm2";
+    }
 
     WKPreferences *prefs = [[NSClassFromString(@"WKPreferences") alloc] init];
-    prefs.javaEnabled = NO;
     prefs.javaScriptEnabled = YES;
     prefs.javaScriptCanOpenWindowsAutomatically = NO;
-    [prefs _setWebSecurityEnabled:NO];
     @try {
         // oh ffs, you have to do this to get the web inspector to show up
         [prefs setValue:@YES forKey:@"developerExtrasEnabled"];
@@ -146,6 +145,9 @@ NSString *const iTermWebViewErrorDomain = @"com.iterm2.webview";
     configuration.websiteDataStore = [NSClassFromString(@"WKWebsiteDataStore") defaultDataStore];
     WKWebView *webView = [[WKWebViewClass alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)
                                                  configuration:configuration];
+    if (webUserAgent.length) {
+        webView.customUserAgent = webUserAgent;
+    }
     [configuration.userContentController it_setWeakAssociatedObject:webView forKey:&iTermWebViewFactoryUserControllerWebviewKey];
     webView.UIDelegate = self;
 
@@ -179,15 +181,18 @@ NSString *const iTermWebViewErrorDomain = @"com.iterm2.webview";
 - (void)userContentController:(WKUserContentController *)userContentController
       didReceiveScriptMessage:(WKScriptMessage *)message {
     if ([message.name isEqualToString:@"iterm2Invoke"]) {
+        __weak id<iTermWebViewDelegate> delegate = [userContentController it_associatedObjectForKey:&iTermWebViewFactoryUserControllerDelegateKey];
+        if (![delegate itermWebViewShouldAllowInvocation]) {
+            return;
+        }
         NSDictionary *dict = [NSDictionary castFrom:message.body];
-        NSString *invocation = dict[@"invocation"];
+        NSString *invocation = [NSString castFrom:dict[@"invocation"]];
         WKWebView *webview = [userContentController it_associatedObjectForKey:&iTermWebViewFactoryUserControllerWebviewKey];
         if (!webview) {
             assert(NO);
             return;
         }
 
-        __weak id<iTermWebViewDelegate> delegate = [userContentController it_associatedObjectForKey:&iTermWebViewFactoryUserControllerDelegateKey];
         if (!invocation) {
             [self sendReturnValue:nil forMessage:dict toWebview:webview completion:nil];
             [delegate itermWebViewScriptInvocation:nil
@@ -207,6 +212,7 @@ NSString *const iTermWebViewErrorDomain = @"com.iterm2.webview";
         [iTermScriptFunctionCall callFunction:invocation
                                       timeout:[[NSDate distantFuture] timeIntervalSinceNow]
                                         scope:scope
+                                   retainSelf:YES
                                    completion:^(id value, NSError *error, NSSet<NSString *> *missing) {
                                        if (error) {
                                            [delegate itermWebViewScriptInvocation:invocation

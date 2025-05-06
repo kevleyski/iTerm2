@@ -8,8 +8,9 @@
 
 #import "TmuxWindowsTable.h"
 #import "FutureMethods.h"
+#import "NSTextField+iTerm.h"
 
-NSString *kWindowPasteboardType = @"kWindowPasteboardType";
+NSString *kWindowPasteboardType = @"com.googlecode.iterm2.kWindowPasteboardType";
 
 @implementation TmuxWindowsTable {
     NSMutableArray *model_;
@@ -137,20 +138,6 @@ NSString *kWindowPasteboardType = @"kWindowPasteboardType";
     [tableView_ reloadData];
 }
 
-#pragma mark NSTableViewDelegate
-
-- (void)tableView:(NSTableView *)tableView
-  willDisplayCell:(id)cell
-   forTableColumn:(NSTableColumn *)tableColumn
-              row:(NSInteger)row
-{
-    if ([delegate_ haveOpenWindowWithId:[[[[self filteredModel] objectAtIndex:row] objectAtIndex:1] intValue]]) {
-        [cell setTextColor:[[cell textColor] colorWithAlphaComponent:1]];
-    } else {
-        [cell setTextColor:[[cell textColor] colorWithAlphaComponent:0.5]];
-    }
-}
-
 #pragma mark NSTableViewDataSource
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)aTableView
@@ -158,53 +145,69 @@ NSString *kWindowPasteboardType = @"kWindowPasteboardType";
     return [self filteredModel].count;
 }
 
-- (id)tableView:(NSTableView *)aTableView
-    objectValueForTableColumn:(NSTableColumn *)aTableColumn
-            row:(NSInteger)rowIndex
-{
-    NSString *name = [[[self filteredModel] objectAtIndex:rowIndex] objectAtIndex:0];
-    if (rowIndex < [self filteredModel].count) {
-        return name;
-    } else {
-        return nil;
+- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+    NSArray *values = [[self filteredModel] objectAtIndex:row];
+    NSString *windowID = values[1];
+    NSString *name = values[0];
+    if (row >= [self filteredModel].count) {
+        name = @"";
     }
+
+    static NSString *const identifier = @"TmuxWindowIdentifier";
+    NSTextField *result = [tableView makeViewWithIdentifier:identifier owner:self];
+    if (result == nil) {
+        result = [NSTextField it_textFieldForTableViewWithIdentifier:identifier];
+    }
+    result.font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+    result.editable = YES;
+    result.target = self;
+    result.action = @selector(didEditWindow:);
+    result.stringValue = name;
+    result.identifier = windowID;
+    if ([delegate_ haveOpenWindowWithId:[[[[self filteredModel] objectAtIndex:row] objectAtIndex:1] intValue]]) {
+        result.alphaValue = 1;
+    } else {
+        result.alphaValue = 0.5;
+    }
+    return result;;
 }
 
-- (void)tableView:(NSTableView *)aTableView
-   setObjectValue:(id)anObject
-   forTableColumn:(NSTableColumn *)aTableColumn
-              row:(NSInteger)rowIndex
-{
-    [delegate_ renameWindowWithId:[[[[self filteredModel] objectAtIndex:rowIndex] objectAtIndex:1] intValue]
-                           toName:anObject];
-}
-
-- (BOOL)tableView:(NSTableView *)aTableView
-    shouldEditTableColumn:(NSTableColumn *)aTableColumn
-              row:(NSInteger)rowIndex {
-    return YES;
+- (void)didEditWindow:(id)sender {
+    NSTextField *textField = sender;
+    int windowID = [textField.identifier intValue];
+    [delegate_ renameWindowWithId:windowID
+                           toName:textField.stringValue];
 }
 
 - (void)didDoubleClickTableView:(id)sender {
     NSInteger rowIndex = tableView_.clickedRow;
-    if (rowIndex >= 0) {
-        [delegate_ tmuxWindowsTableDidSelectWindowWithId:[[[[self filteredModel] objectAtIndex:rowIndex] objectAtIndex:1] intValue]];
+    if (rowIndex < 0) {
+        return;
     }
+    NSArray *const model = [self filteredModel];
+    NSString *const widString = model[rowIndex][1];
+
+    if ([delegate_ haveOpenWindowWithId:widString.intValue]) {
+        // Reveal
+        [delegate_ tmuxWindowsTableDidSelectWindowWithId:widString.intValue];
+        return;
+    }
+
+    // Open in window
+    [delegate_ showWindowsWithIds:@[ widString ] inTabs:NO];
+    [tableView_ reloadData];
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification *)aNotification {
     [self updateEnabledStateOfButtons];
 }
 
-- (BOOL)tableView:(NSTableView *)tv writeRowsWithIndexes:(NSIndexSet *)rowIndexes toPasteboard:(NSPasteboard *)pboard {
-    NSArray* selectedItems = [[self filteredModel] objectsAtIndexes:rowIndexes];
-    [pboard declareTypes:[NSArray arrayWithObject:kWindowPasteboardType] owner:self];
-    [pboard setPropertyList:[NSArray arrayWithObjects:
-                             [delegate_ selectedSessionName],
-                             selectedItems,
-                             nil]
+- (id<NSPasteboardWriting>)tableView:(NSTableView *)tableView pasteboardWriterForRow:(NSInteger)row {
+    NSPasteboardItem *pbItem = [[NSPasteboardItem alloc] init];
+    NSArray *selectedItems = [[self filteredModel] objectsAtIndexes:[NSIndexSet indexSetWithIndex:row]];
+    [pbItem setPropertyList:@[ [delegate_ selectedSessionNumber], selectedItems ]
                     forType:kWindowPasteboardType];
-    return YES;
+    return pbItem;
 }
 
 #pragma mark NSSearchField delegate
@@ -219,14 +222,13 @@ NSString *kWindowPasteboardType = @"kWindowPasteboardType";
 
 #pragma mark - Private
 
-- (NSArray *)selectedWindowIdsAsStrings
-{
-        NSArray *ids = [self selectedWindowIds];
+- (NSArray *)selectedWindowIdsAsStrings {
+    NSArray *ids = [self selectedWindowIds];
     NSMutableArray *result = [NSMutableArray array];
-        for (NSString *n in ids) {
-                [result addObject:n];
-        }
-        return result;
+    for (NSString *n in ids) {
+        [result addObject:n];
+    }
+    return result;
 }
 
 - (NSArray *)selectedWindowIds

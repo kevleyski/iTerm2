@@ -7,11 +7,14 @@
 //
 
 #import "iTermIndicatorsHelper.h"
-#import "DebugLogging.h"
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermAdvancedSettingsModel.h"
+#import "iTermPreferences.h"
+#import "iTermTuple.h"
+#import "DebugLogging.h"
 #import "NSImage+iTerm.h"
 
-static NSDictionary *gIndicatorImages;
+static NSDictionary<NSString *, iTermTuple<NSImage *, NSImage *> *> *gIndicatorImagePairs;
 
 NSString *const kiTermIndicatorBell = @"kiTermIndicatorBell";
 NSString *const kiTermIndicatorWrapToTop = @"kiTermIndicatorWrapToTop";
@@ -22,26 +25,30 @@ NSString *const kiTermIndicatorCoprocess = @"kiTermIndicatorCoprocess";
 NSString *const kiTermIndicatorAlert = @"kiTermIndicatorAlert";
 NSString *const kiTermIndicatorAllOutputSuppressed = @"kiTermIndicatorAllOutputSuppressed";
 NSString *const kiTermIndicatorZoomedIn = @"kiTermIndicatorZoomedIn";
+NSString *const kiTermIndicatorFilter = @"kiTermIndicatorFilter";
 NSString *const kiTermIndicatorCopyMode = @"kiTermIndicatorCopyMode";
+NSString *const kiTermIndicatorDebugLogging = @"kiTermIndicatorDebugLogging";
+NSString *const kiTermIndicatorSecureKeyboardEntry_Forced = @"kiTermIndicatorSecureKeyboardEntry_Forced";
+NSString *const kiTermIndicatorSecureKeyboardEntry_User = @"kiTermIndicatorSecureKeyboardEntry_User";
+NSString *const kiTermIndicatorPinned = @"kiTermIndicatorPinned";
+NSString *const kiTermIndicatorAIChatLinked = @"kiTermIndicatorAIChatLinked";
+NSString *const kiTermIndicatorAIChatStreaming = @"kiTermIndicatorAIChatStreaming";
+NSString *const kiTermIndicatorChannel = @"kiTermIndicatorChannel";
 
 static const NSTimeInterval kFullScreenFlashDuration = 0.3;
 static const NSTimeInterval kFlashDuration = 0.3;
 CGFloat kiTermIndicatorStandardHeight = 20;
 
 @interface iTermIndicator : NSObject
-@property(nonatomic, retain) NSImage *image;
+@property(nonatomic, strong) NSImage *image;
 @property(nonatomic, readonly) CGFloat alpha;
+@property(nonatomic) BOOL dark;
 
 - (void)startFlash;
 @end
 
 @implementation iTermIndicator {
     NSTimeInterval _flashStartTime;
-}
-
-- (void)dealloc {
-    [_image release];
-    [super dealloc];
 }
 
 - (void)startFlash {
@@ -56,30 +63,147 @@ CGFloat kiTermIndicatorStandardHeight = 20;
 @end
 
 @implementation iTermIndicatorsHelper {
-    // Maps an identifier to a NSNumber in [0, 1]
-    NSMutableDictionary *_visibleIndicators;
+    NSMutableDictionary<NSString *, iTermIndicator *> *_visibleIndicators;
     NSTimeInterval _fullScreenFlashStartTime;
     // Rate limits calls to setNeedsDisplay: to not be faster than drawRect can be called.
     BOOL _haveSetNeedsDisplay;
+    NSRect _lastFrame;
 }
 
-+ (NSDictionary *)indicatorImages {
++ (NSDictionary<NSString *, iTermTuple<NSImage *, NSImage *> *> *)indicatorImagePairs {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        gIndicatorImages = @{ kiTermIndicatorBell: [NSImage it_imageNamed:@"bell" forClass:self.class],
-                              kiTermIndicatorWrapToTop: [NSImage it_imageNamed:@"wrap_to_top" forClass:self.class],
-                              kiTermIndicatorWrapToBottom: [NSImage it_imageNamed:@"wrap_to_bottom" forClass:self.class],
-                              kItermIndicatorBroadcastInput: [NSImage it_imageNamed:@"BroadcastInput" forClass:self.class],
-                              kiTermIndicatorMaximized: [NSImage it_imageNamed:@"Maximized" forClass:self.class],
-                              kiTermIndicatorCoprocess: [NSImage it_imageNamed:@"Coprocess" forClass:self.class],
-                              kiTermIndicatorAlert: [NSImage it_imageNamed:@"Alert" forClass:self.class],
-                              kiTermIndicatorAllOutputSuppressed: [NSImage it_imageNamed:@"SuppressAllOutput" forClass:self.class],
-                              kiTermIndicatorZoomedIn: [NSImage it_imageNamed:@"Zoomed" forClass:self.class],
-                              kiTermIndicatorCopyMode: [NSImage it_imageNamed:@"CopyMode" forClass:self.class] };
-        [gIndicatorImages retain];
+        gIndicatorImagePairs = @{
+            kiTermIndicatorBell: [self imagePairWithLegacyName:@"bell"
+                                                 modernOutline:@"bell"
+                                                         large:NO],
+            kiTermIndicatorWrapToTop: [self imagePairWithLegacyName:@"wrap_to_top"
+                                                      modernOutline:@"arrow.counterclockwise"
+                                                              large:YES],
+            kiTermIndicatorWrapToBottom: [self imagePairWithLegacyName:@"wrap_to_bottom"
+                                                         modernOutline:@"arrow.clockwise"
+                                                                 large:YES],
+            kItermIndicatorBroadcastInput: [self imagePairWithLegacyName:@"BroadcastInput"
+                                                           modernOutline:@"dot.radiowaves.right"
+                                                                   large:NO],
+            kiTermIndicatorMaximized: [self imagePairWithLegacyName:@"Maximized"
+                                                      modernOutline:@"square.arrowtriangle.4.outward"
+                                                              large:NO],
+            kiTermIndicatorCoprocess: [self imagePairWithLegacyName:@"Coprocess"
+                                                      modernOutline:@"rectangle.2.swap"
+                                                              large:NO],
+            kiTermIndicatorAlert: [self imagePairWithLegacyName:@"Alert"
+                                                  modernOutline:@"eye"
+                                                          large:NO],
+            kiTermIndicatorAllOutputSuppressed: [self imagePairWithLegacyName:@"SuppressAllOutput"
+                                                                modernOutline:@"stop.circle"
+                                                                        large:NO],
+            kiTermIndicatorZoomedIn: [self imagePairWithLegacyName:@"Zoomed"
+                                                     modernOutline:@"magnifyingglass.circle"
+                                                             large:NO],
+            kiTermIndicatorCopyMode: [self imagePairWithLegacyName:@"CopyMode"
+                                                     modernOutline:@"doc.on.doc"
+                                                             large:NO],
+            kiTermIndicatorDebugLogging: [self imagePairWithLegacyName:@"DebugLogging"
+                                                         modernOutline:@"ladybug.circle"
+                                                                 large:NO],
+            kiTermIndicatorFilter: [self imagePairWithLegacyName:@"FilterIndicator"
+                                                   modernOutline:@"line.3.horizontal.decrease.circle"
+                                                           large:NO],
+            kiTermIndicatorSecureKeyboardEntry_Forced: [self imagePairWithLegacyName:@"SecureKeyboardEntry"
+                                                                       modernOutline:@"key"
+                                                                               large:NO],
+            kiTermIndicatorSecureKeyboardEntry_User: [self imagePairWithLegacyName:@"SecureKeyboardEntry"
+                                                                     modernOutline:@"key"
+                                                                             large:NO],
+            kiTermIndicatorPinned: [self imagePairWithLegacyName:@"PinnedIndicator"
+                                                   modernOutline:@"pin"
+                                                           large:NO],
+            kiTermIndicatorAIChatLinked: [self imagePairWithLegacyName:@"AIWatching"
+                                                       modernOutline:@"brain"
+                                                               large:NO],
+            kiTermIndicatorAIChatStreaming: [self imagePairWithLegacyName:@"AIStreaming"
+                                                            modernOutline:@"dot.radiowaves.right"
+                                                                    large:NO],
+            kiTermIndicatorChannel: [self imagePairWithLegacyName:@"Channel"
+                                                    modernOutline:@"rectangle.stack"
+                                                            large:NO]
+        };
     });
 
-    return gIndicatorImages;
+    return gIndicatorImagePairs;
+}
+
++ (iTermTuple<NSImage *, NSImage *> *)imagePairWithLegacyName:(NSString *)legacyName
+                                                modernOutline:(NSString *)outline
+                                                        large:(BOOL)large {
+    return [iTermTuple tupleWithObject:[self imageWithLegacyName:legacyName
+                                                   modernOutline:outline
+                                                           large:large
+                                                  darkBackground:YES]
+                             andObject:[self imageWithLegacyName:legacyName
+                                                   modernOutline:outline
+                                                           large:large
+                                                  darkBackground:NO]];
+}
+
+
++ (NSImage *)imageWithLegacyName:(NSString *)legacyName
+                   modernOutline:(NSString *)outline
+                           large:(BOOL)large
+                  darkBackground:(BOOL)darkBackground {
+    if (@available(macOS 11, *)) {
+        NSImage *sfSymbol = [NSImage imageWithSystemSymbolName:outline accessibilityDescription:nil];
+        if (sfSymbol) {
+            const NSSize size = large ? NSMakeSize(64, 64) : NSMakeSize(30, 30);
+            const NSSize insetSize = large ? NSMakeSize(64, 64) : NSMakeSize(26, 26);
+            iTermCompositeImageBuilder *builder = [[iTermCompositeImageBuilder alloc] initWithSize:size];
+
+            NSImage *background = [NSImage imageOfSize:size drawBlock:^{
+                const CGFloat radiusFraction = 6;
+
+                NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(0,
+                                                                                        0,
+                                                                                        size.width,
+                                                                                        size.height)
+                                                                     xRadius:size.width / radiusFraction
+                                                                     yRadius:size.height / radiusFraction];
+
+                [darkBackground ? [NSColor blackColor] : [NSColor whiteColor] set];
+                [path fill];
+
+                [darkBackground ? [NSColor lightGrayColor] : [NSColor darkGrayColor] set];
+                [path stroke];
+            }];
+            [builder addImage:background];
+
+            // Add outline
+            iTermTintedImage *tintedImage = [[iTermTintedImage alloc] initWithImage:sfSymbol];
+            [builder addImage:[tintedImage imageTintedWithColor:darkBackground ? [NSColor whiteColor] : [NSColor blackColor]
+                                                           size:[self fillingSizeFor:sfSymbol.size
+                                                                             filling:insetSize]]];
+
+            NSImage *composite = [builder image];
+            return composite;
+        }
+    }
+    return [NSImage it_imageNamed:legacyName forClass:self.class];
+}
+
++ (NSSize)fillingSizeFor:(NSSize)innerSize
+                 filling:(NSSize)outerSize {
+    if (innerSize.width < 1 || innerSize.height < 1) {
+        return NSMakeSize(0, 0);
+    }
+    const CGFloat outerAspectRatio = outerSize.width / outerSize.height;
+    const CGFloat innerAspectRatio = innerSize.width / innerSize.height;
+    if (outerAspectRatio < innerAspectRatio) {
+        // Center vertically, span horizontally
+        return NSMakeSize(outerSize.width, outerSize.width / innerAspectRatio);
+    } else {
+        // Center horizontally, span vertically
+        return NSMakeSize(outerSize.height * innerAspectRatio, outerSize.height);
+    }
 }
 
 - (instancetype)init {
@@ -90,20 +214,18 @@ CGFloat kiTermIndicatorStandardHeight = 20;
     return self;
 }
 
-- (void)dealloc {
-    [_visibleIndicators release];
-    [super dealloc];
-}
-
-- (void)setIndicator:(NSString *)identifier visible:(BOOL)visible {
-    if (visible && !_visibleIndicators[identifier]) {
-        iTermIndicator *indicator = [[[iTermIndicator alloc] init] autorelease];
-        indicator.image = [[self class] indicatorImages][identifier];
-        _visibleIndicators[identifier] = indicator;;
-        [_delegate setNeedsDisplay:YES];
+- (void)setIndicator:(NSString *)identifier visible:(BOOL)visible darkBackground:(BOOL)darkBackground {
+    if (visible && (!_visibleIndicators[identifier] || _visibleIndicators[identifier].dark != darkBackground)) {
+        iTermIndicator *indicator = [[iTermIndicator alloc] init];
+        iTermTuple<NSImage *, NSImage *> *tuple = [[self class] indicatorImagePairs][identifier];
+        indicator.image = darkBackground ? tuple.firstObject : tuple.secondObject;
+        assert(indicator.image);
+        indicator.dark = darkBackground;
+        _visibleIndicators[identifier] = indicator;
+        [_delegate indicatorNeedsDisplay];
     } else if (!visible && _visibleIndicators[identifier]) {
         [_visibleIndicators removeObjectForKey:identifier];
-        [_delegate setNeedsDisplay:YES];
+        [_delegate indicatorNeedsDisplay];
     }
 }
 
@@ -120,12 +242,23 @@ CGFloat kiTermIndicatorStandardHeight = 20;
               kiTermIndicatorAlert,
               kiTermIndicatorAllOutputSuppressed,
               kiTermIndicatorZoomedIn,
-              kiTermIndicatorCopyMode ];
+              kiTermIndicatorFilter,
+              kiTermIndicatorCopyMode,
+              kiTermIndicatorDebugLogging,
+              kiTermIndicatorSecureKeyboardEntry_Forced,
+              kiTermIndicatorSecureKeyboardEntry_User,
+              kiTermIndicatorPinned,
+              kiTermIndicatorAIChatLinked,
+              kiTermIndicatorAIChatStreaming,
+              kiTermIndicatorChannel];
 }
 
-- (void)enumerateTopRightIndicatorsInFrame:(NSRect)frame andDraw:(BOOL)shouldDraw block:(void (^)(NSString *, NSImage *, NSRect))block {
+- (void)enumerateTopRightIndicatorsInFrame:(NSRect)frame andDraw:(BOOL)shouldDraw block:(void (^)(NSString *, NSImage *, NSRect, BOOL))block {
+    if ([iTermAdvancedSettingsModel disableTopRightIndicators]) {
+        return;
+    }
     NSArray *sequentialIdentifiers = [iTermIndicatorsHelper sequentialIndicatorIdentifiers];
-    const CGFloat vmargin = [iTermAdvancedSettingsModel terminalVMargin];
+    const CGFloat vmargin = [iTermPreferences intForKey:kPreferenceKeyTopBottomMargins];
     const CGFloat kIndicatorTopMargin = MAX(5, vmargin);
     NSPoint point = NSMakePoint(frame.origin.x + frame.size.width,
                                 frame.origin.y + kIndicatorTopMargin);
@@ -137,7 +270,7 @@ CGFloat kiTermIndicatorStandardHeight = 20;
             point.x -= kInterIndicatorHorizontalMargin;
             NSImage *image = indicator.image;
 
-            block(identifier, image, NSMakeRect(point.x, point.y, image.size.width, image.size.height));
+            block(identifier, image, NSMakeRect(point.x, point.y, image.size.width, image.size.height), indicator.dark);
             if (shouldDraw) {
                 [image drawInRect:NSMakeRect(point.x, point.y, image.size.width, image.size.height)
                          fromRect:NSMakeRect(0, 0, image.size.width, image.size.height)
@@ -150,7 +283,40 @@ CGFloat kiTermIndicatorStandardHeight = 20;
     }
 }
 
-- (void)enumerateCenterIndicatorsInFrame:(NSRect)frame block:(void (^)(NSString *, NSImage *, NSRect, CGFloat))block {
+- (NSString *)helpTextForIndicatorWithName:(NSString *)name sessionID:(NSString *)sessionID {
+    // NOTE: These messages are interpreted as markdown.
+    NSDictionary<NSString *, NSString *> *messages = @{
+        kItermIndicatorBroadcastInput: @"Keyboard input gets broadcast to other sessions.",
+        kiTermIndicatorMaximized: @"This is a maximized split pane.",
+        kiTermIndicatorCoprocess: @"A coprocess is running.",
+        kiTermIndicatorAlert: @"Will alert on next mark.",
+        kiTermIndicatorAllOutputSuppressed: @"All output is currently suppressed.",
+        kiTermIndicatorZoomedIn: @"Zoomed in.",
+        kiTermIndicatorFilter: @"Filtering.",
+        kiTermIndicatorCopyMode: @"In copy mode. See [documentation](https://iterm2.com/documentation-copymode.html) for details.",
+        kiTermIndicatorDebugLogging: @"Debug logging is enabled.",
+        kiTermIndicatorSecureKeyboardEntry_User: @"Secure Keyboard Entry is enabled. Select iTerm2 > Secure Keyboard Entry to disable.\n[Disable this indicator.](iterm2:disable-secure-keyboard-entry-indicator)",
+        kiTermIndicatorSecureKeyboardEntry_Forced: @"Secure Keyboard Entry is enabled because another app has turned it on.\n[Disable this indicator.](iterm2:disable-secure-keyboard-entry-indicator)",
+        kiTermIndicatorPinned: @"This Hotkey Window is pinned.",
+        kiTermIndicatorAIChatLinked: [NSString stringWithFormat:@"AI Chats can view or control this session.\n * [Unlink from AI Chat](iterm2:unlink-session-chat?s=%@&t=%@)\n * [Reveal AI Chat](iterm2:reveal-chat-for-session?s=%@&t=%@)", sessionID, [[NSWorkspace sharedWorkspace] it_newToken], sessionID, [[NSWorkspace sharedWorkspace] it_newToken]],
+        kiTermIndicatorAIChatStreaming: [NSString stringWithFormat:@"Commands run in this session are automatically sent to an AI chat, along with their output. [Stop sending](iterm2:disable-streaming-session-chat?s=%@&t=%@)",
+                                         sessionID, [[NSWorkspace sharedWorkspace] it_newToken]],
+        kiTermIndicatorChannel: [NSString stringWithFormat:@"This command is running within another session.\n * [Return to Enclosing Session](iterm2:pop-channel?s=%@&t=%@)", sessionID, [[NSWorkspace sharedWorkspace] it_newToken]]
+    };
+    return messages[name];
+}
+
+- (NSString *)helpTextForIndicatorAt:(NSPoint)point sessionID:(NSString *)sessionID {
+    __block NSString *result = nil;
+    [self enumerateTopRightIndicatorsInFrame:_lastFrame andDraw:NO block:^(NSString *name, NSImage *image, NSRect frame, BOOL dark) {
+        if (NSPointInRect(point, frame)) {
+            result = [self helpTextForIndicatorWithName:name sessionID:sessionID];
+        }
+    }];
+    return result;
+}
+
+- (void)enumerateCenterIndicatorsInFrame:(NSRect)frame block:(void (^)(NSString *, NSImage *, NSRect, CGFloat, BOOL))block {
     NSArray *centeredIdentifiers = [iTermIndicatorsHelper flashingIndicatorIdentifiers];
     for (NSString *identifier in centeredIdentifiers) {
         iTermIndicator *indicator = _visibleIndicators[identifier];
@@ -162,16 +328,17 @@ CGFloat kiTermIndicatorStandardHeight = 20;
                                                 frame.origin.y + frame.size.height / 2 - size.height / 2,
                                                 size.width,
                                                 size.height);
-            block(identifier, image, destinationRect, alpha);
+            block(identifier, image, destinationRect, alpha, indicator.dark);
         }
     }
 }
 
 - (void)drawInFrame:(NSRect)frame {
     DLog(@"drawInFrame %@", NSStringFromRect(frame));
+    _lastFrame = frame;
 
     // Draw top-right indicators.
-    [self enumerateTopRightIndicatorsInFrame:frame andDraw:YES block:^(NSString *identifier, NSImage *image, NSRect frame) {
+    [self enumerateTopRightIndicatorsInFrame:frame andDraw:YES block:^(NSString *identifier, NSImage *image, NSRect frame, BOOL dark) {
         [image drawInRect:frame
                  fromRect:NSMakeRect(0, 0, image.size.width, image.size.height)
                 operation:NSCompositingOperationSourceOver
@@ -181,7 +348,7 @@ CGFloat kiTermIndicatorStandardHeight = 20;
     }];
 
     // Draw centered flashing indicators.
-    [self enumerateCenterIndicatorsInFrame:frame block:^(NSString *identifier, NSImage *image, NSRect destinationRect, CGFloat alpha) {
+    [self enumerateCenterIndicatorsInFrame:frame block:^(NSString *identifier, NSImage *image, NSRect destinationRect, CGFloat alpha, BOOL dark) {
         [image drawInRect:destinationRect
                  fromRect:NSMakeRect(0, 0, image.size.width, image.size.height)
                 operation:NSCompositingOperationSourceOver
@@ -213,12 +380,12 @@ CGFloat kiTermIndicatorStandardHeight = 20;
          @(_fullScreenFlashStartTime), @(_haveSetNeedsDisplay));
     NSTimeInterval elapsed = [NSDate timeIntervalSinceReferenceDate] - _fullScreenFlashStartTime;
     if (_fullScreenFlashStartTime > 0 || [self haveFlashingIndicator]) {
-        const CGFloat kMaxFullScreenFlashAlpha = 0.5;
+        const CGFloat kMaxFullScreenFlashAlpha = [iTermAdvancedSettingsModel indicatorFlashInitialAlpha];
         _fullScreenAlpha = MAX(0, 1.0 - elapsed / kFullScreenFlashDuration) * kMaxFullScreenFlashAlpha;
         DLog(@"Set fullScreenAlpha=%@", @(_fullScreenAlpha));
         if (!_haveSetNeedsDisplay) {
             DLog(@"Tell delegate %@ setNeedsDisplay", _delegate);
-            [_delegate setNeedsDisplay:YES];
+            [_delegate indicatorNeedsDisplay];
         }
         DLog(@"Set haveSetNeedsDisplay=YES");
         _haveSetNeedsDisplay = YES;
@@ -231,7 +398,7 @@ CGFloat kiTermIndicatorStandardHeight = 20;
     }
 
     // Remove any indicators that became invisible since the last check.
-    NSArray *visibleIdentifiers = [[_visibleIndicators.allKeys copy] autorelease];
+    NSArray *visibleIdentifiers = [_visibleIndicators.allKeys copy];
     for (NSString *identifier in visibleIdentifiers) {
         if ([_visibleIndicators[identifier] alpha] == 0) {
             [_visibleIndicators removeObjectForKey:identifier];
@@ -245,12 +412,12 @@ CGFloat kiTermIndicatorStandardHeight = 20;
     }
 }
 
-- (void)beginFlashingIndicator:(NSString *)identifier {
+- (void)beginFlashingIndicator:(NSString *)identifier darkBackground:(BOOL)darkBackground {
     assert([[iTermIndicatorsHelper flashingIndicatorIdentifiers] containsObject:identifier]);
     if (_visibleIndicators[identifier]) {
         return;
     }
-    [self setIndicator:identifier visible:YES];
+    [self setIndicator:identifier visible:YES darkBackground:darkBackground];
     [_visibleIndicators[identifier] startFlash];
     [self checkForFlashUpdate];
 }
@@ -270,7 +437,7 @@ CGFloat kiTermIndicatorStandardHeight = 20;
 
 - (void)beginFlashingFullScreen {
     _fullScreenFlashStartTime = [NSDate timeIntervalSinceReferenceDate];
-    [_delegate setNeedsDisplay:YES];
+    [_delegate indicatorNeedsDisplay];
     [self checkForFlashUpdate];
 }
 

@@ -14,7 +14,9 @@
 
 - (instancetype)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
-    _originalSize = frame.size;
+    if (self) {
+        _originalSize = frame.size;
+    }
     return self;
 }
 
@@ -26,6 +28,10 @@
 
 - (void)resetToOriginalSize {
     [self setFrameSize:_originalSize];
+}
+
+- (void)viewDidChangeEffectiveAppearance {
+    [self.delegate sizeRememberingView:self effectiveAppearanceDidChange:self.effectiveAppearance];
 }
 
 @end

@@ -28,6 +28,7 @@
 #import "FindView.h"
 #import "PseudoTerminal.h"
 #import "NSBezierPath+iTerm.h"
+#import "NSResponder+iTerm.h"
 
 @implementation FindView
 
@@ -67,7 +68,29 @@
 
 @end
 
-@implementation MinimalFindView
+@implementation MinimalFindView {
+    NSVisualEffectView *_vev NS_AVAILABLE_MAC(10_14);
+    IBOutlet NSButton *_closeButton;
+}
+
+- (void)awakeFromNib {
+    _closeButton.image.template = YES;
+    _closeButton.alternateImage.template = YES;
+    _vev = [[NSVisualEffectView alloc] initWithFrame:NSInsetRect(self.bounds, 9, 9)];
+    _vev.wantsLayer = YES;
+    _vev.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+    _vev.material = NSVisualEffectMaterialSheet;
+    _vev.state = NSVisualEffectStateActive;
+    _vev.layer.cornerRadius = 6;
+    _vev.layer.borderColor = [[NSColor grayColor] CGColor];
+    _vev.layer.borderWidth = 1;
+    [self addSubview:_vev positioned:NSWindowBelow relativeTo:self.subviews.firstObject];
+}
+
+- (void)resizeSubviewsWithOldSize:(NSSize)oldSize {
+    [super resizeSubviewsWithOldSize:oldSize];
+    _vev.frame = NSInsetRect(self.bounds, 9, 9);
+}
 
 - (void)resetCursorRects {
     [super resetCursorRects];
@@ -82,33 +105,10 @@
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    [[NSColor clearColor] set];
-    NSRectFill(dirtyRect);
+}
 
-    NSRect bounds = NSInsetRect(self.bounds, 8.5, 8.5);
-    const CGFloat radius = 6;
-    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:bounds
-                                                         xRadius:radius
-                                                         yRadius:radius];
-    if (@available(macOS 10.14, *)) {
-        [[NSColor controlBackgroundColor] set];
-        [path fill];
-    } else {
-        [[NSColor controlColor] set];
-        [path fill];
-    }
-
-    [[NSColor colorWithCalibratedWhite:0.7 alpha:1] set];
-    [path setLineWidth:0.25];
-    [path stroke];
-
-    bounds = NSInsetRect(bounds, 0.25, 0.25);
-    path = [NSBezierPath bezierPathWithRoundedRect:bounds
-                                           xRadius:radius
-                                           yRadius:radius];
-    [path setLineWidth:0.25];
-    [[NSColor colorWithCalibratedWhite:0.5 alpha:1] set];
-    [path stroke];
+- (BOOL)it_focusFollowsMouseImmune {
+    return YES;
 }
 
 @end

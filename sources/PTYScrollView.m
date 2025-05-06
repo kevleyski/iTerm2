@@ -29,6 +29,7 @@
 #import "FutureMethods.h"
 #import "iTermAdvancedSettingsModel.h"
 #import "iTermScrollAccumulator.h"
+#import "NSEvent+iTerm.h"
 #import "NSView+iTerm.h"
 #import "PreferencePanel.h"
 #import "PTYScrollView.h"
@@ -36,57 +37,115 @@
 
 #import <Cocoa/Cocoa.h>
 
+@interface NSScroller(Private)
+- (void)_setOverlayScrollerState:(unsigned long long)arg1 forceImmediately:(BOOL)arg2;
+@end
+
 @interface PTYScroller()
-@property (nonatomic, retain) iTermScrollAccumulator *accumulator;
+@property (nonatomic, strong) iTermScrollAccumulator *accumulator;
 @end
 
 @implementation PTYScroller
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        if (self.scrollerStyle != NSScrollerStyleOverlay) {
+            _ptyScrollerState = PTYScrollerStateLegacy;
+        } else {
+            _ptyScrollerState = PTYScrollerStateOverlayHidden;
+        }
+    }
+    return self;
+}
+
+- (void)_setOverlayScrollerState:(unsigned long long)arg1 forceImmediately:(BOOL)arg2 {
+    if (self.scrollerStyle != NSScrollerStyleOverlay) {
+        _ptyScrollerState = PTYScrollerStateLegacy;
+    } else {
+        switch (arg1) {
+            case 0:
+                _ptyScrollerState = PTYScrollerStateOverlayHidden;
+                break;
+            case 1:
+                _ptyScrollerState = PTYScrollerStateOverlayVisibleNarrow;
+                break;
+            case 2:
+                _ptyScrollerState = PTYScrollerStateOverlayVisibleWide;
+                break;
+        }
+    }
+    [self.ptyScrollerDelegate ptyScrollerDidTransitionToState:_ptyScrollerState];
+    [super _setOverlayScrollerState:arg1 forceImmediately:arg2];
+}
 
 + (BOOL)isCompatibleWithOverlayScrollers {
     return YES;
 }
 
-- (void)dealloc {
-    [_accumulator release];
-    [super dealloc];
-}
-
 // rdar://45295749/
-- (void)setScrollerStyle:(NSScrollerStyle)scrollerStyle {
-    if (@available(macOS 10.14, *)) {
-        NSView *reparent = nil;
-        NSInteger index = NSNotFound;
+- (void)dismemberForScrollerStyle:(NSScrollerStyle)scrollerStyle NS_AVAILABLE_MAC(10_14) {
+    DLog(@"Begin dismembering the scroll bar");
+    NSView *reparent = nil;
+    NSInteger index = NSNotFound;
 
-        // To work around awful performance issues introduced in Mojave caused
-        // by putting a scrollview over the MTKView making the window server do
-        // an offscreen render (in iOS parlance) we reparent the scroller to be
-        // a subview of SessionView. That fixes the performance problem, but
-        // introduces a new issue: when the scroller style changes from legacy
-        // to overlay, it becomes invisible. Why? Because I'm doing things I
-        // shouldn't be doing. But we can fool NSScrollView by briefly
-        // reparenting it during setScrollerStyle:.
-        if (self.scrollerStyle != scrollerStyle && scrollerStyle == NSScrollerStyleOverlay) {
-            NSView *preferredSuperview = [self superview];
-            if (preferredSuperview) {
-                index = [preferredSuperview.subviews indexOfObject:self];
-                NSScrollView *scrollview = [self.ptyScrollerDelegate ptyScrollerScrollView];
-                if (preferredSuperview != scrollview && scrollview != nil) {
-                    DLog(@"Scroller style changing to overlay. Remove self from %@, add to %@", preferredSuperview, scrollview);
-                    reparent = preferredSuperview;
-                    [scrollview addSubview:self];
-                }
+    // To work around awful performance issues introduced in Mojave caused
+    // by putting a scrollview over the iTermMTKView making the window server do
+    // an offscreen render (in iOS parlance) we reparent the scroller to be
+    // a subview of SessionView. That fixes the performance problem, but
+    // introduces a new issue: when the scroller style changes from legacy
+    // to overlay, it becomes invisible. Why? Because I'm doing things I
+    // shouldn't be doing. But we can fool NSScrollView by briefly
+    // reparenting it during setScrollerStyle:.
+    // See note in PTYTextView.m for a perhaps better fix.
+    if (self.scrollerStyle != scrollerStyle && scrollerStyle == NSScrollerStyleOverlay) {
+        DLog(@"PERFORMING DISMEMBERMENT");
+        NSView *preferredSuperview = [self superview];
+        if (preferredSuperview) {
+            index = [preferredSuperview.subviews indexOfObject:self];
+            NSScrollView *scrollview = [self.ptyScrollerDelegate ptyScrollerScrollView];
+            if (preferredSuperview != scrollview && scrollview != nil) {
+                DLog(@"Scroller style changing to overlay. Remove self from %@, add to %@", preferredSuperview, scrollview);
+                reparent = preferredSuperview;
+                [scrollview addSubview:self];
             }
         }
-
-        [super setScrollerStyle:scrollerStyle];
-
-        if (reparent && index != NSNotFound) {
-            DLog(@"Return to being child of %@", reparent);
-            [reparent insertSubview:self atIndex:index];
-        }
-    } else {
-        [super setScrollerStyle:scrollerStyle];
     }
+
+    [super setScrollerStyle:scrollerStyle];
+
+    if (reparent && index != NSNotFound) {
+        DLog(@"Return to being child of %@", reparent);
+        [reparent insertSubview:self atIndex:index];
+    }
+}
+
+- (void)setScrollerStyle:(NSScrollerStyle)scrollerStyle {
+    DLog(@"%@: set scroller style to %@ from %@:\n%@", self, @(scrollerStyle), @(self.scrollerStyle), [NSThread callStackSymbols]);
+
+    if (scrollerStyle != NSScrollerStyleOverlay) {
+        _ptyScrollerState = PTYScrollerStateLegacy;
+    } else {
+        _ptyScrollerState = PTYScrollerStateOverlayHidden;
+    }
+    [self.ptyScrollerDelegate ptyScrollerDidTransitionToState:_ptyScrollerState];
+
+    if (PTYScrollView.shouldDismember) {
+        [self dismemberForScrollerStyle:scrollerStyle];
+        return;
+    }
+    [super setScrollerStyle:scrollerStyle];
+}
+
+- (void)setFrame:(NSRect)frame {
+    DLog(@"%@: set frame to %@ from %@\n%@", self, NSStringFromRect(frame), NSStringFromRect(self.frame), [NSThread callStackSymbols]);
+    [super setFrame:frame];
+    [_ptyScrollerDelegate ptyScrollerFrameDidChange];
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+    DLog(@"%@: set frame size to %@ from %@\n%@", self, NSStringFromSize(newSize), NSStringFromSize(self.frame.size), [NSThread callStackSymbols]);
+    [super setFrameSize:newSize];
 }
 
 - (iTermScrollAccumulator *)accumulator {
@@ -101,6 +160,7 @@
         [_accumulator reset];
     }
     if (userScroll != _userScroll) {
+        DLog(@"setUserScroll:%@\n%@", @(userScroll), [NSThread callStackSymbols]);
         _userScroll = userScroll;
         [_ptyScrollerDelegate userScrollDidChange:userScroll];
     }
@@ -108,16 +168,6 @@
 
 - (void)mouseDown:(NSEvent *)theEvent {
     [super mouseDown:theEvent];
-
-    if ([self floatValue] != 1) {
-        _userScroll = YES;
-    } else {
-        _userScroll = NO;
-    }
-}
-
-- (void)trackScrollButtons:(NSEvent *)theEvent {
-    [super trackScrollButtons:theEvent];
 
     if ([self floatValue] != 1) {
         _userScroll = YES;
@@ -141,11 +191,21 @@
     return [self scrollerStyle] == NSScrollerStyleLegacy;
 }
 
+- (void)viewDidChangeEffectiveAppearance {
+    DLog(@"Appearance of %@ is now %@ from %@",
+         self, self.effectiveAppearance, [NSThread callStackSymbols]);
+    [super viewDidChangeEffectiveAppearance];
+}
+
 @end
 
 @implementation PTYScrollView {
     // Sadly the superclass's -scroller property may return a dealloc'ed instance.
     NSScroller *_scroller;
+}
+
++ (BOOL)shouldDismember NS_AVAILABLE_MAC(10_14) {
+    return [iTermAdvancedSettingsModel dismemberScrollView];
 }
 
 + (BOOL)isCompatibleWithResponsiveScrolling {
@@ -161,20 +221,14 @@
         PTYScroller *aScroller;
 
         aScroller = [[PTYScroller alloc] init];
+        DLog(@"Set new scroller's style  %@ -> %@", @(aScroller.scrollerStyle), @([NSScroller preferredScrollerStyle]));
+        aScroller.scrollerStyle = [NSScroller preferredScrollerStyle];
         [self setVerticalScroller:aScroller];
-        [aScroller release];
         self.verticalScrollElasticity = NSScrollElasticityNone;
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(it_scrollViewDidScroll:) name:NSScrollViewDidLiveScrollNotification object:self];
     }
 
     return self;
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [_scroller release];
-
-    [super dealloc];
 }
 
 - (NSString *)description {
@@ -193,9 +247,9 @@
 - (CGFloat)accumulateVerticalScrollFromEvent:(NSEvent *)theEvent {
     const CGFloat lineHeight = self.verticalLineScroll;
     if ([iTermAdvancedSettingsModel useModernScrollWheelAccumulator]) {
-        return [self.ptyVerticalScroller.accumulator deltaYForEvent:theEvent lineHeight:lineHeight];
+        return [self.ptyVerticalScroller.accumulator deltaForEvent:theEvent increment:lineHeight];
     } else {
-        return [self.ptyVerticalScroller.accumulator legacyDeltaYForEvent:theEvent lineHeight:lineHeight];
+        return [self.ptyVerticalScroller.accumulator legacyDeltaForEvent:theEvent increment:lineHeight];
     }
 }
 
@@ -216,16 +270,27 @@
 //
 // We HAVE to call super when the scroll bars are not hidden because otherwise
 // you get issue 6637.
-- (void)scrollWheel:(NSEvent *)theEvent {
-    if (self.hasVerticalScroller) {
-        [super scrollWheel:theEvent];
+- (void)scrollWheel:(NSEvent *)event {
+    if (self.hasVerticalScroller && ![iTermAdvancedSettingsModel fastTrackpad]) {
+        if ([iTermAdvancedSettingsModel fixMouseWheel]) {
+            NSEvent *fixed = [event eventByRoundingScrollWheelClicksAwayFromZero];
+            DLog(@"Fix mouse wheel. %@", fixed);
+            [super scrollWheel:fixed];
+        } else {
+            DLog(@"Use default mouse wheel behavior %@", event);
+            [super scrollWheel:event];
+        }
     } else {
+        DLog(@"Scroll bar invisible or fast trackpad enabled, so use accumulator %@", event);
         NSRect scrollRect;
 
         scrollRect = [self documentVisibleRect];
 
-        CGFloat amount = [self accumulateVerticalScrollFromEvent:theEvent];
+        CGFloat amount = [self accumulateVerticalScrollFromEvent:event];
         scrollRect.origin.y -= amount * self.verticalLineScroll;
+        DLog(@"Scroll by %@ lines, each with height %@, to scroll from %@ to %@",
+             @(amount), @(self.verticalLineScroll), NSStringFromRect(self.documentVisibleRect),
+             NSStringFromRect(scrollRect));
         [[self documentView] scrollRectToVisible:scrollRect];
 
         [self detectUserScroll];
@@ -246,9 +311,68 @@
 }
 
 - (void)setVerticalScroller:(NSScroller *)verticalScroller {
-    [_scroller autorelease];
-    _scroller = [verticalScroller retain];
+    _scroller = verticalScroller;
     [super setVerticalScroller:verticalScroller];
+}
+
++ (NSSize)frameSizeForContentSize:(NSSize)cSize
+          horizontalScrollerClass:(Class)horizontalScrollerClass
+            verticalScrollerClass:(Class)verticalScrollerClass
+                       borderType:(NSBorderType)type
+                      controlSize:(NSControlSize)controlSize
+                    scrollerStyle:(NSScrollerStyle)scrollerStyle
+                       rightExtra:(CGFloat)rightExtra {
+    NSSize size = [super frameSizeForContentSize:cSize
+                         horizontalScrollerClass:horizontalScrollerClass
+                           verticalScrollerClass:verticalScrollerClass
+                                      borderType:type
+                                     controlSize:controlSize
+                                   scrollerStyle:scrollerStyle];
+    size.width += rightExtra;
+    return size;
+}
+
++ (NSSize)frameSizeForContentSize:(NSSize)cSize
+            hasHorizontalScroller:(BOOL)hFlag
+              hasVerticalScroller:(BOOL)vFlag
+                       borderType:(NSBorderType)type
+                       rightExtra:(CGFloat)rightExtra API_DEPRECATED("Use +frameSizeForContentSize:horizontalScrollerClass:verticalScrollerClass:borderType:controlSize:scrollerStyle: instead", macos(10.0,10.7)) {
+    NSSize size = [super frameSizeForContentSize:cSize
+                           hasHorizontalScroller:hFlag
+                           hasVerticalScroller:vFlag
+                                      borderType:type];
+    size.width += rightExtra;
+    return size;
+}
+
++ (NSSize)contentSizeForFrameSize:(NSSize)fSize
+          horizontalScrollerClass:(Class)horizontalScrollerClass
+            verticalScrollerClass:(Class)verticalScrollerClass
+                       borderType:(NSBorderType)type
+                      controlSize:(NSControlSize)controlSize
+                    scrollerStyle:(NSScrollerStyle)scrollerStyle
+                       rightExtra:(CGFloat)rightExtra {
+    NSSize size = [super contentSizeForFrameSize:fSize
+                         horizontalScrollerClass:horizontalScrollerClass
+                           verticalScrollerClass:verticalScrollerClass
+                                      borderType:type
+                                     controlSize:controlSize
+                                   scrollerStyle:scrollerStyle];
+    size.width -= rightExtra;
+    return size;
+}
+
++ (NSSize)contentSizeForFrameSize:(NSSize)fSize
+            hasHorizontalScroller:(BOOL)hFlag
+              hasVerticalScroller:(BOOL)vFlag
+                       borderType:(NSBorderType)type
+                       rightExtra:(CGFloat)rightExtra API_DEPRECATED("Use +frameSizeForContentSize:horizontalScrollerClass:verticalScrollerClass:borderType:controlSize:scrollerStyle: instead", macos(10.0,10.7)) {
+    NSSize size = [super contentSizeForFrameSize:fSize
+                           hasHorizontalScroller:hFlag
+                             hasVerticalScroller:vFlag
+                                      borderType:type];
+    size.width -= rightExtra;
+    return size;
 }
 
 @end

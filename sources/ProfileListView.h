@@ -50,7 +50,6 @@ extern NSString *const kProfileWasDeletedNotification;
 - (void)profileTableFilterDidChange:(ProfileListView *)profileListView;
 
 - (void)profileTableTagsVisibilityDidChange:(ProfileListView *)profileListView;
-
 @end
 
 @interface ProfileListView : NSView <
@@ -61,6 +60,7 @@ extern NSString *const kProfileWasDeletedNotification;
   ProfileTableMenuHandler>
 
 @property(nonatomic, readonly) BOOL tagsVisible;
+@property(nonatomic) CGFloat tagsFraction;
 @property(nonatomic, weak) IBOutlet id<ProfileListViewDelegate> delegate;
 @property(nonatomic, readonly) NSInteger numberOfRows;
 @property(nonatomic, readonly) NSSet<NSString*> *selectedGuids;
@@ -69,6 +69,7 @@ extern NSString *const kProfileWasDeletedNotification;
 // Don't use these if you've called allowMultipleSelections.
 @property(nonatomic, readonly) NSInteger selectedRow;
 @property(nonatomic, readonly) NSString *selectedGuid;
+@property(nonatomic, readonly) NSDictionary *restorableState;
 
 - (instancetype)initWithFrame:(NSRect)frameRect model:(ProfileModel*)dataSource;
 - (instancetype)initWithFrame:(NSRect)frameRect model:(ProfileModel*)dataSource font:(NSFont *)font;
@@ -76,7 +77,7 @@ extern NSString *const kProfileWasDeletedNotification;
 - (void)setUnderlyingDatasource:(ProfileModel*)dataSource;
 - (void)focusSearchField;
 - (BOOL)searchFieldHasText;
-
+- (void)forceOverlayScroller;
 
 - (void)reloadData;
 - (void)selectRowIndex:(int)theIndex;
@@ -106,5 +107,6 @@ extern NSString *const kProfileWasDeletedNotification;
 - (void)lockSelection;
 - (void)selectLockedSelection;
 - (void)unlockSelection;
+- (void)restoreFromState:(NSDictionary *)state;
 
 @end

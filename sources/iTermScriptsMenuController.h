@@ -16,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL isFolder;
 @property (nonatomic, readonly) BOOL fullEnvironment;
 @property (nonatomic, readonly) NSArray<iTermScriptItem *> *children;
+@property (nonatomic, readonly) BOOL isAutoLaunchFolderItem;
 @end
 
 @interface iTermScriptsMenuController : NSObject
@@ -23,7 +24,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) NSMenuItem *installRuntimeMenuItem;
 @property (nonatomic, readonly) NSArray<NSString *> *allScripts;
 
-+ (NSArray<iTermScriptItem *> *)scriptItems;
++ (BOOL)autoLaunchFolderExists;
+
+- (NSArray<iTermScriptItem *> *)scriptItems;
 
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithMenu:(NSMenu *)menu;
@@ -34,9 +37,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)newPythonScript;
 
 - (void)launchScriptWithRelativePath:(NSString *)path
+                           arguments:(NSArray<NSString *> *)arguments
                   explicitUserAction:(BOOL)explicitUserAction;
 
 - (void)launchScriptWithAbsolutePath:(NSString *)fullPath
+                           arguments:(NSArray<NSString *> *)arguments
                   explicitUserAction:(BOOL)explicitUserAction;
 - (BOOL)couldLaunchScriptWithAbsolutePath:(NSString *)fullPath;
 
@@ -47,7 +52,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)moveScriptToAutoLaunch:(NSString *)fullPath;
 - (BOOL)couldMoveScriptToAutoLaunch:(NSString *)fullPath;
 
-- (void)importDidFinishWithErrorMessage:(NSString *)errorMessage
+- (void)importDidFinishWithErrorMessage:(nullable NSString *)errorMessage
                                location:(NSURL *)location
                             originalURL:(NSURL *)url;
 

@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 
+@class CPKColor; 
 @protocol CPKSelectionViewDelegate <NSObject>
 - (void)selectionViewContentSizeDidChange;
 @end
@@ -11,7 +12,8 @@
 @interface CPKSelectionView : NSView
 
 /** Assign to this to programatically change the color. Will invoke the callback block. */
-@property(nonatomic) NSColor *selectedColor;
+@property(nonatomic) CPKColor *selectedColor;
+@property(nonatomic, readonly) NSColorSpace *colorSpace;
 
 /**
  * Initializes a new selection view.
@@ -21,8 +23,9 @@
  * @param color The initial selected color
  */
 - (instancetype)initWithFrame:(NSRect)frameRect
-                        block:(void (^)(NSColor *))block
-                        color:(NSColor *)color
+                        block:(void (^)(CPKColor *))block
+                        color:(CPKColor *)color
+                   colorSpace:(NSColorSpace *)colorSpace
                  alphaAllowed:(BOOL)alphaAllowed;
 
 @property(nonatomic, weak) id<CPKSelectionViewDelegate> delegate;

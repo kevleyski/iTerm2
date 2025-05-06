@@ -112,6 +112,7 @@
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    dirtyRect = NSIntersectionRect(dirtyRect, self.bounds);
     switch (_mode) {
         case SplitSelectionViewModeSourceMove:
             [self drawSourceWithMessage:@"Select a destination pane" rect:dirtyRect];
@@ -127,6 +128,9 @@
             return;
         case SplitSelectionViewModeInspect:
             [self drawInspectWithMessage:@"Click to inspect" rect:dirtyRect];
+            return;
+        case SplitSelectionViewModeSelect:
+            [self drawInspectWithMessage:@"Click to select" rect:dirtyRect];
             return;
     }
 }
@@ -222,6 +226,7 @@
         case SplitSelectionViewModeTargetSwap:
         case SplitSelectionViewModeSourceSwap:
         case SplitSelectionViewModeInspect:
+        case SplitSelectionViewModeSelect:
             half_ = kFullPane;
             [self setNeedsDisplay:YES];
             return;

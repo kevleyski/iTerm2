@@ -8,6 +8,8 @@
 
 #import "iTermInstantReplayWindowController.h"
 
+#import "DebugLogging.h"
+
 static const float kAlphaValue = 0.9;
 
 typedef NS_ENUM(NSUInteger, iTermInstantReplayState) {
@@ -33,6 +35,7 @@ typedef NS_ENUM(NSUInteger, iTermInstantReplayState) {
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    dirtyRect = NSIntersectionRect(dirtyRect, self.bounds);
     [[NSColor clearColor] set];
     NSRectFill(dirtyRect);
 
@@ -48,17 +51,13 @@ typedef NS_ENUM(NSUInteger, iTermInstantReplayState) {
         NSRectFill(rect);
     }
 
-    if (@available(macOS 10.14, *)) {
-        NSAppearanceName bestMatch = [self.effectiveAppearance bestMatchFromAppearancesWithNames:@[ NSAppearanceNameDarkAqua,
-                                                                                                    NSAppearanceNameVibrantDark,
-                                                                                                    NSAppearanceNameAqua,
-                                                                                                    NSAppearanceNameVibrantLight ]];
-        if ([bestMatch isEqualToString:NSAppearanceNameDarkAqua] ||
-            [bestMatch isEqualToString:NSAppearanceNameVibrantDark]) {
-            [[[NSColor whiteColor] colorWithAlphaComponent:0.5] set];
-        } else {
-            [[[NSColor blackColor] colorWithAlphaComponent:0.5] set];
-        }
+    NSAppearanceName bestMatch = [self.effectiveAppearance bestMatchFromAppearancesWithNames:@[ NSAppearanceNameDarkAqua,
+                                                                                                NSAppearanceNameVibrantDark,
+                                                                                                NSAppearanceNameAqua,
+                                                                                                NSAppearanceNameVibrantLight ]];
+    if ([bestMatch isEqualToString:NSAppearanceNameDarkAqua] ||
+        [bestMatch isEqualToString:NSAppearanceNameVibrantDark]) {
+        [[[NSColor whiteColor] colorWithAlphaComponent:0.5] set];
     } else {
         [[[NSColor blackColor] colorWithAlphaComponent:0.5] set];
     }
@@ -227,6 +226,7 @@ typedef NS_ENUM(NSUInteger, iTermInstantReplayState) {
                !cancel) {
         long long end = [_delegate instantReplayCurrentTimestamp];
         if (end < _start) {
+            DLog(@"Beep: end is before start");
             NSBeep();
             return;
         }
@@ -243,11 +243,17 @@ typedef NS_ENUM(NSUInteger, iTermInstantReplayState) {
             break;
         case iTermInstantReplayStateSetStart:
             _firstButton.title = @"Set Start";
+            _slider.floatValue = 0;
+            [_delegate instantReplaySeekTo:0];
+            [self updateInstantReplayView];
             _secondButton.title = @"Cancel";
             _secondButton.hidden = NO;
             break;
         case iTermInstantReplayStateSetEnd:
             _firstButton.title = @"Set End";
+            _slider.floatValue = 1;
+            [_delegate instantReplaySeekTo:1];
+            [self updateInstantReplayView];
             _secondButton.title = @"Cancel";
             _secondButton.hidden = NO;
     }

@@ -9,11 +9,39 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface iTermGitState : NSObject<NSCopying>
+extern NSArray<NSString *> *iTermGitStatePaths(void);
+
+extern NSString *const iTermGitStateVariableNameGitBranch;
+extern NSString *const iTermGitStateVariableNameGitPushCount;
+extern NSString *const iTermGitStateVariableNameGitPullCount;
+extern NSString *const iTermGitStateVariableNameGitDirty;
+extern NSString *const iTermGitStateVariableNameGitAdds;
+extern NSString *const iTermGitStateVariableNameGitDeletes;
+
+typedef NS_ENUM(NSInteger, iTermGitRepoState) {
+    iTermGitRepoStateNone,
+    iTermGitRepoStateMerge,
+    iTermGitRepoStateRevert,
+    iTermGitRepoStateCherrypick,
+    iTermGitRepoStateBisect,
+    iTermGitRepoStateRebase,
+    iTermGitRepoStateApply,
+};
+
+@interface iTermGitState : NSObject<NSCopying, NSSecureCoding>
+@property (nonatomic, copy) NSString *directory;
+@property (nonatomic, copy) NSString *xcode;
 @property (nonatomic, copy) NSString *pushArrow;
 @property (nonatomic, copy) NSString *pullArrow;
 @property (nonatomic, copy) NSString *branch;
 @property (nonatomic) BOOL dirty;
+@property (nonatomic) NSInteger adds;
+@property (nonatomic) NSInteger deletes;
+@property (nonatomic) NSTimeInterval creationTime;
+@property (nonatomic) iTermGitRepoState repoState;
+
+- (NSString *)prettyDescription;
 @end
+
 
 NS_ASSUME_NONNULL_END

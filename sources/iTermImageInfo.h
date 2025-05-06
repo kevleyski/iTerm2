@@ -12,55 +12,90 @@
 // Posted when a lazily loaded image is loaded.
 extern NSString *const iTermImageDidLoad;
 
+@protocol iTermImageInfoReading<NSPasteboardItemDataProvider>
+@property(atomic, readonly) iTermImage *image;
+
+// Raw data for image.
+@property(atomic, readonly) NSData *data;
+
+// Image code
+@property(atomic, readonly) unichar code;
+
+// Creates a pasteboard item that responds with image or file.
+@property(atomic, readonly) NSPasteboardItem *pasteboardItem;
+
+// Is this a broken image?
+@property(atomic) BOOL broken;
+
+// Is animated?
+@property(atomic, readonly) BOOL animated;
+
+// If animated, set this to stop animation.
+@property(atomic) BOOL paused;
+
+// A UUID, lazily allocated.
+@property(atomic, readonly) NSString *uniqueIdentifier;
+
+// Size in cells.
+@property(atomic) NSSize size;
+
+// Creates a new randomly named temp file containing the image and returns its name.
+@property(atomic, readonly) NSString *nameForNewSavedTempFile;
+
+// Original filename
+@property(atomic, copy, readonly) NSString *filename;
+
+// Is there an image yet? one might be coming later
+@property (atomic, readonly) BOOL ready;
+
+
+// Returns an image whose size is self.size * cellSize. If the image is smaller and/or has an inset
+// there will be a transparent area around the edges.
+- (NSImage *)imageWithCellSize:(CGSize)cellSize scale:(CGFloat)scale;
+
+// Format inferred from extension
+- (void)saveToFile:(NSString *)filename;
+
+// Always returns 0 for non-animated images.
+- (int)frameForTimestamp:(NSTimeInterval)timestamp;
+
+// A more predictable version of the above. Timestamp determines GIF frame.
+- (NSImage *)imageWithCellSize:(CGSize)cellSize timestamp:(NSTimeInterval)timestamp scale:(CGFloat)scale;
+
+@end
+
 // Describes an image. A screen_char_t may be used to draw a part of an image.
 // The code in the screen_char_t can be used to look up this object which is
 // 1:1 with images.
-@interface iTermImageInfo : NSObject<NSPasteboardItemDataProvider>
+@interface iTermImageInfo : NSObject<iTermImageInfoReading>
 
-// A UUID, lazily allocated.
-@property(nonatomic, readonly) NSString *uniqueIdentifier;
-
-// Size in cells.
-@property(nonatomic, assign) NSSize size;
++ (NSEdgeInsets)fractionalInsetsForPreservedAspectRatioWithDesiredSize:(NSSize)desiredSize
+                                                          forImageSize:(NSSize)imageSize
+                                                              cellSize:(NSSize)cellSize
+                                                         numberOfCells:(NSSize)numberOfCells;
++ (NSEdgeInsets)fractionalInsetsStretchingToDesiredSize:(NSSize)desiredSize
+                                              imageSize:(NSSize)imageSize
+                                               cellSize:(NSSize)cellSize
+                                          numberOfCells:(NSSize)numberOfCells;
 
 // Full-size image.
-@property(nonatomic, retain) iTermImage *image;
+@property(atomic, strong, readwrite) iTermImage *image;
 
 // If set, the image won't be squished.
-@property(nonatomic, assign) BOOL preserveAspectRatio;
+@property(atomic) BOOL preserveAspectRatio;
 
-// Original filename
-@property(nonatomic, copy) NSString *filename;
-
+@property(atomic, copy, readwrite) NSString *filename;
 // Inset for the image within its area.
-@property(nonatomic, assign) NSEdgeInsets inset;
-
-// Image code
-@property(nonatomic, readonly) unichar code;
-
-// Is animated?
-@property(nonatomic, readonly) BOOL animated;
-
-// If animated, set this to stop animation.
-@property(nonatomic) BOOL paused;
-
-// Raw data for image.
-@property(nonatomic, readonly) NSData *data;
+@property(atomic) NSEdgeInsets inset;
 
 // UTI string for image type.
-@property(nonatomic, readonly) NSString *imageType;
+@property(atomic, readonly) NSString *imageType;
 
-// Creates a new randomly named temp file containing the image and returns its name.
-@property(nonatomic, readonly) NSString *nameForNewSavedTempFile;
+// During restoration, do we still need to find a mark?
+@property (atomic) BOOL provisional;
 
-// Creates a pasteboard item that responds with image or file.
-@property(nonatomic, readonly) NSPasteboardItem *pasteboardItem;
-
-// Is this a broken image?
-@property(nonatomic) BOOL broken;
-
-// Is there an image yet? one might be coming later
-@property (nonatomic, readonly) BOOL ready;
+// First frame of animated image, or else raw image.
+@property (nonatomic, readonly) NSImage *firstFrame;
 
 // Used to create a new instance for a new image. This may remain an empty container until
 // -setImageFromImage: is called.
@@ -69,24 +104,11 @@ extern NSString *const iTermImageDidLoad;
 // Used to create a new instance from a coded dictionary.
 - (instancetype)initWithDictionary:(NSDictionary *)dictionary;
 
-// Returns an image whose size is self.size * cellSize. If the image is smaller and/or has an inset
-// there will be a transparent area around the edges.
-- (NSImage *)imageWithCellSize:(CGSize)cellSize;
-
-// A more predictable version of the above. Timestamp determines GIF frame.
-- (NSImage *)imageWithCellSize:(CGSize)cellSize timestamp:(NSTimeInterval)timestamp;
-
 // Binds an image. Data is optional and only used for animated GIFs. Not to be used after
 // -initWithDictionary.
 - (void)setImageFromImage:(iTermImage *)image data:(NSData *)data;
 
 // Coded representation
-- (NSDictionary *)dictionary;
-
-// Format inferred from extension
-- (void)saveToFile:(NSString *)filename;
-
-// Always returns 0 for non-animated images.
-- (int)frameForTimestamp:(NSTimeInterval)timestamp;
+- (NSDictionary<NSString *, NSObject<NSCopying> *> *)dictionary;
 
 @end

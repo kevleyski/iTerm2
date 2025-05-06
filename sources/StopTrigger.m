@@ -14,14 +14,21 @@
   return @"Stop Processing Triggers";
 }
 
+- (NSString *)description {
+    return [StopTrigger title];
+}
+
 - (BOOL)takesParameter {
   return NO;
 }
 
-- (BOOL)performActionWithCapturedStrings:(NSString *const *)capturedStrings
+- (BOOL)isIdempotent {
+    return YES;
+}
+
+- (BOOL)performActionWithCapturedStrings:(NSArray<NSString *> *)stringArray
                           capturedRanges:(const NSRange *)capturedRanges
-                            captureCount:(NSInteger)captureCount
-                               inSession:(PTYSession *)aSession
+                               inSession:(id<iTermTriggerSession>)aSession
                                 onString:(iTermStringLine *)stringLine
                     atAbsoluteLineNumber:(long long)lineNumber
                         useInterpolation:(BOOL)useInterpolation

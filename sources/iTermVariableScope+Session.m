@@ -154,6 +154,22 @@
     [self setValue:newValue forVariableNamed:iTermVariableKeySessionJob];
 }
 
+- (NSString *)processTitle {
+    return [self valueForVariableName:iTermVariableKeySessionProcessTitle];
+}
+
+- (void)setProcessTitle:(NSString *)processTitle {
+    [self setValue:processTitle forVariableNamed:iTermVariableKeySessionProcessTitle];
+}
+
+- (NSString *)commandLine {
+    return [self valueForVariableName:iTermVariableKeySessionCommandLine];
+}
+
+- (void)setCommandLine:(NSString *)commandLine {
+    [self setValue:commandLine forVariableNamed:iTermVariableKeySessionCommandLine];
+}
+
 - (NSString *)presentationName {
     return [self valueForVariableName:iTermVariableKeySessionPresentationName];
 }
@@ -162,12 +178,12 @@
     [self setValue:newValue forVariableNamed:iTermVariableKeySessionPresentationName];
 }
 
-- (NSString *)tmuxWindowTitle {
-    return [self valueForVariableName:iTermVariableKeySessionTmuxWindowTitle];
+- (NSString *)tmuxPaneTitle {
+    return [self valueForVariableName:iTermVariableKeySessionTmuxPaneTitle];
 }
 
-- (void)setTmuxWindowTitle:(NSString *)newValue {
-    [self setValue:newValue forUndefinedKey:iTermVariableKeySessionTmuxWindowTitle];
+- (void)setTmuxPaneTitle:(NSString *)newValue {
+    [self setValue:newValue forVariableNamed:iTermVariableKeySessionTmuxPaneTitle];
 }
 
 - (NSString *)tmuxRole {
@@ -210,6 +226,14 @@
     [self setValue:newValue forVariableNamed:iTermVariableKeySessionTmuxWindowPane];
 }
 
+- (NSString *)tmuxWindowPaneIndex {
+    return [self valueForVariableName:iTermVariableKeySessionTmuxWindowPaneIndex];
+}
+
+- (void)setTmuxWindowPaneIndex:(NSString *)tmuxWindowPaneIndex {
+    [self setValue:tmuxWindowPaneIndex forVariableNamed:iTermVariableKeySessionTmuxWindowPaneIndex];
+}
+
 - (NSNumber *)jobPid {
     return [self valueForVariableName:iTermVariableKeySessionJobPid];
 }
@@ -224,6 +248,14 @@
 
 - (void)setPid:(NSNumber *)newValue {
     [self setValue:newValue forVariableNamed:iTermVariableKeySessionChildPid];
+}
+
+- (NSNumber *)effectiveRootPid {
+    return [self valueForVariableName:iTermVariableKeySessionEffectiveSessionRootPid];
+}
+
+- (void)setEffectiveRootPid:(NSNumber *)newValue {
+    [self setValue:newValue forVariableNamed:iTermVariableKeySessionEffectiveSessionRootPid];
 }
 
 - (NSString *)tmuxStatusLeft {
@@ -260,6 +292,105 @@
 
 - (iTermVariableScope<iTermTabScope> *)tab {
     return [iTermVariableScope newTabScopeWithVariables:[self valueForVariableName:iTermVariableKeySessionTab]];
+}
+
+- (NSString *)selection {
+    return [self valueForVariableName:iTermVariableKeySessionSelection];
+}
+
+- (void)setSelection:(NSString *)newValue {
+    [self setValue:newValue forVariableNamed:iTermVariableKeySessionSelection];
+}
+
+- (NSNumber *)selectionLength {
+    return [self valueForVariableName:iTermVariableKeySessionSelectionLength];
+}
+
+- (void)setSelectionLength:(NSNumber *)newValue {
+    [self setValue:newValue forVariableNamed:iTermVariableKeySessionSelectionLength];
+}
+
+- (NSNumber *)bellCount {
+    return [self valueForVariableName:iTermVariableKeySessionBellCount];
+}
+
+- (void)setBellCount:(NSNumber *)bellCount {
+    [self setValue:bellCount forVariableNamed:iTermVariableKeySessionBellCount];
+}
+
+- (NSNumber *)showingAlternateScreen {
+    return [self valueForVariableName:iTermVariableKeySessionShowingAlternateScreen];
+}
+
+- (void)setShowingAlternateScreen:(NSNumber *)showingAlternateScreen {
+    [self setValue:showingAlternateScreen forVariableNamed:iTermVariableKeySessionShowingAlternateScreen];
+}
+
+- (NSString *)logFilename {
+    return [self valueForVariableName:iTermVariableKeySessionLogFilename];
+}
+
+- (void)setLogFilename:(NSString *)newValue {
+    [self setValue:newValue forVariableNamed:iTermVariableKeySessionLogFilename];
+}
+
+- (NSArray *)mouseInfo {
+    return [self valueForVariableName:iTermVariableKeySessionMouseInfo];
+}
+
+- (void)setMouseInfo:(NSArray *)mouseInfo {
+    assert(mouseInfo.count == 7);
+    assert([mouseInfo[0] isKindOfClass:[NSNumber class]]);  // x
+    assert([mouseInfo[1] isKindOfClass:[NSNumber class]]);  // y
+    assert([mouseInfo[2] isKindOfClass:[NSNumber class]]);  // button
+    assert([mouseInfo[3] isKindOfClass:[NSNumber class]]);  // count
+    assert([mouseInfo[4] isKindOfClass:[NSArray class]]);  // modifiers
+    for (id obj in mouseInfo[4]) {
+        assert([obj isKindOfClass:[NSNumber class]]);  // modifier
+    }
+    assert([mouseInfo[5] isKindOfClass:[NSNumber class]]);  // side effects
+    assert([mouseInfo[6] isKindOfClass:[NSNumber class]]);  // state
+    [self setValue:mouseInfo forVariableNamed:iTermVariableKeySessionMouseInfo];
+}
+
+- (BOOL)applicationKeypad {
+    return [[self valueForVariableName:iTermVariableKeySessionApplicationKeypad] boolValue];
+}
+
+- (void)setApplicationKeypad:(BOOL)value {
+    [self setValue:@(value) forVariableNamed:iTermVariableKeySessionApplicationKeypad];
+}
+
+- (NSString *)homeDirectory {
+    return [self valueForVariableName:iTermVariableKeySessionHomeDirectory];
+}
+
+- (void)setHomeDirectory:(NSString *)homeDirectory {
+    [self setValue:homeDirectory forVariableNamed:iTermVariableKeySessionHomeDirectory];
+}
+
+- (NSInteger)sshIntegrationLevel {
+    return [[self valueForVariableName:iTermVariableKeySSHIntegrationLevel] integerValue];
+}
+
+- (void)setSshIntegrationLevel:(NSInteger)level {
+    [self setValue:@(level) forVariableNamed:iTermVariableKeySSHIntegrationLevel];
+}
+
+- (NSString *)shell {
+    return [self valueForVariableName:iTermVariableKeyShell];
+}
+
+- (void)setShell:(NSString *)shell {
+    [self setValue:shell forVariableNamed:iTermVariableKeyShell];
+}
+
+- (NSString *)uname {
+    return [self valueForVariableName:iTermVariableKeyUname];
+}
+
+- (void)setUname:(NSString *)uname {
+    [self setValue:uname forVariableNamed:iTermVariableKeyUname];
 }
 
 @end

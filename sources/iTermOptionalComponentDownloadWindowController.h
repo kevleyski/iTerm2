@@ -24,6 +24,7 @@ extern const int iTermMinimumPythonEnvironmentVersion;
 @property (nonatomic, readonly) BOOL progressIsDeterminant;
 @property (nonatomic, readonly) NSString *progressString;
 @property (nonatomic, readonly) BOOL buttonEnabled;
+@property (nonatomic, copy) void (^willBegin)(void);
 
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithURL:(NSURL *)url
@@ -32,9 +33,24 @@ extern const int iTermMinimumPythonEnvironmentVersion;
 
 @end
 
-@interface iTermManifestDownloadPhase : iTermOptionalComponentDownloadPhase
-@property (nonatomic, readonly) NSURL *nextURL;
+@interface iTermDownloadableComponentInfo: NSObject
+@property (nonatomic, readonly) NSURL *URL;
+@property (nonatomic, readonly) NSInteger size;
 @property (nonatomic, readonly) NSString *signature;
+@property (nonatomic, readonly) BOOL isSitePackagesOnly;
+
+- (instancetype)initWithURL:(NSURL *)url
+                       size:(NSInteger)size
+                  signature:(NSString *)signature
+         isSitePackagesOnly:(BOOL)isSitePackagesOnly NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+@end
+
+@interface iTermManifestDownloadPhase : iTermOptionalComponentDownloadPhase
+@property (nonatomic, readonly) iTermDownloadableComponentInfo *fullComponent;
+@property (nonatomic, readonly) iTermDownloadableComponentInfo *sitePackagesComponent;
+@property (nonatomic, readonly) NSRange sitePackagesDependencies;
+
 @property (nonatomic, readonly) int version;
 @property (nonatomic, copy, readonly) NSString *requestedPythonVersion;
 @property (nonatomic, copy, readonly) NSArray<NSString *> *pythonVersionsInArchive;
@@ -42,6 +58,8 @@ extern const int iTermMinimumPythonEnvironmentVersion;
 - (instancetype)initWithURL:(NSURL *)url
      requestedPythonVersion:(NSString *)requestedPythonVersion
            nextPhaseFactory:(iTermOptionalComponentDownloadPhase *(^)(iTermOptionalComponentDownloadPhase *))nextPhaseFactory;
+
+- (iTermDownloadableComponentInfo *)infoGivenExistingFullComponent:(NSNumber *)existingFullComponent;
 
 @end
 

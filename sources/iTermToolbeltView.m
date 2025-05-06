@@ -1,17 +1,22 @@
 #import "iTermToolbeltView.h"
 
 #import "FutureMethods.h"
+#import "iTerm2SharedARC-Swift.h"
 #import "iTermAdvancedSettingsModel.h"
 #import "iTermApplication.h"
 #import "iTermApplicationDelegate.h"
 #import "iTermDragHandleView.h"
+#import "iTermHamburgerButton.h"
 #import "iTermPreferences.h"
 #import "iTermSystemVersion.h"
+#import "iTermToolActions.h"
+#import "iTermToolSnippets.h"
 #import "iTermToolWrapper.h"
 #import "iTermToolbeltSplitView.h"
 #import "iTermTuple.h"
 #import "NSAppearance+iTerm.h"
 #import "NSArray+iTerm.h"
+#import "NSImage+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "ToolCapturedOutputView.h"
 #import "ToolCommandHistoryView.h"
@@ -21,7 +26,9 @@
 #import "ToolPasteHistory.h"
 #import "ToolProfiles.h"
 #import "ToolWebView.h"
+#import <QuartzCore/QuartzCore.h>
 
+NSString *const kActionsToolName = @"Actions";
 NSString *const kCapturedOutputToolName = @"Captured Output";
 NSString *const kCommandHistoryToolName = @"Command History";
 NSString *const kRecentDirectoriesToolName = @"Recent Directories";
@@ -29,6 +36,9 @@ NSString *const kJobsToolName = @"Jobs";
 NSString *const kNotesToolName = @"Notes";
 NSString *const kPasteHistoryToolName = @"Paste History";
 NSString *const kProfilesToolName = @"Profiles";
+NSString *const kSnippetsToolName = @"Snippets";
+NSString *const kNamedMarksToolName = @"Named Marks";
+NSString *const kCodeciergeToolName = @"Codecierge";
 
 NSString *const kToolbeltShouldHide = @"kToolbeltShouldHide";
 
@@ -37,7 +47,14 @@ NSString *const iTermToolbeltDidRegisterDynamicToolNotification = @"iTermToolbel
 
 static NSString *const iTermToolbeltProportionsUserDefaultsKey = @"NoSyncToolbeltProportions";
 
-@interface iTermToolbeltView () <iTermDragHandleViewDelegate>
+NS_CLASS_AVAILABLE_MAC(10_14)
+@interface iTermToolbeltVibrantVisualEffectView : NSVisualEffectView
+@end
+
+@implementation iTermToolbeltVibrantVisualEffectView
+@end
+
+@interface iTermToolbeltView () <CALayerDelegate, iTermDragHandleViewDelegate>
 @end
 
 @implementation iTermToolbeltView {
@@ -46,9 +63,12 @@ static NSString *const iTermToolbeltProportionsUserDefaultsKey = @"NoSyncToolbel
     // Tool name to wrapper
     NSMutableDictionary<NSString *, iTermToolWrapper *> *_tools;
     NSDictionary *_proportions;
+    iTermToolbeltVibrantVisualEffectView *_vev NS_AVAILABLE_MAC(10_14);
+    iTermHamburgerButton *_menuButton;
+    BOOL _inSplitViewDidResizeSubviews;
 }
 
-static NSMutableDictionary *gRegisteredTools;
+static NSMutableDictionary<NSString *, Class> *gRegisteredTools;
 static NSString *kToolbeltPrefKey = @"ToolbeltTools";
 static NSString *const kDynamicToolsKey = @"NoSyncDynamicTools";
 static NSString *const kDynamicToolName = @"name";
@@ -58,13 +78,17 @@ static NSString *const kDynamicToolURL = @"URL";
 
 + (void)initialize {
     gRegisteredTools = [[NSMutableDictionary alloc] init];
+    [iTermToolbeltView registerToolWithName:kActionsToolName withClass:[iTermToolActions class]];
     [iTermToolbeltView registerToolWithName:kCapturedOutputToolName withClass:[ToolCapturedOutputView class]];
     [iTermToolbeltView registerToolWithName:kCommandHistoryToolName withClass:[ToolCommandHistoryView class]];
+    [iTermToolbeltView registerToolWithName:kNamedMarksToolName withClass:[ToolNamedMarks class]];
     [iTermToolbeltView registerToolWithName:kRecentDirectoriesToolName withClass:[ToolDirectoriesView class]];
     [iTermToolbeltView registerToolWithName:kJobsToolName withClass:[ToolJobs class]];
     [iTermToolbeltView registerToolWithName:kNotesToolName withClass:[ToolNotes class]];
     [iTermToolbeltView registerToolWithName:kPasteHistoryToolName withClass:[ToolPasteHistory class]];
     [iTermToolbeltView registerToolWithName:kProfilesToolName withClass:[ToolProfiles class]];
+    [iTermToolbeltView registerToolWithName:kSnippetsToolName withClass:[iTermToolSnippets class]];
+    [iTermToolbeltView registerToolWithName:kCodeciergeToolName withClass:[iTermToolCodecierge class]];
 
     NSDictionary<NSString *, NSDictionary *> *dynamicTools = [[NSUserDefaults standardUserDefaults] objectForKey:kDynamicToolsKey];
     [dynamicTools enumerateKeysAndObjectsUsingBlock:^(NSString * _Nonnull identifier, NSDictionary * _Nonnull dict, BOOL * _Nonnull stop) {
@@ -121,7 +145,7 @@ static NSString *const kDynamicToolURL = @"URL";
     [[NSNotificationCenter defaultCenter] postNotificationName:kDynamicToolsDidChange object:nil];
 }
 
-+ (NSArray *)allTools {
++ (NSArray<NSString *> *)allTools {
     return [gRegisteredTools allKeys];
 }
 
@@ -150,12 +174,17 @@ static NSString *const kDynamicToolURL = @"URL";
             }
         }
     }
+    [self addToolsToMenu:menu];
+}
+
++ (void)addToolsToMenu:(NSMenu *)menu {
     NSArray *names = [[iTermToolbeltView allTools] sortedArrayUsingSelector:@selector(compare:)];
     for (NSString *theName in names) {
         NSMenuItem *i = [[[NSMenuItem alloc] initWithTitle:theName
                                                     action:@selector(toggleToolbeltTool:)
                                              keyEquivalent:@""] autorelease];
-        [i setState:[iTermToolbeltView shouldShowTool:theName] ? NSOnState : NSOffState];
+        [i setState:[iTermToolbeltView shouldShowTool:theName] ? NSControlStateValueOn : NSControlStateValueOff];
+        i.identifier = [@"Toolbelt." stringByAppendingString:theName];
         [menu addItem:i];
     }
 }
@@ -214,7 +243,19 @@ static NSString *const kDynamicToolURL = @"URL";
     self = [super initWithFrame:frame];
     if (self) {
         _delegate = delegate;
+        _vev = [[[iTermToolbeltVibrantVisualEffectView alloc] init] autorelease];
+        _vev.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        _vev.material = NSVisualEffectMaterialSidebar;
+        _vev.state = NSVisualEffectStateActive;
+        _vev.frame = self.bounds;
+        _vev.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self addSubview:_vev];
 
+        self.wantsLayer = YES;
+        self.layer = [[[CALayer alloc] init] autorelease];
+        self.layer.delegate = self;
+        self.layer.backgroundColor = [[self backgroundColor] CGColor];
+        
         NSArray *items = [iTermToolbeltView configuredTools];
         if (!items) {
             items = [iTermToolbeltView defaultTools];
@@ -244,6 +285,16 @@ static NSString *const kDynamicToolURL = @"URL";
         _dragHandle.delegate = self;
         _dragHandle.autoresizingMask = (NSViewHeightSizable | NSViewMaxXMargin);
         [self addSubview:_dragHandle];
+
+        _menuButton = [[[iTermHamburgerButton alloc] initWithMenuProvider:^NSMenu * _Nonnull {
+            NSMenu *menu = [[[NSMenu alloc] initWithTitle:@"Contextual Menu"] autorelease];
+            [iTermToolbeltView addToolsToMenu:menu];
+            return menu;
+        }] autorelease];
+        [_menuButton setButtonType:NSButtonTypeMomentaryPushIn];
+
+        _menuButton.frame = self.menuButtonFrame;
+        [self addSubview:_menuButton];
     }
     return self;
 }
@@ -257,51 +308,53 @@ static NSString *const kDynamicToolURL = @"URL";
 
 #pragma mark - NSView
 
-- (NSColor *)backgroundColor {
-    if (@available(macOS 10.14, *)) {
-        switch ((iTermPreferencesTabStyle)[iTermPreferences intForKey:kPreferenceKeyTabStyle]) {
-            case TAB_STYLE_AUTOMATIC:
-            case TAB_STYLE_MINIMAL:
-                return [NSColor controlBackgroundColor];
+- (void)resizeSubviewsWithOldSize:(NSSize)oldSize {
+    [super resizeSubviewsWithOldSize:oldSize];
+    _menuButton.frame = self.menuButtonFrame;
+}
 
-            case TAB_STYLE_LIGHT:
-            case TAB_STYLE_LIGHT_HIGH_CONTRAST:
-            case TAB_STYLE_DARK:
-            case TAB_STYLE_DARK_HIGH_CONTRAST:
-                break;
+- (NSRect)menuButtonFrame {
+    NSImage *hamburger = _menuButton.image;
+    return NSMakeRect(self.bounds.size.width - hamburger.size.width - 4,
+                      4.5,
+                      hamburger.size.width,
+                      hamburger.size.height);
+}
+
+- (void)viewDidChangeEffectiveAppearance {
+    [self updateColors];
+}
+
+- (void)updateColors NS_AVAILABLE_MAC(10_14) {
+    if (@available(macOS 10.16, *)) {
+        _vev.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    } else {
+        if (self.effectiveAppearance.it_isDark) {
+            _vev.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        } else {
+            // The chartjunk in table views looks horrible when there is a dark
+            // window behind us, so switch to within window blending in light mode.
+            _vev.blendingMode = NSVisualEffectBlendingModeWithinWindow;
         }
     }
+    self.layer.backgroundColor = [[self backgroundColor] CGColor];
+}
 
-    NSColor *lightColor = [NSColor colorWithCalibratedWhite:237.0/255.0 alpha:1];
-    NSColor *darkColor = [NSColor colorWithCalibratedWhite:0.12 alpha:1.00];
-    switch ([self.effectiveAppearance it_tabStyle:[iTermPreferences intForKey:kPreferenceKeyTabStyle]]) {
-        case TAB_STYLE_AUTOMATIC:
-        case TAB_STYLE_MINIMAL:
-            assert(NO);
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    [self updateColors];
+}
 
-        case TAB_STYLE_LIGHT:
-        case TAB_STYLE_LIGHT_HIGH_CONTRAST:
-            return lightColor;
-            break;
-
-        case TAB_STYLE_DARK:
-        case TAB_STYLE_DARK_HIGH_CONTRAST:
-            if (@available(macOS 10.14, *)) {
-                return darkColor;
-            } else if ([iTermAdvancedSettingsModel darkThemeHasBlackTitlebar]) {
-                return darkColor;
-            } else {
-                return lightColor;
-            }
-            break;
+- (NSColor *)backgroundColor {
+    if (self.effectiveAppearance.it_isDark) {
+        return [NSColor clearColor];
+    } else {
+        // See comment in updateColors
+        return [NSColor whiteColor];
     }
-    return lightColor;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    [[self backgroundColor] set];
-    NSRectFill(dirtyRect);
-    [super drawRect:dirtyRect];
 }
 
 - (BOOL)isFlipped {
@@ -357,6 +410,11 @@ static NSString *const kDynamicToolURL = @"URL";
 - (ToolCapturedOutputView *)capturedOutputView {
     iTermToolWrapper *wrapper = [_tools objectForKey:kCapturedOutputToolName];
     return (ToolCapturedOutputView *)wrapper.tool;
+}
+
+- (ToolJobs *)jobsView {
+    iTermToolWrapper *wrapper = [_tools objectForKey:kJobsToolName];
+    return (ToolJobs *)wrapper.tool;
 }
 
 - (void)windowBackgroundColorDidChange {
@@ -421,7 +479,7 @@ static NSString *const kDynamicToolURL = @"URL";
 
     [wrapper setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
     [theTool setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-    [_splitter adjustSubviews];
+    [self adjustSubviews];
     [_tools setObject:wrapper forKey:[[wrapper.name copy] autorelease]];
 }
 
@@ -443,7 +501,8 @@ static NSString *const kDynamicToolURL = @"URL";
                                   0,
                                   wrapper.container.frame.size.width,
                                   wrapper.container.frame.size.height);
-        if ([c instancesRespondToSelector:@selector(initWithFrame:URL:identifier:)]) {
+
+        if ([self classIsDynamic:c]) {
             NSDictionary *registry = [[NSUserDefaults standardUserDefaults] objectForKey:kDynamicToolsKey];
             NSString *identifier = [registry.allKeys objectPassingTest:^BOOL(NSString *key, NSUInteger index, BOOL *stop) {
                 NSDictionary *dict = registry[key];
@@ -463,10 +522,56 @@ static NSString *const kDynamicToolURL = @"URL";
     }
 }
 
+- (BOOL)classIsDynamic:(Class)c {
+    if (![c instancesRespondToSelector:@selector(initWithFrame:URL:identifier:)]) {
+        return NO;
+    }
+    if ([c respondsToSelector:@selector(isDynamic)]) {
+        return [c isDynamic];
+    }
+    return YES;
+}
+
 - (void)relayoutAllTools {
-    _splitter.frame = NSMakeRect(0, 0, self.frame.size.width, self.frame.size.height);
+    const NSRect desiredFrame = NSMakeRect(0, 0, self.frame.size.width, self.frame.size.height);
+    if (!NSEqualRects(_splitter.frame, desiredFrame)) {
+        // In issue 10712 we get in a loop where we set the splitter to its current frame which
+        // seems to kick off another layout pass, bringing you back here.
+        DLog(@"Actually setting frame");
+        _splitter.frame = desiredFrame;
+    } else {
+        DLog(@"Frame is already what we want so not setting it");
+    }
     for (iTermToolWrapper *wrapper in [_splitter subviews]) {
         [wrapper relayout];
+    }
+}
+
+- (NSDictionary *)restorableState {
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    for (iTermToolWrapper *wrapper in [_splitter subviews]) {
+        if (![wrapper.tool respondsToSelector:@selector(restorableState)]) {
+            continue;
+        }
+        NSDictionary *state = wrapper.tool.restorableState;
+        if (!state) {
+            continue;
+        }
+        result[wrapper.name] = state;
+    }
+    return result;
+}
+
+- (void)restoreFromState:(NSDictionary *)dict {
+    for (iTermToolWrapper *wrapper in [_splitter subviews]) {
+        if (![wrapper.tool respondsToSelector:@selector(restoreFromState:)]) {
+            continue;
+        }
+        NSDictionary *state = dict[wrapper.name];
+        if (!state) {
+            continue;
+        }
+        [wrapper.tool restoreFromState:state];
     }
 }
 
@@ -489,55 +594,125 @@ static NSString *const kDynamicToolURL = @"URL";
     return (ToolCommandHistoryView *)wrapper.tool;
 }
 
+- (ToolNamedMarks *)namedMarksView {
+    iTermToolWrapper *wrapper = _tools[kNamedMarksToolName];
+    return (ToolNamedMarks *)wrapper.tool;
+}
+
+- (iTermToolSnippets *)snippetsView {
+    iTermToolWrapper *wrapper = _tools[kSnippetsToolName];
+    return (iTermToolSnippets *)wrapper.tool;
+}
+
+- (iTermToolCodecierge *)codeciergeView {
+    iTermToolWrapper *wrapper = _tools[kCodeciergeToolName];
+    return (iTermToolCodecierge *)wrapper.tool;
+}
+
 #pragma mark - NSSplitViewDelegate
 
 - (void)splitViewDidResizeSubviews:(NSNotification *)aNotification {
+    if (_inSplitViewDidResizeSubviews) {
+        return;
+    }
+    _inSplitViewDidResizeSubviews = YES;
     [self relayoutAllTools];
+    _inSplitViewDidResizeSubviews = NO;
 }
 
+// The minimum coordinate gives the smallest allowed distance between the top of the splitview and the `dividerIndex`th divider.
 - (CGFloat)splitView:(NSSplitView *)splitView
     constrainMinCoordinate:(CGFloat)proposedMinimumPosition
          ofSubviewAt:(NSInteger)dividerIndex {
-    CGFloat min = 0;
-    NSArray *subviews = [_splitter subviews];
-    for (int i = 0; i <= dividerIndex; i++) {
-        iTermToolWrapper *wrapper = subviews[i];
+    NSArray<iTermToolWrapper *> *wrappers = _splitter.subviews;
+    CGFloat y = 0;
+    for (NSInteger i = 0; i <= dividerIndex; i++) {
         if (i == dividerIndex) {
-            min += wrapper.minimumHeight;
+            y += wrappers[i].minimumHeight;
         } else {
-            min += wrapper.frame.size.height;
-        }
-        if (i > 0) {
-            min += [splitView dividerThickness];
+            y += wrappers[i].frame.size.height + splitView.dividerThickness;
         }
     }
-    return min;
+    DLog(@"Constrain divider %@ (between %@ and %@) currently at %@ to minY >= %@. proposed=%@",
+         @(dividerIndex),
+         wrappers[dividerIndex].name,
+         wrappers[dividerIndex+1].name,
+         @(wrappers[dividerIndex+1].frame.origin.y),
+         @(y),
+         @(proposedMinimumPosition));
+    return y;
 }
 
+// The maximum coordinate gives the largest allowed distance between the top of the splitview and the `dividerIndex`th divider.
 - (CGFloat)splitView:(NSSplitView *)splitView
     constrainMaxCoordinate:(CGFloat)proposedMaximumPosition
          ofSubviewAt:(NSInteger)dividerIndex {
-    CGFloat height = splitView.frame.size.height;
-    NSArray *subviews = [_splitter subviews];
-    for (int i = subviews.count - 1; i > dividerIndex; i--) {
-        iTermToolWrapper *wrapper = subviews[i];
+    NSArray<iTermToolWrapper *> *wrappers = _splitter.subviews;
+    CGFloat y = 0;
+    for (NSInteger i = 0; i <= dividerIndex + 1; i++) {
         if (i == dividerIndex + 1) {
-            height -= wrapper.minimumHeight;
+            y += MAX(0, wrappers[i].frame.size.height - wrappers[i].minimumHeight) + splitView.dividerThickness;
         } else {
-            height -= wrapper.frame.size.height;
-        }
-        if (i != subviews.count - 1) {
-            height -= [splitView dividerThickness];
+            y += wrappers[i].frame.size.height + splitView.dividerThickness;
         }
     }
-    return height;
+
+    DLog(@"Constrain divider %@ (between %@ and %@) currently at %@ to maxY <= %@. proposed=%@",
+         @(dividerIndex),
+         wrappers[dividerIndex].name,
+         wrappers[dividerIndex + 1].name,
+         @(wrappers[dividerIndex+1].frame.origin.y),
+         @(y),
+         @(proposedMaximumPosition));
+    return y;
+}
+
+- (CGFloat)minimumHeightForSplitterSubviews {
+    CGFloat total = 0;
+    for (iTermToolWrapper *wrapper in _splitter.subviews) {
+        total += wrapper.minimumHeight;
+    }
+    total += MAX(0, _splitter.subviews.count - 1) * _splitter.dividerThickness;
+    return total;
 }
 
 - (void)splitView:(NSSplitView *)splitView resizeSubviewsWithOldSize:(NSSize)oldSize {
-    [splitView adjustSubviews];
-    [self forceSplitterSubviewsToRespectSizeConstraints];
+    BOOL collapsedAny = NO;
+    for (iTermToolWrapper *wrapper in _splitter.subviews.reversed) {
+        if (!wrapper.collapsed) {
+            if ([self minimumHeightForSplitterSubviews] > _splitter.frame.size.height) {
+                wrapper.collapsed = YES;
+                collapsedAny = YES;
+            }
+        }
+    }
+    if (!collapsedAny && splitView.frame.size.height > oldSize.height) {
+        for (iTermToolWrapper *wrapper in _splitter.subviews) {
+            if (wrapper.collapsed) {
+                if ([self minimumHeightForSplitterSubviews] + wrapper.minimumHeightWhenExpanded <= _splitter.frame.size.height) {
+                    wrapper.collapsed = NO;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    [self adjustSubviews];
 }
 
+- (void)adjustSubviews {
+    // Remove subviews from the wrapper to avoid violating constraints as it's unavoidably smaller
+    // than its minimum size sometimes.
+    for (iTermToolWrapper *wrapper in _splitter.subviews) {
+        [wrapper temporarilyRemoveSubviews];
+    }
+    [_splitter adjustSubviews];
+    [self forceSplitterSubviewsToRespectSizeConstraints];
+    for (iTermToolWrapper *wrapper in _splitter.subviews) {
+        [wrapper restoreSubviews];
+    }
+}
 #pragma mark - PTYSplitViewDelegate
 
 - (NSDictionary *)proportions {
@@ -642,7 +817,7 @@ static NSString *const kDynamicToolURL = @"URL";
         y += tuple.secondObject.doubleValue * sumOfCurrentHeights;
         y += _splitter.dividerThickness;
     }
-    [_splitter adjustSubviews];
+    [self adjustSubviews];
     _proportions = [[self proportions] retain];
 }
 
@@ -664,11 +839,21 @@ draggingDidEndOfSplit:(int)clickedOnSplitterIndex
 #pragma mark - iTermDragHandleViewDelegate
 
 - (CGFloat)dragHandleView:(iTermDragHandleView *)dragHandle didMoveBy:(CGFloat)delta {
-    return -[_delegate growToolbeltBy:-delta];
+    const CGFloat amount = -[_delegate growToolbeltBy:-delta];
+    _menuButton.frame = self.menuButtonFrame;
+    return amount;
+    
 }
 
 - (void)dragHandleViewDidFinishMoving:(iTermDragHandleView *)dragHandle {
     [_delegate toolbeltDidFinishGrowing];
+}
+
+#pragma mark - CALayerDelegate
+
+// Dunno why but unless you do this the whole view fades in when unhidden.
+- (id<CAAction>)actionForLayer:(CALayer *)layer forKey:(NSString *)key {
+    return [NSNull null];
 }
 
 @end

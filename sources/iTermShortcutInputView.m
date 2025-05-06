@@ -7,9 +7,12 @@
 //
 
 #import "iTermShortcutInputView.h"
-#import "iTermKeyBindingMgr.h"
+
+#import "NSEvent+iTerm.h"
 #import "NSStringITerm.h"
 #import "NSImage+iTerm.h"
+#import "iTermKeyMappings.h"
+#import "iTermWarning.h"
 
 @interface iTermShortcutInputView()
 @property(nonatomic, copy) NSString *hotkeyBeingRecorded;
@@ -19,12 +22,18 @@
     NSButton *_clearButton;
     BOOL _acceptFirstResponder;
     BOOL _mouseDown;
+    iTermShortcut *_savedShortcut;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
     self = [super initWithFrame:frameRect];
     if (self) {
+        _leaderAllowed = YES;
         [self addClearButton];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(leaderDidChange:)
+                                                     name:iTermKeyMappingsLeaderDidChange
+                                                   object:nil];
     }
     return self;
 }
@@ -32,17 +41,10 @@
 - (instancetype)initWithCoder:(NSCoder *)coder {
     self = [super initWithCoder:coder];
     if (self) {
+        _leaderAllowed = YES;
         [self addClearButton];
     }
     return self;
-}
-
-- (void)dealloc {
-    [_clearButton release];
-    [_hotkeyBeingRecorded release];
-    [_shortcut release];
-    [_stringValue release];
-    [super dealloc];
 }
 
 - (void)setBackgroundStyle:(NSBackgroundStyle)backgroundStyle {
@@ -139,7 +141,7 @@
     NSRectFillUsingOperation(frame, NSCompositingOperationSourceOver);
     [[NSGraphicsContext currentContext] setShouldAntialias:YES];
 
-    NSMutableParagraphStyle *paragraphStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
+    NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
     paragraphStyle.alignment = NSTextAlignmentCenter;
     NSDictionary<NSString *, id> *attributes = @{ NSForegroundColorAttributeName: textColor,
                                                   NSFontAttributeName: [NSFont systemFontOfSize:[NSFont systemFontSize]],
@@ -168,6 +170,9 @@
 
 - (BOOL)becomeFirstResponder {
     [self setNeedsDisplay:YES];
+    if (_acceptFirstResponder) {
+        _savedShortcut = self.shortcut;
+    }
     return _acceptFirstResponder;
 }
 
@@ -224,14 +229,38 @@
 
 - (void)handleShortcutEvent:(NSEvent *)event {
     if (event.type == NSEventTypeKeyDown) {
+        iTermShortcut *shortcut = [iTermShortcut shortcutWithEvent:event
+                                                     leaderAllowed:_leaderAllowed];
+        if (self.purpose && shortcut.smellsAccidental) {
+            const iTermWarningSelection selection =
+            [iTermWarning showWarningWithTitle:[NSString stringWithFormat:@"Are you sure you want to use “%@” %@? This looks like a commonly used keystroke.", shortcut.stringValue, self.purpose]
+                                       actions:@[ @"OK", @"Cancel" ]
+                                     accessory:nil
+                                    identifier:nil
+                                   silenceable:kiTermWarningTypePersistent
+                                       heading:@"Confirm Shortcut"
+                                        window:self.window];
+            if (selection == kiTermWarningSelection1) {
+                [self revert];
+                self.hotkeyBeingRecorded = nil;
+                [[self window] makeFirstResponder:[self window]];
+                [self setNeedsDisplay:YES];
+                return;
+            }
+        }
         self.hotkeyBeingRecorded = nil;
-        self.shortcut = [iTermShortcut shortcutWithEvent:event];
+        self.shortcut = shortcut;
         [_shortcutDelegate shortcutInputView:self didReceiveKeyPressEvent:event];
+        _savedShortcut = nil;
         [[self window] makeFirstResponder:[self window]];
     } else if (event.type == NSEventTypeFlagsChanged) {
-        self.hotkeyBeingRecorded = [NSString stringForModifiersWithMask:event.modifierFlags];
+        self.hotkeyBeingRecorded = [NSString stringForModifiersWithMask:event.it_modifierFlags];
     }
     [self setNeedsDisplay:YES];
+}
+
+- (void)revert {
+    self.shortcut = _savedShortcut;
 }
 
 - (void)setEnabled:(BOOL)flag {
@@ -244,15 +273,13 @@
 }
 
 - (void)setStringValue:(NSString *)stringValue {
-    [_stringValue autorelease];
     _stringValue = [stringValue copy];
     _clearButton.hidden = stringValue.length == 0;
     [self setNeedsDisplay:YES];
 }
 
 - (void)setShortcut:(iTermShortcut *)shortcut {
-    [_shortcut autorelease];
-    _shortcut = [shortcut retain];
+    _shortcut = shortcut;
     self.stringValue = self.shortcut.stringValue;
 }
 
@@ -264,6 +291,10 @@
     } else {
         return nil;
     }
+}
+
+- (void)leaderDidChange:(NSNotification *)notification {
+    self.stringValue = self.shortcut.stringValue;
 }
 
 @end

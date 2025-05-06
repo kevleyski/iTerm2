@@ -6,6 +6,7 @@
 //
 
 #import "iTermNotificationCenter.h"
+#import "iTermNotificationCenter+Protected.h"
 
 #import "DebugLogging.h"
 #import "NSNull+iTerm.h"
@@ -37,10 +38,6 @@ static const char iTermNotificationTokenAssociatedObject;
     [[NSNotificationCenter defaultCenter] removeObserver:_token];
 }
 
-@end
-
-@interface iTermBaseNotification()
-- (instancetype)initPrivate NS_DESIGNATED_INITIALIZER;
 @end
 
 @implementation iTermBaseNotification
@@ -85,45 +82,6 @@ static const char iTermNotificationTokenAssociatedObject;
     [[NSNotificationCenter defaultCenter] postNotificationName:iTermInternalNotification
                                                         object:[self class]
                                                       userInfo:@{ @"object": self }];
-}
-
-@end
-
-@interface iTermPreferenceDidChangeNotification()
-@property (nonatomic, strong, readwrite) NSString *key;
-@property (nonatomic, strong, readwrite) id value;
-@end
-
-@implementation iTermPreferenceDidChangeNotification
-
-+ (instancetype)notificationWithKey:(NSString *)key value:(id)value {
-    iTermPreferenceDidChangeNotification *notif = [[self alloc] initPrivate];
-    notif.key = key;
-    notif.value = value;
-    return notif;
-}
-
-+ (void)subscribe:(NSObject *)owner
-            block:(void (^)(iTermPreferenceDidChangeNotification * _Nonnull))block {
-    [self internalSubscribe:owner withBlock:block];
-}
-
-@end
-
-@interface iTermFlagsChangedNotification()
-@property (nonatomic, strong, readwrite) NSEvent *event;
-@end
-
-@implementation iTermFlagsChangedNotification
-
-+ (instancetype)notificationWithEvent:(id)event {
-    iTermFlagsChangedNotification *notif = [[self alloc] initPrivate];
-    notif.event = event;
-    return notif;
-}
-
-+ (void)subscribe:(NSObject *)owner block:(void (^)(iTermFlagsChangedNotification * _Nonnull))block {
-    [self internalSubscribe:owner withBlock:block];
 }
 
 @end

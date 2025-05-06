@@ -22,10 +22,11 @@ NS_CLASS_AVAILABLE(10_11, NA)
 @property (nonatomic, strong) id<MTLTexture> backgroundTexture;
 @property (nonatomic) iTermMetalUnderlineDescriptor asciiUnderlineDescriptor;
 @property (nonatomic) iTermMetalUnderlineDescriptor nonAsciiUnderlineDescriptor;
-@property (nonatomic) vector_float4 defaultBackgroundColor;
-@property (nonatomic) BOOL disableIndividualColorModels NS_DEPRECATED_MAC(10_12, 10_14);
+@property (nonatomic) iTermMetalUnderlineDescriptor strikethroughUnderlineDescriptor;
+@property (nonatomic) CGFloat verticalOffset;
 
 - (void)setGlyphKeysData:(iTermGlyphKeyData*)glyphKeysData
+           glyphKeyCount:(NSUInteger)glyphKeyCount
                    count:(int)count
           attributesData:(iTermAttributesData *)attributesData
                      row:(int)row
@@ -35,6 +36,7 @@ NS_CLASS_AVAILABLE(10_11, NA)
                 creation:(NSDictionary<NSNumber *, iTermCharacterBitmap *> *(NS_NOESCAPE ^)(int x, BOOL *emoji))creation;
 - (void)willDraw;
 - (void)didComplete;
+- (void)expireNonASCIIGlyphs;
 
 @end
 

@@ -26,6 +26,9 @@ extern "C" {
 #endif
 
 namespace iTerm2 {
+    enum dontcare {
+        magic = 0xdeadbeef
+    };
     class TexturePage;
 
     class TexturePageOwner {
@@ -37,10 +40,14 @@ namespace iTerm2 {
 
     class TexturePage {
     public:
+        // Make this public so the optimizer can't make any assumptions about it.
+        int _magic;
+
         TexturePage(TexturePageOwner *owner,
                     id<MTLDevice> device,
                     int capacity,
                     vector_uint2 cellSize) :
+        _magic(magic),
         _capacity(capacity),
         _cell_size(cellSize),
         _count(0),
@@ -49,7 +56,7 @@ namespace iTerm2 {
             _textureArray = [[iTermTextureArray alloc] initWithTextureWidth:cellSize.x
                                                               textureHeight:cellSize.y
                                                                 arrayLength:capacity
-                                                                       bgra:YES
+                                                                pixelFormat:MTLPixelFormatBGRA8Unorm
                                                                      device:device];
             _atlas_size = simd_make_uint2(_textureArray.atlasSize.width,
                                           _textureArray.atlasSize.height);
@@ -57,7 +64,12 @@ namespace iTerm2 {
         }
 
         virtual ~TexturePage() {
+            _magic = 0;
             ITOwnershipLog(@"OWNERSHIP: Destructor for page %p", this);
+        }
+
+        void assert_valid() const {
+            assert(_magic == magic);
         }
 
         int get_available_count() const {

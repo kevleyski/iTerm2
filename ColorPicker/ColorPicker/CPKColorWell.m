@@ -1,5 +1,6 @@
 #import "CPKColorWell.h"
 #import "CPKControlsView.h"
+#import "CPKLogging.h"
 #import "CPKPopover.h"
 #import "NSObject+CPK.h"
 
@@ -30,6 +31,11 @@
 
 @property(nonatomic, weak) id<CPKColorWellViewDelegate> delegate;
 
+@property (nonatomic, strong) NSColorSpace *colorSpace;
+
+// This is how the well sets color on drag-drop
+- (void)pushColor:(NSColor *)color;
+
 @end
 
 @interface CPKColorWellView() <NSDraggingDestination, NSDraggingSource, NSPopoverDelegate>
@@ -47,8 +53,14 @@
 @interface CPKColorWell() <CPKColorWellViewDelegate>
 @end
 
+@interface NSColorPanel (Private)
+- (id)__target;
+@end
+
+
 @implementation CPKColorWellView {
     NSPoint _mouseDownLocation;
+    BOOL _haveSetColorPanelTarget;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -67,12 +79,28 @@
     return self;
 }
 
+- (void)dealloc {
+    NSColorPanel *panel = [NSColorPanel sharedColorPanel];
+    if (_haveSetColorPanelTarget) {
+        // NSColorPanel holds an unsafe unretained reference to its target.
+        // See https://bugs.chromium.org/p/chromium/issues/detail?id=767598
+        // (╯°□°)╯︵ ┻━┻
+        BOOL respondsToPrivateTargetMethod =
+        [panel respondsToSelector:@selector(__target)];
+        if (respondsToPrivateTargetMethod &&
+            [panel __target] == self) {
+            panel.target = nil;
+            panel.action = nil;
+        }
+    }
+}
+
 - (void)colorWellViewCommonInit {
     [self registerForDraggedTypes:@[ NSPasteboardTypeColor ]];
 }
 
 - (void)awakeFromNib {
-    self.cornerRadius = 3;
+    self.cpk_cornerRadius = 3;
     self.open = NO;
 }
 
@@ -131,6 +159,19 @@
                                  source:self];
 }
 
+- (void)pushColor:(NSColor *)color {
+    CPKLog(@"pushColor:%@", color);
+    if (self.popover) {
+        self.popover.selectedColor = color;
+    } else {
+        NSColorPanel *panel = [NSColorPanel sharedColorPanel];
+        if (panel.isVisible) {
+            [panel setColor:color];
+        }
+    }
+}
+
+
 #pragma mark - NSDraggingDestination
 
 - (NSDragOperation)draggingEntered:(id <NSDraggingInfo>)sender {
@@ -156,16 +197,17 @@
                                       classes:@[ [NSColor class] ]
                                 searchOptions:@{}
                                    usingBlock:^(NSDraggingItem * _Nonnull draggingItem, NSInteger idx, BOOL * _Nonnull stop) {
-                                       NSColor *color = draggingItem.item;
-                                       if (color) {
-                                           self.popover.selectedColor = color;
-                                           self.selectedColor = color;
-                                           [self.delegate colorChangedByDrag:color];
+        NSColor *color = draggingItem.item;
+        CPKLog(@"performDragOperation color=%@", color);
+        if (color) {
+            self.popover.selectedColor = color;
+            self.selectedColor = color;
+            [self.delegate colorChangedByDrag:color];
 
-                                           ok = YES;
-                                           *stop = YES;
-                                       }
-                                   }];
+            ok = YES;
+            *stop = YES;
+        }
+    }];
     return ok;
 }
 
@@ -209,7 +251,10 @@
     NSButton *button = [[NSButton alloc] initWithFrame:frame];
     button.bordered = NO;
     button.image = image;
-    button.imagePosition = NSImageOnly;
+    button.title = @"Default Picker";
+    button.imagePosition = NSImageAbove;
+    [button sizeToFit];
+    frame = button.frame;
     [button setTarget:self];
     [button setAction:@selector(useColorPicker:)];
 
@@ -221,7 +266,9 @@
         image = [self cpk_imageNamed:@"NoColor"];
         button.bordered = NO;
         button.image = image;
-        button.imagePosition = NSImageOnly;
+        button.imagePosition = NSImageAbove;
+        button.title = @"No Color";
+        [button sizeToFit];
         [button setTarget:self];
         [button setAction:@selector(noColorChosenInSystemColorPicker:)];
         [container addSubview:button];
@@ -231,6 +278,7 @@
     colorPanel.accessoryView = container;
 
     [colorPanel setTarget:self];
+    _haveSetColorPanelTarget = YES;
     [colorPanel setAction:@selector(colorPanelColorDidChange:)];
     [colorPanel orderFront:nil];
     colorPanel.showsAlpha = self.alphaAllowed;
@@ -258,8 +306,9 @@
     self.popover =
         [CPKPopover presentRelativeToRect:presentationRect
                                    ofView:presentingView
-                            preferredEdge:NSRectEdgeMinY
+                            preferredEdge:NSRectEdgeMaxY
                              initialColor:self.color
+                               colorSpace:self.colorSpace
                                   options:options
                        selectionDidChange:^(NSColor *color) {
                            weakSelf.selectedColor = color;
@@ -315,18 +364,38 @@
 
 @end
 
+static NSColorSpace *gDefaultColorSpace;
+
 @implementation CPKColorWell {
   CPKColorWellView *_view;
   BOOL _continuous;
 }
 
++ (NSColorSpace *)defaultColorSpace {
+    return gDefaultColorSpace ?: [NSColorSpace sRGBColorSpace];
+}
+
++ (void)setDefaultColorSpace:(NSColorSpace *)defaultColorSpace {
+    gDefaultColorSpace = defaultColorSpace;
+}
+
 // This is the path taken when created programatically.
-- (instancetype)initWithFrame:(NSRect)frameRect {
-  self = [super initWithFrame:frameRect];
-  if (self) {
-    [self load];
-  }
-  return self;
+- (instancetype)initWithFrame:(NSRect)frameRect colorSpace:(NSColorSpace *)colorSpace {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        _colorSpace = colorSpace;
+        [self load];
+    }
+    return self;
+}
+
+// This is called before applicationWillFinishLaunching  so the color space is wrong :(
+- (instancetype)initWithCoder:(NSCoder *)coder {
+    self = [super initWithCoder:coder];
+    if (self) {
+        _colorSpace = [CPKColorWell defaultColorSpace] ?: [NSColorSpace sRGBColorSpace];
+    }
+    return self;
 }
 
 // This is the path taken when loaded from a nib.
@@ -343,6 +412,7 @@
     [self setCell:[[NSActionCell alloc] init]];
     _continuous = YES;
     _view = [[CPKColorWellView alloc] initWithFrame:self.bounds];
+    _view.colorSpace = self.colorSpace;
     _view.delegate = self;
     [self addSubview:_view];
     _view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -363,28 +433,34 @@
     };
 }
 
+- (void)setColorSpace:(NSColorSpace *)colorSpace {
+    _colorSpace = colorSpace;
+    self.view.colorSpace = colorSpace;
+}
+
 - (NSColor *)color {
-  return _view.selectedColor;
+  return self.view.selectedColor;
 }
 
 - (void)setColor:(NSColor *)color {
-    _view.color = color;
-    _view.selectedColor = color;
+    CPKLog(@"setColor:%@", color);
+    self.view.color = color;
+    self.view.selectedColor = color;
 }
 
 - (void)setAlphaAllowed:(BOOL)alphaAllowed {
     _alphaAllowed = alphaAllowed;
-    _view.alphaAllowed = alphaAllowed;
+    self.view.alphaAllowed = alphaAllowed;
 }
 
 - (void)setNoColorAllowed:(BOOL)noColorAllowed {
     _noColorAllowed = noColorAllowed;
-    _view.noColorAllowed = noColorAllowed;
+    self.view.noColorAllowed = noColorAllowed;
 }
 
 - (void)setEnabled:(BOOL)enabled {
   [super setEnabled:enabled];
-  _view.disabled = !enabled;
+    self.view.disabled = !enabled;
 }
 
 - (void)setContinuous:(BOOL)continuous {
@@ -404,8 +480,15 @@
 }
 
 - (void)colorChangedByDrag:(NSColor *)color {
+    CPKLog(@"colorChangedByDrag:%@", color);
     [self setColor:color];
     [self sendAction:self.action to:self.target];
+    [_view pushColor:color];
+}
+
+- (CPKColorWellView *)view {
+    [self load];
+    return _view;
 }
 
 @end

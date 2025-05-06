@@ -8,12 +8,15 @@
 #import "iTermExpressionParser.h"
 #import "iTermExpressionParser+Private.h"
 
+#import "CPParser+Cache.h"
+#import "iTermAdvancedSettingsModel.h"
 #import "iTermGrammarProcessor.h"
 #import "iTermParsedExpression+Tests.h"
 #import "iTermScriptFunctionCall+Private.h"
 #import "iTermScriptFunctionCall.h"
 #import "iTermSwiftyStringParser.h"
 #import "iTermSwiftyStringRecognizer.h"
+#import "iTermVariableReference.h"
 #import "iTermVariableScope.h"
 #import "NSArray+iTerm.h"
 #import "NSObject+iTerm.h"
@@ -25,7 +28,7 @@
 @implementation iTermExpressionParser {
     @protected
     CPTokeniser *_tokenizer;
-    CPParser *_parser;
+    CPSLRParser *_parser;
     iTermVariableScope *_scope;
     NSError *_error;
     NSString *_input;
@@ -39,7 +42,11 @@
     iTermParsedExpression *expression = [[iTermExpressionParser callParser] parse:invocation
                                                                             scope:permissiveScope];
     switch (expression.expressionType) {
+        case iTermParsedExpressionTypeArrayLookup:
+        case iTermParsedExpressionTypeVariableReference:
         case iTermParsedExpressionTypeNumber:
+        case iTermParsedExpressionTypeReference:
+        case iTermParsedExpressionTypeBoolean:
         case iTermParsedExpressionTypeString:
         case iTermParsedExpressionTypeArrayOfExpressions:
         case iTermParsedExpressionTypeArrayOfValues:
@@ -58,6 +65,14 @@
 
         case iTermParsedExpressionTypeFunctionCall:
             return expression.functionCall.signature;
+
+        case iTermParsedExpressionTypeFunctionCalls:
+            if (error) {
+                *error = [NSError errorWithDomain:@"com.iterm2.call"
+                                             code:3
+                                         userInfo:@{ NSLocalizedDescriptionKey: @"Expected single function call" }];
+            }
+            return nil;
 
         case iTermParsedExpressionTypeNil:
             if (error) {
@@ -91,7 +106,7 @@
     static iTermExpressionParser *sCachedInstance;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sCachedInstance = [[iTermExpressionParser alloc] initWithStart:@"call"];
+        sCachedInstance = [[iTermExpressionParser alloc] initWithStart:@"callsequence"];
     });
     return sCachedInstance;
 }
@@ -135,6 +150,7 @@
     return stringRecogniser;
 }
 
+// Note that iTermFunctionCallSuggester also uses this.
 + (CPTokeniser *)newTokenizer {
     CPTokeniser *tokenizer;
     tokenizer = [[CPTokeniser alloc] init];
@@ -147,6 +163,10 @@
     [tokenizer addTokenRecogniser:[CPKeywordRecogniser recogniserForKeyword:@"?"]];
     [tokenizer addTokenRecogniser:[CPKeywordRecogniser recogniserForKeyword:@"["]];
     [tokenizer addTokenRecogniser:[CPKeywordRecogniser recogniserForKeyword:@"]"]];
+    [tokenizer addTokenRecogniser:[CPKeywordRecogniser recogniserForKeyword:@";"]];
+    [tokenizer addTokenRecogniser:[CPKeywordRecogniser recogniserForKeyword:@"&"]];
+    [tokenizer addTokenRecogniser:[CPKeywordRecogniser recogniserForKeyword:@"true"]];
+    [tokenizer addTokenRecogniser:[CPKeywordRecogniser recogniserForKeyword:@"false"]];
     [tokenizer addTokenRecogniser:[CPNumberRecogniser numberRecogniser]];
     [tokenizer addTokenRecogniser:[CPWhiteSpaceRecogniser whiteSpaceRecogniser]];
     [tokenizer addTokenRecogniser:[CPIdentifierRecogniser identifierRecogniser]];
@@ -164,15 +184,15 @@
         _grammarProcessor = [[iTermGrammarProcessor alloc] init];
         [self loadRulesAndTransforms];
 
-        NSError *error = nil;
-        CPGrammar *grammar = [CPGrammar grammarWithStart:start
-                                          backusNaurForm:_grammarProcessor.backusNaurForm
-                                                   error:&error];
-        _parser = [CPSLRParser parserWithGrammar:grammar];
+        _parser = [CPSLRParser parserWithBNF:_grammarProcessor.backusNaurForm start:start];
         assert(_parser);
         _parser.delegate = self;
     }
     return self;
+}
+
+- (void)dealloc {
+    [_parser it_releaseParser];
 }
 
 - (void)addSwiftyStringRecognizers {
@@ -188,11 +208,20 @@
     [_tokenizer addTokenRecogniser:left];
 }
 
-- (iTermParsedExpression *)parsedExpressionForFunctionCallWithName:(NSString *)name
-                                                           arglist:(NSArray<iTermFunctionArgument *> *)argsArray
-                                                             error:(out NSError **)error {
+- (iTermParsedExpression *)callSequenceWithCalls:(NSArray *)calls {
+    return [[iTermParsedExpression alloc] initWithFunctionCalls:calls];
+}
+
+
+- (iTermParsedExpression *)parsedExpressionForFunctionCallWithFullyQualifiedName:(NSString *)fqName
+                                                                         arglist:(NSArray<iTermFunctionArgument *> *)argsArray
+                                                                           error:(out NSError **)error {
+    NSString *name;
+    NSString *namespace;
+    iTermFunctionCallSplitFullyQualifiedName(fqName, &namespace, &name);
     iTermScriptFunctionCall *call = [[iTermScriptFunctionCall alloc] init];
     call.name = name;
+    call.namespace = namespace;
     for (iTermFunctionArgument *arg in argsArray) {
         if (arg.expression.expressionType == iTermParsedExpressionTypeError) {
             if (error) {
@@ -203,7 +232,6 @@
         [call addParameterWithName:arg.name
                   parsedExpression:arg.expression];
     }
-
     if (error) {
         *error = nil;
     }
@@ -211,11 +239,22 @@
 }
 
 - (iTermFunctionArgument *)newFunctionArgumentWithName:(NSString *)name
-                                            expression:(iTermParsedExpression *)expression {
+                                            expression:(iTermParsedExpression *)expression
+                                       passByReference:(BOOL)passByReference {
     iTermFunctionArgument *arg = [[iTermFunctionArgument alloc] init];
     arg.name = name;
     arg.expression = expression;
+    arg.passByReference = passByReference;
     return arg;
+}
+
+- (iTermParsedExpression *)parsedExpressionWithReferenceToPath:(NSString *)path {
+    if (![_scope userWritableContainerExistsForPath:path]) {
+        return [[iTermParsedExpression alloc] initWithErrorCode:3 reason:[NSString stringWithFormat:@"Can’t form reference to non-existent or read-only container for variable %@", path]];
+    }
+    iTermVariableReference *ref = [[iTermVariableReference alloc] initWithPath:path
+                                                                        vendor:_scope];
+    return [[iTermParsedExpression alloc] initWithReference:ref];
 }
 
 - (iTermParsedExpression *)parsedExpressionWithValue:(id)value
@@ -226,12 +265,17 @@
         return [[iTermParsedExpression alloc] initWithErrorCode:3 reason:errorReason];
     }
 
+    if ([value conformsToProtocol:@protocol(iTermExpressionParserPlaceholder)]) {
+        return [[iTermParsedExpression alloc] initWithPlaceholder:value
+                                                         optional:optional];
+    }
+
     // The fallbackError is used only when value is not legit.
     NSString *fallbackError;
     if (optional) {
         return [[iTermParsedExpression alloc] initWithOptionalObject:value];
     } else {
-        fallbackError = [NSString stringWithFormat:@"Reference to undefined variable “%@”. Use ? to convert undefined values to null.", path];
+        fallbackError = [NSString stringWithFormat:@"Reference to undefined variable “%@”. Change it to “%@?” to treat the undefined value as null.", path, path];
         return [[iTermParsedExpression alloc] initWithObject:value
                                                  errorReason:fallbackError];
     }
@@ -246,8 +290,7 @@
              arraySoFar.lastObject &&
              arraySoFar.lastObject.expressionType == iTermParsedExpressionTypeString) {
              NSString *concatenated = [arraySoFar.lastObject.string stringByAppendingString:expression.string];
-             iTermParsedExpression *combined = [[iTermParsedExpression alloc] initWithString:concatenated
-                                                                                    optional:NO];
+             iTermParsedExpression *combined = [[iTermParsedExpression alloc] initWithString:concatenated];
              return [[arraySoFar subarrayToIndex:arraySoFar.count - 1] arrayByAddingObject:combined];
          }
          return [arraySoFar arrayByAddingObject:expression];
@@ -261,19 +304,44 @@
 
 + (iTermParsedExpression *)parsedExpressionWithInterpolatedString:(NSString *)swifty
                                                             scope:(iTermVariableScope *)scope {
+    return [self parsedExpressionWithInterpolatedString:swifty escapingFunction:nil scope:scope strict:NO];
+}
+
++ (iTermParsedExpression *)parsedExpressionWithInterpolatedString:(NSString *)swifty
+                                                 escapingFunction:(NSString *(^)(NSString *string))escapingFunction
+                                                            scope:(iTermVariableScope *)scope
+                                                           strict:(BOOL)strict {
+    __block BOOL allLiterals = YES;
     __block NSError *error = nil;
     NSMutableArray *interpolatedParts = [NSMutableArray array];
     [swifty enumerateSwiftySubstrings:^(NSUInteger index, NSString *substring, BOOL isLiteral, BOOL *stop) {
         if (isLiteral) {
             NSString *escapedString = [substring it_stringByExpandingBackslashEscapedCharacters];
-            [interpolatedParts addObject:[[iTermParsedExpression alloc] initWithString:escapedString
-                                                                              optional:NO]];
+            [interpolatedParts addObject:[[iTermParsedExpression alloc] initWithString:escapedString]];
             return;
         }
+        allLiterals = NO;
 
         iTermExpressionParser *parser = [[iTermExpressionParser alloc] initWithStart:@"expression"];
         iTermParsedExpression *expression = [parser parse:substring
                                                     scope:scope];
+        if (expression.expressionType == iTermParsedExpressionTypeString && escapingFunction) {
+            NSString *escapedString = escapingFunction(expression.string);
+            [interpolatedParts addObject:[[iTermParsedExpression alloc] initWithString:escapedString]];
+            return;
+        }
+        if (!strict &&
+            [iTermAdvancedSettingsModel laxNilPolicyInInterpolatedStrings] &&
+            expression.expressionType == iTermParsedExpressionTypeError) {
+            // If the expression was a variable reference, replace it with empty string. This works
+            // around the annoyance of remembering to add question marks in interpolated strings,
+            // where you know the result you want is always an empty string.
+            iTermParsedExpression *expressionWithPlaceholders = [parser parse:substring
+                                                                        scope:[[iTermVariablePlaceholderScope alloc] init]];
+            if ([expressionWithPlaceholders.object conformsToProtocol:@protocol(iTermExpressionParserPlaceholder)]) {
+                expression = [[iTermParsedExpression alloc] initWithString:@""];
+            }
+        }
         [interpolatedParts addObject:expression];
         if (expression.expressionType == iTermParsedExpressionTypeError) {
             error = expression.error;
@@ -286,20 +354,39 @@
         return [[iTermParsedExpression alloc] initWithError:error];
     }
 
+    if (allLiterals) {
+        return [[iTermParsedExpression alloc] initWithString:[swifty it_stringByExpandingBackslashEscapedCharacters]];
+    }
     return [self parsedExpressionWithInterpolatedStringParts:interpolatedParts];
 }
 
 - (iTermTriple<id, NSString *, NSString *> *)pathOrDereferencedArrayFromPath:(NSString *)path
                                                                        index:(NSNumber *)indexNumber {
+    if ([path isEqualToString:@"null"] && !indexNumber) {
+        return [iTermTriple tripleWithObject:nil andObject:nil object:path];
+    }
+    if (_scope.usePlaceholders) {
+        id placeholder;
+        if (indexNumber) {
+            placeholder = [[iTermExpressionParserArrayDereferencePlaceholder alloc] initWithPath:path index:indexNumber.integerValue];
+        } else {
+            placeholder = [[iTermExpressionParserVariableReferencePlaceholder alloc] initWithPath:path];
+        }
+        return [iTermTriple tripleWithObject:placeholder
+                                   andObject:nil
+                                      object:path];
+    }
     id untypedValue = [_scope valueForVariableName:path];
     if (!untypedValue) {
         return [iTermTriple tripleWithObject:nil andObject:nil object:path];
     }
 
     if (!indexNumber) {
+        // This is a plain variable reference, e.g. \(name)
         return [iTermTriple tripleWithObject:untypedValue andObject:nil object:path];
     }
 
+    // Succeed iff this is an array dereference, like \(user.myarray[1])
     NSArray *array = [NSArray castFrom:untypedValue];
     if (!array) {
         NSString *reason = [NSString stringWithFormat:@"Variable “%@” is of type %@, not array", path, NSStringFromClass([untypedValue class])];
@@ -308,7 +395,7 @@
 
     NSInteger index = indexNumber.integerValue;
     if (index < 0 || index >= array.count) {
-        NSString *reason = [NSString stringWithFormat:@"Index %@ out of range of “%@”, which %@ values", @(index), path, @(array.count)];
+        NSString *reason = [NSString stringWithFormat:@"Index %@ out of range of “%@”, which has %@ value%@", @(index), path, @(array.count), array.count == 1 ? @"" : @"s"];
         return [iTermTriple tripleWithObject:nil andObject:reason object:path];
     }
 
@@ -317,107 +404,154 @@
 
 - (void)loadRulesAndTransforms {
     __weak __typeof(self) weakSelf = self;
+
+    [_grammarProcessor addProductionRule:@"callsequence ::= <callsequence> ';' <call>"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+        iTermParsedExpression *callSequence = syntaxTree.children[0];
+        iTermParsedExpression *call = syntaxTree.children[2];
+        if (call.expressionType == iTermParsedExpressionTypeError) {
+            return call;
+        }
+        if (callSequence.expressionType == iTermParsedExpressionTypeError) {
+            return callSequence;
+        }
+        return [weakSelf callSequenceWithCalls:[callSequence.functionCalls arrayByAddingObject:call.functionCall]];
+    }];
+    [_grammarProcessor addProductionRule:@"callsequence ::= <call>"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+        iTermParsedExpression *call = syntaxTree.children[0];
+        if (call.expressionType == iTermParsedExpressionTypeError) {
+            return call;
+        }
+        return [weakSelf callSequenceWithCalls:@[call.functionCall]];
+    }];
+
     [_grammarProcessor addProductionRule:@"call ::= <path> <arglist>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               NSError *error = nil;
-                               iTermParsedExpression *result = [weakSelf parsedExpressionForFunctionCallWithName:(NSString *)syntaxTree.children[0]
-                                                                                                         arglist:syntaxTree.children[1]
-                                                                                                           error:&error];
-                               if (error) {
-                                   return [[iTermParsedExpression alloc] initWithError:error];
-                               }
-                               return result;
-                           }];
+        NSError *error = nil;
+        iTermParsedExpression *result = [weakSelf parsedExpressionForFunctionCallWithFullyQualifiedName:(NSString *)syntaxTree.children[0]
+                                                                                                arglist:syntaxTree.children[1]
+                                                                                                  error:&error];
+        if (error) {
+            return [[iTermParsedExpression alloc] initWithError:error];
+        }
+        return result;
+    }];
     [_grammarProcessor addProductionRule:@"arglist ::= '(' <args> ')'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return syntaxTree.children[1];
-                           }];
+        return syntaxTree.children[1];
+    }];
     [_grammarProcessor addProductionRule:@"arglist ::= '(' ')'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return @[];
-                           }];
+        return @[];
+    }];
     [_grammarProcessor addProductionRule:@"args ::= <arg>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return @[ syntaxTree.children[0] ];
-                           }];
+        return @[ syntaxTree.children[0] ];
+    }];
     [_grammarProcessor addProductionRule:@"args ::= <arg> ',' <args>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return [@[ syntaxTree.children[0] ] arrayByAddingObjectsFromArray:syntaxTree.children[2]];
-                           }];
+        return [@[ syntaxTree.children[0] ] arrayByAddingObjectsFromArray:syntaxTree.children[2]];
+    }];
+    [_grammarProcessor addProductionRule:@"arg ::= 'Identifier' ':' '&' <path>"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+        NSString *path = syntaxTree.children[3];
+        iTermParsedExpression *ref = [weakSelf parsedExpressionWithReferenceToPath:path];
+        if ([path isEqualToString:@"null"]) {
+            NSError *error = [NSError errorWithDomain:@"com.iterm2.parser"
+                                                 code:2
+                                             userInfo:@{ NSLocalizedDescriptionKey: @"&null is never allowed" }];
+            return [[iTermParsedExpression alloc] initWithError:error];
+        }
+        [weakSelf pathOrDereferencedArrayFromPath:path index:nil];  // just for the recording scope side-effect
+        return [weakSelf newFunctionArgumentWithName:[(CPIdentifierToken *)syntaxTree.children[0] identifier]
+                                          expression:ref
+                                     passByReference:YES];
+    }];
     [_grammarProcessor addProductionRule:@"arg ::= 'Identifier' ':' <expression>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return [weakSelf newFunctionArgumentWithName:[(CPIdentifierToken *)syntaxTree.children[0] identifier]
-                                                                 expression:syntaxTree.children[2]];
-                           }];
+        return [weakSelf newFunctionArgumentWithName:[(CPIdentifierToken *)syntaxTree.children[0] identifier]
+                                          expression:syntaxTree.children[2]
+                                     passByReference:NO];
+    }];
     [_grammarProcessor addProductionRule:@"expression ::= <path_or_dereferenced_array>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               iTermTriple *triple = syntaxTree.children[0];
-                               return [weakSelf parsedExpressionWithValue:triple.firstObject
-                                                              errorReason:triple.secondObject
-                                                                     path:triple.thirdObject
-                                                                 optional:NO];
-                           }];
+        iTermTriple *triple = syntaxTree.children[0];
+        // Explicit nulls must be optional to signal the caller intended them to be null.
+        return [weakSelf parsedExpressionWithValue:triple.firstObject
+                                       errorReason:triple.secondObject
+                                              path:triple.thirdObject
+                                          optional:[triple.thirdObject isEqualToString:@"null"]];
+    }];
     [_grammarProcessor addProductionRule:@"expression ::= <path_or_dereferenced_array> '?'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               iTermTriple *triple = syntaxTree.children[0];
-                               return [weakSelf parsedExpressionWithValue:triple.firstObject
-                                                              errorReason:triple.secondObject
-                                                                     path:triple.thirdObject
-                                                                 optional:YES];
-                           }];
+        iTermTriple *triple = syntaxTree.children[0];
+        return [weakSelf parsedExpressionWithValue:triple.firstObject
+                                       errorReason:triple.secondObject
+                                              path:triple.thirdObject
+                                          optional:YES];
+    }];
     [_grammarProcessor addProductionRule:@"expression ::= 'Number'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return [[iTermParsedExpression alloc] initWithNumber:[(CPNumberToken *)syntaxTree.children[0] number]];
-                           }];
+        return [[iTermParsedExpression alloc] initWithNumber:[(CPNumberToken *)syntaxTree.children[0] number]];
+    }];
+    [_grammarProcessor addProductionRule:@"expression ::= 'true'"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+        return [[iTermParsedExpression alloc] initWithBoolean:YES];
+    }];
+    [_grammarProcessor addProductionRule:@"expression ::= 'false'"
+                           treeTransform:^id(CPSyntaxTree *syntaxTree) {
+        return [[iTermParsedExpression alloc] initWithBoolean:NO];
+    }];
     [_grammarProcessor addProductionRule:@"expression ::= '[' ']'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return [[iTermParsedExpression alloc] initWithArrayOfExpressions:@[]];
-                           }];
+        return [[iTermParsedExpression alloc] initWithArrayOfExpressions:@[]];
+    }];
     [_grammarProcessor addProductionRule:@"expression ::= '[' <comma_delimited_expressions> ']'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return [[iTermParsedExpression alloc] initWithArrayOfExpressions:syntaxTree.children[1]];
-                           }];
+        return [[iTermParsedExpression alloc] initWithArrayOfExpressions:syntaxTree.children[1]];
+    }];
     [_grammarProcessor addProductionRule:@"comma_delimited_expressions ::= <expression>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return @[ syntaxTree.children[0] ];
-                           }];
+        return @[ syntaxTree.children[0] ];
+    }];
     [_grammarProcessor addProductionRule:@"comma_delimited_expressions ::= <expression> ',' <comma_delimited_expressions>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               id firstExpression = syntaxTree.children[0];
-                               NSArray *tail = syntaxTree.children[2];
-                               return [@[firstExpression] arrayByAddingObjectsFromArray:tail];
-                           }];
+        id firstExpression = syntaxTree.children[0];
+        NSArray *tail = syntaxTree.children[2];
+        return [@[firstExpression] arrayByAddingObjectsFromArray:tail];
+    }];
     [_grammarProcessor addProductionRule:@"expression ::= 'SwiftyString'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               NSString *swifty = [(CPQuotedToken *)syntaxTree.children[0] content];
-                               return [weakSelf parsedExpressionWithInterpolatedString:swifty];
-                           }];
+        NSString *swifty = [(CPQuotedToken *)syntaxTree.children[0] content];
+        return [weakSelf parsedExpressionWithInterpolatedString:swifty];
+    }];
 
     [_grammarProcessor addProductionRule:@"expression ::= <call>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return syntaxTree.children[0];
-                           }];
+        return syntaxTree.children[0];
+    }];
     [_grammarProcessor addProductionRule:@"path_or_dereferenced_array ::= <path>"  // -> (value, error string, path); value of NSNull means undefined.
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return [weakSelf pathOrDereferencedArrayFromPath:syntaxTree.children[0]
-                                                                          index:nil];
-                           }];
+        return [weakSelf pathOrDereferencedArrayFromPath:syntaxTree.children[0]
+                                                   index:nil];
+    }];
     [_grammarProcessor addProductionRule:@"path_or_dereferenced_array ::= <path> '[' 'Number' ']'"  // -> (value, error string, path); value of NSNull means undefined.
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               CPNumberToken *numberToken = syntaxTree.children[2];
-                               return [weakSelf pathOrDereferencedArrayFromPath:syntaxTree.children[0]
-                                                                          index:numberToken.number];
-                           }];
+        CPNumberToken *numberToken = syntaxTree.children[2];
+        return [weakSelf pathOrDereferencedArrayFromPath:syntaxTree.children[0]
+                                                   index:numberToken.number];
+    }];
     [_grammarProcessor addProductionRule:@"path ::= 'Identifier'"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return [(CPIdentifierToken *)syntaxTree.children[0] identifier];
-                           }];
+        return [(CPIdentifierToken *)syntaxTree.children[0] identifier];
+    }];
     [_grammarProcessor addProductionRule:@"path ::= 'Identifier' '.' <path>"
                            treeTransform:^id(CPSyntaxTree *syntaxTree) {
-                               return [NSString stringWithFormat:@"%@.%@",
-                                       [(CPIdentifierToken *)syntaxTree.children[0] identifier],
-                                       syntaxTree.children[2]];
-                           }];
+        return [NSString stringWithFormat:@"%@.%@",
+                [(CPIdentifierToken *)syntaxTree.children[0] identifier],
+                syntaxTree.children[2]];
+    }];
 }
 
 - (iTermParsedExpression *)parse:(NSString *)invocation scope:(iTermVariableScope *)scope {

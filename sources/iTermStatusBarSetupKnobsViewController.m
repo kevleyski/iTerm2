@@ -7,6 +7,8 @@
 
 #import "iTermStatusBarSetupKnobsViewController.h"
 
+#import "iTerm2SharedARC-Swift.h"
+#import "iTermStatusBarKnobActionViewController.h"
 #import "iTermStatusBarKnobCheckboxViewController.h"
 #import "iTermStatusBarKnobColorViewController.h"
 #import "iTermStatusBarKnobNumericViewController.h"
@@ -32,7 +34,16 @@ static NSViewController<iTermStatusBarKnobViewController> *iTermNewViewControlle
 
         case iTermStatusBarComponentKnobTypeColor:
             return [[iTermStatusBarKnobColorViewController alloc] init];
-            
+
+        case iTermStatusBarComponentKnobTypeAction:
+            return [[iTermStatusBarKnobActionViewController alloc] init];
+
+        case iTermStatusBarComponentKnobTypeInvocation:
+            return [[iTermStatusBarKnobTextViewController alloc] initWithInvocationSuggester];
+
+        case iTermStatusBarComponentKnobTypeFont:
+            return [[iTermStatusBarKnobFontViewController alloc] init];
+
         default:
             return nil;
     }
@@ -59,6 +70,9 @@ static NSViewController<iTermStatusBarKnobViewController> *iTermNewViewControlle
         _viewControllers = [_knobs mapWithBlock:^id(iTermStatusBarComponentKnob *knob) {
             NSViewController<iTermStatusBarKnobViewController> *vc = iTermNewViewControllerForKnob(knob);
             [self addChildViewController:vc];
+            if (knob.helpURL) {
+                [vc setHelpURL:knob.helpURL];
+            }
             [vc view];
             [vc setDescription:knob.labelText placeholder:knob.placeholder];
             vc.value = knob.value;

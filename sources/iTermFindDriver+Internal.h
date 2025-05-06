@@ -11,11 +11,24 @@
 
 - (void)setVisible:(BOOL)visible;
 - (void)ceaseToBeMandatory;
-- (void)loadFindStringIntoSharedPasteboard:(NSString *)stringValue;
-- (void)userDidEditSearchQuery:(NSString *)updatedQuery;
+// Returns NO if the value was rejected because it was too long.
+- (BOOL)loadFindStringIntoSharedPasteboard:(NSString *)stringValue
+                            userOriginated:(BOOL)userOriginated;
+- (void)userDidEditSearchQuery:(NSString *)updatedQuery
+                   fieldEditor:(NSTextView *)fieldEditor;
+- (void)userDidEditFilter:(NSString *)updatedFilter
+              fieldEditor:(NSTextView *)fieldEditor;
 - (void)backTab;
 - (void)forwardTab;
 - (void)copyPasteSelection;
 - (void)didLoseFocus;
+- (NSArray<NSString *> *)completionsForText:(NSString *)text
+                                      range:(NSRange)range;
+- (void)doCommandBySelector:(SEL)selector;
+- (void)searchFieldWillBecomeFirstResponder:(NSSearchField *)searchField;
+- (void)eraseSearchHistory;
+- (NSInteger)numberOfResults;
+- (NSInteger)currentIndex;
+- (void)setFilter:(NSString *)filter;
 
 @end

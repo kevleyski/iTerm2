@@ -7,6 +7,8 @@
 
 #import "iTermFlexibleView.h"
 
+#import "DebugLogging.h"
+
 @implementation iTermFlexibleView  {
     BOOL _isFlipped;
 }
@@ -37,19 +39,27 @@
     _isFlipped = value;
 }
 
-- (void)drawRect:(NSRect)dirtyRect {
+- (void)drawRect:(NSRect)insaneRect {
+    const NSRect dirtyRect = NSIntersectionRect(insaneRect, self.bounds);
     [_color setFill];
     NSRectFill(dirtyRect);
 
-    if (@available(macOS 10.14, *)) {
-        // Draw around the subviews.
-        [[NSColor clearColor] set];
-        for (NSView *view in self.subviews) {
-            NSRectFillUsingOperation(view.frame, NSCompositingOperationCopy);
-        }
+    // Draw around the subviews.
+    [[NSColor clearColor] set];
+    for (NSView *view in self.subviews) {
+        NSRectFillUsingOperation(view.frame, NSCompositingOperationCopy);
     }
-    
-    [super drawRect:dirtyRect];
+
+    [super drawRect:insaneRect];
+}
+
+- (void)resizeWithOldSuperviewSize:(NSSize)oldSize {
+    DLog(@"%@ resized %@ -> %@:\n%@",
+         self,
+         NSStringFromSize(oldSize),
+         NSStringFromSize(self.frame.size),
+         [NSThread callStackSymbols]);
+    [super resizeWithOldSuperviewSize:oldSize];
 }
 
 @end

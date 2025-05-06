@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) NSColor *color;
 @property (nonatomic) VT100GridCoord coord;
 @property (nonatomic) BOOL doubleWidth;
+@property (nonatomic) BOOL backgroundIsDark;
 @end
 
 @interface iTermCursorRenderer : NSObject<iTermMetalCellRenderer>
@@ -20,6 +21,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)newBlockCursorRendererWithDevice:(id<MTLDevice>)device;
 + (instancetype)newFrameCursorRendererWithDevice:(id<MTLDevice>)device;
 + (instancetype)newKeyCursorRendererWithDevice:(id<MTLDevice>)device;
++ (instancetype)newHorizontalShadowCursorRendererWithDevice:(id<MTLDevice>)device;
++ (instancetype)newVerticalShadowCursorRendererWithDevice:(id<MTLDevice>)device;
 
 + (iTermCopyModeCursorRenderer *)newCopyModeCursorRendererWithDevice:(id<MTLDevice>)device;
 

@@ -7,6 +7,7 @@
 //
 
 #import "SessionTitleView.h"
+#import "iTermHamburgerButton.h"
 #import "iTermPreferences.h"
 #import "iTermStatusBarViewController.h"
 #import "NSAppearance+iTerm.h"
@@ -36,7 +37,7 @@ static const CGFloat kButtonSize = 17;
 @implementation SessionTitleView {
     NSTextField *label_;
     NSButton *closeButton_;
-    NSButton *menuButton_;
+    iTermHamburgerButton *menuButton_;
 }
 
 @synthesize title = title_;
@@ -55,7 +56,7 @@ static const CGFloat kButtonSize = 17;
                                                                                 (frame.size.height - kButtonSize) / 2,
                                                                                 kButtonSize,
                                                                                 kButtonSize)];
-        [closeButton_ setButtonType:NSMomentaryPushInButton];
+        [closeButton_ setButtonType:NSButtonTypeMomentaryPushIn];
         [closeButton_ setImage:closeImage];
         [closeButton_ setTarget:self];
         [closeButton_ setAction:@selector(close:)];
@@ -65,15 +66,11 @@ static const CGFloat kButtonSize = 17;
         [self addSubview:closeButton_];
 
         x += closeButton_.frame.size.width + kMargin;
-        // Popup buttons want to have huge margins on the sides. This one look best right up against
-        // the right margin, though. So I'll make it as small as it can be and then push it right so
-        // some of it is clipped.
-        menuButton_ = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 14, 14)];
-        menuButton_.bordered = NO;
-        menuButton_.image = [NSImage it_imageNamed:@"Hamburger" forClass:self.class];
-        menuButton_.imagePosition = NSImageOnly;
-        menuButton_.target = self;
-        menuButton_.action = @selector(openMenu:);
+
+        __weak __typeof(self) weakSelf = self;
+        menuButton_ = [[iTermHamburgerButton alloc] initWithMenuProvider:^NSMenu * _Nonnull {
+            return [weakSelf menu];
+        }];
 
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(modifierShortcutDidChange:)
@@ -115,6 +112,15 @@ static const CGFloat kButtonSize = 17;
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+- (void)scrollWheel:(NSEvent *)event {
+    DLog(@"%@", event);
+    [super scrollWheel:event];
+}
+
+- (NSMenu *)menu {
+    return delegate_.menu;
+}
+
 - (void)setStatusBarViewController:(iTermStatusBarViewController *)statusBarViewController {
     [_statusBarViewController.view removeFromSuperview];
     _statusBarViewController = statusBarViewController;
@@ -144,16 +150,13 @@ static const CGFloat kButtonSize = 17;
     }
 }
 
-- (void)openMenu:(id)sender {
-    [NSMenu popUpContextMenu:delegate_.menu withEvent:[NSApp currentEvent] forView:sender];
-}
-
 - (void)close:(id)sender
 {
     [delegate_ close];
 }
 
-- (void)drawRect:(NSRect)dirtyRect {
+- (void)drawRect:(NSRect)insaneRect {
+    const NSRect dirtyRect = NSIntersectionRect(insaneRect, self.bounds);
     NSColor *color = [self.delegate sessionTitleViewBackgroundColor];
     [color set];
     NSRectFill(dirtyRect);
@@ -167,7 +170,7 @@ static const CGFloat kButtonSize = 17;
         NSRectFillUsingOperation(NSMakeRect(dirtyRect.origin.x, 0, dirtyRect.size.width, 1), NSCompositingOperationSourceOver);
     }
 
-    [super drawRect:dirtyRect];
+    [super drawRect:insaneRect];
 }
 
 - (void)setDelegate:(id<SessionTitleViewDelegate>)delegate {
@@ -176,6 +179,9 @@ static const CGFloat kButtonSize = 17;
 }
 
 - (void)updateBackgroundColor {
+    if (@available(macOS 10.16, *)) {
+        return;
+    }
     label_.backgroundColor = [self.delegate sessionTitleViewBackgroundColor];
     label_.drawsBackground = YES;
     [self setNeedsDisplay:YES];
@@ -210,6 +216,10 @@ static const CGFloat kButtonSize = 17;
 
         case kPreferencesModifierTagCommandAndOption:
             prefix = [NSString stringForModifiersWithMask:(NSEventModifierFlagCommand | NSEventModifierFlagOption)];
+            break;
+
+        case kPreferencesModifierTagLegacyRightControl:
+            prefix = [NSString stringForModifiersWithMask:NSEventModifierFlagControl];
             break;
     }
     return [NSString stringWithFormat:@"%@%@   %@", prefix, @(_ordinal), title_];
@@ -247,6 +257,7 @@ static const CGFloat kButtonSize = 17;
     }
     switch ([self.effectiveAppearance it_tabStyle:preferredStyle]) {
         case TAB_STYLE_AUTOMATIC:
+        case TAB_STYLE_COMPACT:
         case TAB_STYLE_MINIMAL:
             assert(NO);
             
@@ -282,8 +293,12 @@ static const CGFloat kButtonSize = 17;
     [self setNeedsDisplay:YES];
 }
 
-- (void)mouseDragged:(NSEvent *)theEvent
-{
+- (void)mouseDragged:(NSEvent *)theEvent {
+    if ([iTermAdvancedSettingsModel requireOptionToDragSplitPaneTitleBar]) {
+        if ((NSApp.currentEvent.modifierFlags & NSEventModifierFlagOption) == 0) {
+            return;
+        }
+    }
     [delegate_ beginDrag];
 }
 

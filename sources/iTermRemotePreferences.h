@@ -4,14 +4,16 @@
 
 #import <Cocoa/Cocoa.h>
 
+NS_ASSUME_NONNULL_BEGIN
 
 @interface iTermRemotePreferences : NSObject
 
 // These properties are backed to user defaults.
 @property(nonatomic) BOOL shouldLoadRemotePrefs;
-@property(nonatomic, readonly) NSString *customFolderOrURL;
+@property(nonatomic, readonly, nullable) NSString *customFolderOrURL;
 @property(nonatomic) BOOL customFolderChanged;  // Path has changed since startup?
 @property(nonatomic, readonly) BOOL remoteLocationIsURL;
+@property(nonatomic, readonly) NSDictionary *userDefaultsDictionary;
 
 + (instancetype)sharedInstance;
 
@@ -27,6 +29,11 @@
 
 // If remote prefs are in use load a fresh copy of them (perhaps downloading from the network) and
 // overwrite local user defaults. If something goes wrong a modal alert will be presented.
-- (void)copyRemotePrefsToLocalUserDefaults;
+- (void)copyRemotePrefsToLocalUserDefaultsPreserving:(NSArray<NSString *> *)preservedKeys;
+
+- (BOOL)localPrefsDifferFromSavedRemotePrefsRespectingDefaults;
+- (BOOL)shouldSaveAutomatically;
 
 @end
+
+NS_ASSUME_NONNULL_END

@@ -7,9 +7,12 @@
 
 #import "iTermVariableScope.h"
 
+#import "DebugLogging.h"
+#import "iTermObject.h"
 #import "iTermTuple.h"
 #import "iTermVariableReference.h"
 #import "iTermVariables.h"
+#import "iTermVariables+Private.h"
 #import "NSArray+iTerm.h"
 #import "NSDictionary+iTerm.h"
 #import "NSObject+iTerm.h"
@@ -54,18 +57,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-@interface iTermVariables(Private)
-- (NSDictionary<NSString *,NSString *> *)stringValuedDictionaryInScope:(nullable NSString *)scopeName;
-- (nullable id)valueForVariableName:(NSString *)name;
-- (NSString *)stringValueForVariableName:(NSString *)name;
-- (BOOL)hasLinkToReference:(iTermVariableReference *)reference
-                      path:(NSString *)path;
-- (BOOL)setValuesFromDictionary:(NSDictionary<NSString *, id> *)dict;
-- (BOOL)setValue:(nullable id)value forVariableNamed:(NSString *)name weak:(BOOL)weak;
-- (void)addLinkToReference:(iTermVariableReference *)reference
-                      path:(NSString *)path;
-@end
-
 @implementation iTermVariableScope {
     NSMutableArray<iTermTuple<NSString *, iTermVariables *> *> *_frames;
     // References to paths without an owner. This normally only happens when a session is being
@@ -82,9 +73,19 @@ NS_ASSUME_NONNULL_BEGIN
     return self;
 }
 
+- (BOOL)usePlaceholders {
+    return NO;
+}
+
 - (void)addVariables:(iTermVariables *)variables toScopeNamed:(nullable NSString *)scopeName {
     [_frames insertObject:[iTermTuple tupleWithObject:scopeName andObject:variables] atIndex:0];
     [self resolveDanglingReferences];
+}
+
+- (void)removeFrameWithName:(NSString *)name {
+    [_frames removeObjectsPassingTest:^BOOL(iTermTuple<NSString *,iTermVariables *> *obj) {
+        return [obj.firstObject isEqual:name];
+    }];
 }
 
 - (NSArray<iTermVariables *> *)variablesInScopeNamed:(nullable NSString *)scopeName {
@@ -191,6 +192,10 @@ NS_ASSUME_NONNULL_BEGIN
         if (value == nil) {
             return nil;
         }
+        if (![value isKindOfClass:[iTermVariables class]]) {
+            // You can get here if when checking for cycles in the presence of a bogus path that is a child of a terminal (e.g., currentSession.path.s)
+            return nil;
+        }
         assert([value isKindOfClass:[iTermVariables class]]);
         owner = value;
         parts = [parts subarrayFromIndex:1];
@@ -208,7 +213,7 @@ NS_ASSUME_NONNULL_BEGIN
     return [variables hasLinkToReference:reference path:tail];
 }
 
-- (BOOL)setValuesFromDictionary:(NSDictionary<NSString *, id> *)dict {
+- (void)setValuesFromDictionary:(NSDictionary<NSString *, id> *)dict {
     // Transform dict from {name: object} to {owner: {stripped_name: object}}
     NSMutableDictionary<NSValue *, NSMutableDictionary<NSString *, id> *> *valuesByOwner = [NSMutableDictionary dictionary];
     for (NSString *key in dict) {
@@ -223,19 +228,15 @@ NS_ASSUME_NONNULL_BEGIN
         }
         inner[stripped] = object;
     }
-    __block BOOL changed = NO;
     [valuesByOwner enumerateKeysAndObjectsUsingBlock:^(NSValue * _Nonnull ownerValue, NSDictionary<NSString *,id> * _Nonnull setDict, BOOL * _Nonnull stop) {
         iTermVariables *owner = [ownerValue nonretainedObjectValue];
-        if ([owner setValuesFromDictionary:setDict]) {
-            changed = YES;
-        }
+        [owner setValuesFromDictionary:setDict];
     }];
     if ([dict.allValues anyWithBlock:^BOOL(id anObject) {
         return [anObject isKindOfClass:[iTermVariables class]];
     }]) {
         [self resolveDanglingReferences];
     }
-    return changed;
 }
 
 - (BOOL)setValue:(nullable id)value forPath:(NSString *)firstName, ... {
@@ -268,6 +269,16 @@ NS_ASSUME_NONNULL_BEGIN
     return result;
 }
 
+// This is useful for debug logging
+- (NSString *)owner {
+    for (iTermTuple<NSString *, iTermVariables *> *tuple in _frames) {
+        if (tuple.firstObject == nil) {
+            return [[tuple.secondObject owner] description];
+        }
+    }
+    return @"(unknown)";
+}
+
 - (void)resolveDanglingReferences {
     NSPointerArray *refs = _danglingReferences;
     if (refs.count == 0) {
@@ -285,7 +296,15 @@ NS_ASSUME_NONNULL_BEGIN
     }
 }
 
-- (void)addLinksToReference:(iTermVariableReference *)reference {
+- (BOOL)userWritableContainerExistsForPath:(NSString *)path {
+    NSString *terminal;
+    iTermVariables *vars = [self ownerOfTerminalForPath:path
+                                             forWriting:YES
+                                               terminal:&terminal];
+    return vars.isUserWritable;
+}
+
+- (void)addLinksToReference:(id<iTermVariableReference>)reference {
     NSString *tail;
     iTermVariables *variables = [self ownerForKey:reference.path forWriting:YES stripped:&tail];
     if (!variables) {
@@ -325,6 +344,15 @@ NS_ASSUME_NONNULL_BEGIN
     return [[iTermVariableDesignator alloc] initWithVariables:owner path:terminal];
 }
 
+- (iTermVariableScope *)variableScopeByAddingBackreferences:(NSArray<NSString *> *)backreferences
+                                                      owner:(id<iTermObject>)owner {
+    iTermVariables *matchesFrame = [[iTermVariables alloc] initWithContext:iTermVariablesSuggestionContextNone owner:owner];
+    iTermVariableScope *myScope = [self copy];
+    [myScope addVariables:matchesFrame toScopeNamed:nil];
+    [myScope setValue:backreferences forVariableNamed:@"matches"];
+    return myScope;
+}
+
 @end
 
 @implementation iTermVariableRecordingScope {
@@ -356,9 +384,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (NSArray<iTermVariableReference *> *)recordedReferences {
     return [_names.allObjects mapWithBlock:^id(NSString *path) {
-        return [[iTermVariableReference alloc] initWithPath:path scope:self->_scope];
+        return [[iTermVariableReference alloc] initWithPath:path vendor:self->_scope];
     }];
 }
+@end
+
+@implementation iTermVariablePlaceholderScope
+
+- (BOOL)usePlaceholders {
+    return YES;
+}
+
 @end
 
 NS_ASSUME_NONNULL_END

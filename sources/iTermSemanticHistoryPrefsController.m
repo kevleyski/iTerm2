@@ -8,6 +8,12 @@
 
 #import "iTermSemanticHistoryPrefsController.h"
 #import "ITAddressBookMgr.h"
+#import "iTermFunctionCallTextFieldDelegate.h"
+#import "iTermSemanticHistoryController.h"
+#import "iTermTextPopoverViewController.h"
+#import "iTermVariableHistory.h"
+#import "NSArray+iTerm.h"
+#import "NSMutableAttributedString+iTerm.h"
 #import "PreferencePanel.h"
 #import "ProfileModel.h"
 
@@ -17,14 +23,25 @@ NSString *kSemanticHistoryTextKey = @"text";
 
 NSString *kSublimeText2Identifier = @"com.sublimetext.2";
 NSString *kSublimeText3Identifier = @"com.sublimetext.3";
+NSString *kSublimeText4Identifier = @"com.sublimetext.4";
 NSString *kMacVimIdentifier = @"org.vim.MacVim";
 NSString *kTextmateIdentifier = @"com.macromates.TextMate";
 NSString *kTextmate2Identifier = @"com.macromates.TextMate.preview";
 NSString *kBBEditIdentifier = @"com.barebones.bbedit";
 NSString *kAtomIdentifier = @"com.github.atom";
 NSString *kVSCodeIdentifier = @"com.microsoft.VSCode";
+NSString *kVSCodiumIdentifier1 = @"com.visualstudio.code.oss";
+NSString *kVSCodiumIdentifier2 = @"com.vscodium";
 NSString *kVSCodeInsidersIdentifier = @"com.microsoft.VSCodeInsiders";
 NSString *kEmacsAppIdentifier = @"org.gnu.Emacs";
+NSString *kIntelliJIDEAIdentifierCE = @"com.jetbrains.intellij.ce";
+NSString *kIntelliJIDEAIdentifierUE = @"com.jetbrains.intellij";
+NSString *kWebStormIdentifier = @"com.jetbrains.WebStorm";
+NSString *kRiderIdentifier = @"com.jetbrains.rider";
+NSString *kNovaAppIdentifier = @"com.panic.Nova";
+NSString *kXcodeAppIdentifier = @"com.apple.dt.Xcode";
+NSString *kCursorAppIdentifier = @"com.todesktop.230313mzl4w4u92";
+NSString *kZedAppIdentifier = @"dev.zed.zed";
 NSString *kSemanticHistoryBestEditorAction = @"best editor";
 NSString *kSemanticHistoryUrlAction = @"url";
 NSString *kSemanticHistoryEditorAction = @"editor";
@@ -32,12 +49,31 @@ NSString *kSemanticHistoryCommandAction = @"command";
 NSString *kSemanticHistoryRawCommandAction = @"raw command";
 NSString *kSemanticHistoryCoprocessAction = @"coprocess";
 
+static NSString *const iTermSemanticHistoryPrefsControllerCaveatTextFieldDidClickOnLink = @"iTermSemanticHistoryPrefsControllerCaveatTextFieldDidClickOnLink";
+
+@interface iTermSemanticHistoryPrefsControllerCaveatTextField : NSTextField
+@end
+
+@implementation iTermSemanticHistoryPrefsControllerCaveatTextField
+- (BOOL)textView:(NSTextView *)textView clickedOnLink:(id)link atIndex:(NSUInteger)charIndex {
+    [[NSNotificationCenter defaultCenter] postNotificationName:iTermSemanticHistoryPrefsControllerCaveatTextFieldDidClickOnLink
+                                                        object:link];
+    return YES;
+}
+@end
+
+@interface iTermSemanticHistoryPrefsController()
+@end
+
 @implementation iTermSemanticHistoryPrefsController {
     NSString *guid_;
     IBOutlet NSPopUpButton *action_;
     IBOutlet NSTextField *text_;
     IBOutlet NSPopUpButton *editors_;
     IBOutlet NSTextField *caveat_;
+    IBOutlet iTermFunctionCallTextFieldDelegate *_textFieldDelegate;
+
+    iTermTextPopoverViewController *_popoverVC;
 }
 
 enum {
@@ -46,11 +82,23 @@ enum {
     kTextmateTag,
     kBBEditTag,
     kSublimeText3Tag,
+    kSublimeText4Tag,
     kAtomTag,
     kTextmate2Tag,
     kVSCodeTag,
     kVSCodeInsidersTag,
-    kEmacsAppTag
+    kEmacsAppTag,
+    kVSCodium1Tag,
+    kIntelliJCETag,
+    kWebStormTag,
+    kRiderTag,
+    kNovaTag,
+    kVSCodium2Tag,
+    kIntelliJUETag,
+    kXcodeTag,
+    kCursorTag,
+    kZedTag
+
     // Only append to the end of the list; never delete or change.
 };
 
@@ -69,7 +117,8 @@ enum {
 
     if (count > 0) {
         if ([bundleId isEqualToString:kSublimeText2Identifier] ||
-            [bundleId isEqualToString:kSublimeText3Identifier]) {
+            [bundleId isEqualToString:kSublimeText3Identifier] ||
+            [bundleId isEqualToString:kSublimeText4Identifier]) {
             // Extra check for sublime text.
             if (![[NSWorkspace sharedWorkspace] absolutePathForAppBundleWithIdentifier:bundleId]) {
                 return NO;
@@ -87,29 +136,52 @@ enum {
 + (NSString *)schemeForEditor:(NSString *)editor {
     NSDictionary *schemes = @{ kSublimeText2Identifier: @"subl",
                                kSublimeText3Identifier: @"subl",
+                               kSublimeText4Identifier: @"subl",
                                kMacVimIdentifier: @"mvim",
                                kTextmateIdentifier: @"txmt",
                                kTextmate2Identifier: @"txmt",
                                kBBEditIdentifier: @"txmt",
                                kAtomIdentifier: @"atom",
                                kVSCodeIdentifier: @"vscode",
+                               kVSCodiumIdentifier1: @"vscodium",
+                               kVSCodiumIdentifier2: @"vscodium",
                                kVSCodeInsidersIdentifier: @"vscode",
-                               kEmacsAppIdentifier: @"" };
+                               kEmacsAppIdentifier: @"",
+                               kIntelliJIDEAIdentifierCE: @"",
+                               kIntelliJIDEAIdentifierUE: @"",
+                               kWebStormIdentifier: @"",
+                               kRiderIdentifier: @"",
+                               kNovaAppIdentifier: @"",
+                               kXcodeAppIdentifier: @"",
+                               kCursorAppIdentifier: @"cursor",
+                               kZedAppIdentifier: @""
+    };
     return schemes[editor];
 }
 
 + (NSArray *)editorsInPreferenceOrder {
     // Editors from most to least preferred.
-    return @[ kSublimeText3Identifier,
+    return @[ kSublimeText4Identifier,
+              kSublimeText3Identifier,
               kSublimeText2Identifier,
               kMacVimIdentifier,
               kTextmateIdentifier,
               kTextmate2Identifier,
               kBBEditIdentifier,
+              kNovaAppIdentifier,
               kAtomIdentifier,
               kVSCodeIdentifier,
+              kVSCodiumIdentifier1,
+              kVSCodiumIdentifier2,
               kVSCodeInsidersIdentifier,
-              kEmacsAppIdentifier ];
+              kEmacsAppIdentifier,
+              kIntelliJIDEAIdentifierUE,
+              kIntelliJIDEAIdentifierCE,
+              kXcodeAppIdentifier,
+              kWebStormIdentifier,
+              kRiderIdentifier,
+              kCursorAppIdentifier,
+              kZedAppIdentifier ];
 }
 
 + (NSString *)bestEditor {
@@ -124,19 +196,31 @@ enum {
 + (BOOL)bundleIdIsEditor:(NSString *)bundleId {
     NSArray *editorBundleIds = @[ kSublimeText2Identifier,
                                   kSublimeText3Identifier,
+                                  kSublimeText4Identifier,
                                   kMacVimIdentifier,
                                   kTextmateIdentifier,
                                   kTextmate2Identifier,
                                   kBBEditIdentifier,
                                   kAtomIdentifier,
                                   kVSCodeIdentifier,
+                                  kVSCodiumIdentifier1,
+                                  kVSCodiumIdentifier2,
                                   kVSCodeInsidersIdentifier,
-                                  kEmacsAppIdentifier ];
+                                  kEmacsAppIdentifier,
+                                  kIntelliJIDEAIdentifierCE,
+                                  kIntelliJIDEAIdentifierUE,
+                                  kWebStormIdentifier,
+                                  kRiderIdentifier,
+                                  kNovaAppIdentifier,
+                                  kXcodeAppIdentifier,
+                                  kCursorAppIdentifier,
+                                  kZedAppIdentifier];
     return [editorBundleIds containsObject:bundleId];
 }
 
 + (NSDictionary *)identifierToTagMap {
-    NSDictionary *tags = @{ kSublimeText3Identifier: @(kSublimeText3Tag),
+    NSDictionary *tags = @{ kSublimeText4Identifier: @(kSublimeText4Tag),
+                            kSublimeText3Identifier: @(kSublimeText3Tag),
                             kSublimeText2Identifier: @(kSublimeText2Tag),
                                   kMacVimIdentifier: @(kMacVimTag),
                                 kTextmateIdentifier: @(kTextmateTag),
@@ -144,13 +228,48 @@ enum {
                                   kBBEditIdentifier: @(kBBEditTag),
                                     kAtomIdentifier: @(kAtomTag),
                                   kVSCodeIdentifier: @(kVSCodeTag),
+                               kVSCodiumIdentifier1: @(kVSCodium1Tag),
+                               kVSCodiumIdentifier2: @(kVSCodium2Tag),
                           kVSCodeInsidersIdentifier: @(kVSCodeInsidersTag),
-                                kEmacsAppIdentifier: @(kEmacsAppTag) };
+                                kEmacsAppIdentifier: @(kEmacsAppTag),
+                          kIntelliJIDEAIdentifierCE: @(kIntelliJCETag),
+                          kIntelliJIDEAIdentifierUE: @(kIntelliJUETag),
+                                kWebStormIdentifier: @(kWebStormTag),
+                                   kRiderIdentifier: @(kRiderTag),
+                                 kNovaAppIdentifier: @(kNovaTag),
+                                kXcodeAppIdentifier: @(kXcodeTag),
+                               kCursorAppIdentifier: @(kCursorTag),
+                                  kZedAppIdentifier: @(kZedTag)
+    };
     return tags;
 }
 
 - (void)awakeFromNib {
-    NSDictionary *names = @{ kSublimeText3Identifier: @"Sublime Text 3",
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(showPopover)
+                                                 name:iTermSemanticHistoryPrefsControllerCaveatTextFieldDidClickOnLink
+                                               object:nil];
+    NSSet<NSString *>* (^fallbackSource)(NSString *) = [iTermVariableHistory pathSourceForContext:iTermVariablesSuggestionContextSession];
+    NSArray *mine = @[kSemanticHistoryPathSubstitutionKey,
+                      kSemanticHistoryPrefixSubstitutionKey,
+                      kSemanticHistorySuffixSubstitutionKey,
+                      kSemanticHistoryWorkingDirectorySubstitutionKey,
+                      kSemanticHistoryLineNumberKey,
+                      kSemanticHistoryColumnNumberKey];
+    _textFieldDelegate = [[iTermFunctionCallTextFieldDelegate alloc] initWithPathSource:^NSSet<NSString *> *(NSString *prefix) {
+        NSArray *filtered = [mine filteredArrayUsingBlock:^BOOL(NSString *path) {
+            return [path it_hasPrefix:prefix];
+        }];
+        NSMutableSet *result = [NSMutableSet setWithArray:filtered];
+        [result unionSet:fallbackSource(prefix)];
+        return result;
+    }
+                                                                            passthrough:self
+                                                                          functionsOnly:NO];
+    text_.delegate = _textFieldDelegate;
+
+    NSDictionary *names = @{ kSublimeText4Identifier: @"Sublime Text 4",
+                             kSublimeText3Identifier: @"Sublime Text 3",
                              kSublimeText2Identifier: @"Sublime Text 2",
                                    kMacVimIdentifier: @"MacVim",
                                  kTextmateIdentifier: @"Textmate",
@@ -158,8 +277,19 @@ enum {
                                    kBBEditIdentifier: @"BBEdit",
                                      kAtomIdentifier: @"Atom",
                                    kVSCodeIdentifier: @"VS Code",
+                                kVSCodiumIdentifier1: @"VS Codium (Flatpak)",
+                                kVSCodiumIdentifier2: @"VS Codium",
                            kVSCodeInsidersIdentifier: @"VS Code Insiders",
-                                 kEmacsAppIdentifier:@"Emacs.app" };
+                                 kEmacsAppIdentifier: @"Emacs.app",
+                           kIntelliJIDEAIdentifierCE: @"IntelliJ IDEA (Community Edition)",
+                           kIntelliJIDEAIdentifierUE: @"IntelliJ IDEA (Ultimate)",
+                                 kWebStormIdentifier: @"WebStorm",
+                                    kRiderIdentifier: @"Rider",
+                                  kNovaAppIdentifier: @"Nova",
+                                 kXcodeAppIdentifier: @"Xcode",
+                                kCursorAppIdentifier: @"Cursor",
+                                   kZedAppIdentifier: @"Zed"
+    };
 
     NSDictionary *tags = [[self class] identifierToTagMap];
 
@@ -183,6 +313,9 @@ enum {
         NSMenuItem *item = items[name];
         [editors_.menu addItem:item];
     }
+
+    // Necessary to make links work
+    caveat_.allowsEditingTextAttributes = YES;
 
     [self actionChanged:nil];
 }
@@ -212,7 +345,8 @@ enum {
 
 - (NSString *)editorIdentifier
 {
-    NSDictionary *map = @{ @(kSublimeText3Tag): kSublimeText3Identifier,
+    NSDictionary *map = @{ @(kSublimeText4Tag): kSublimeText4Identifier,
+                           @(kSublimeText3Tag): kSublimeText3Identifier,
                            @(kSublimeText2Tag): kSublimeText2Identifier,
                                  @(kMacVimTag): kMacVimIdentifier,
                                @(kTextmateTag): kTextmateIdentifier,
@@ -220,13 +354,68 @@ enum {
                                  @(kBBEditTag): kBBEditIdentifier,
                                    @(kAtomTag): kAtomIdentifier,
                                  @(kVSCodeTag): kVSCodeIdentifier,
+                              @(kVSCodium1Tag): kVSCodiumIdentifier1,
+                              @(kVSCodium2Tag): kVSCodiumIdentifier2,
                          @(kVSCodeInsidersTag): kVSCodeInsidersIdentifier,
-                               @(kEmacsAppTag): kEmacsAppIdentifier };
+                               @(kEmacsAppTag): kEmacsAppIdentifier,
+                             @(kIntelliJCETag): kIntelliJIDEAIdentifierCE,
+                             @(kIntelliJUETag): kIntelliJIDEAIdentifierUE,
+                               @(kWebStormTag): kWebStormIdentifier,
+                                  @(kRiderTag): kRiderIdentifier,
+                                   @(kNovaTag): kNovaAppIdentifier,
+                                  @(kXcodeTag): kXcodeAppIdentifier,
+                                 @(kCursorTag): kCursorAppIdentifier,
+                                    @(kZedTag): kZedAppIdentifier,
+    };
     return map[@([[editors_ selectedItem] tag])];
 }
 
 - (void)controlTextDidChange:(NSNotification *)obj {
     [_delegate semanticHistoryPrefsControllerSettingChanged:self];
+}
+
+- (NSAttributedString *)attributedStringWithLearnMoreLinkAfterText:(NSString *)text {
+    NSDictionary *attributes = @{ NSFontAttributeName: caveat_.font ?: [NSFont systemFontOfSize:[NSFont smallSystemFontSize]] };
+    NSAttributedString *legacy = [NSAttributedString attributedStringWithString:text
+                                                                     attributes:attributes];
+    NSAttributedString *learnMore = [NSAttributedString attributedStringWithLinkToURL:@"iterm2-private://semantic-history-learn-more/" string:@"Learn more"];
+    NSArray<NSAttributedString *> *parts = @[ legacy, learnMore ];
+    return [NSAttributedString attributedStringWithAttributedStrings:parts];
+}
+
+- (NSString *)detailTextForCurrentMode {
+    NSString *subs =
+    @"You can provide substitutions as follows:\n"
+    @"  \\1 will be replaced with the filename.\n"
+    @"  \\2 will be replaced with the line number.\n"
+    @"  \\3 will be replaced with the text before the click.\n"
+    @"  \\4 will be replaced with the text after the click.\n"
+    @"  \\5 will be replaced with the working directory.\n"
+    @"\n"
+    @"This is also an interpolated string evaluated in the context of the current session. In addition to the usual variables, the following substitutions are available:\n"
+    @"  \\(semanticHistory.path) will be replaced with the filename.\n"
+    @"  \\(semanticHistory.lineNumber) will be replaced with the line number.\n"
+    @"  \\(semanticHistory.columnNumber) will be replaced with the column number.\n"
+    @"  \\(semanticHistory.prefix) will be replaced with the text before the click.\n"
+    @"  \\(semanticHistory.suffix) will be replaced with the text after the click.\n"
+    @"  \\(semanticHistory.workingDirectory) will be replaced with the working directory.\n";
+
+    switch ([[action_ selectedItem] tag]) {
+        case 1:
+        case 3:
+            break;
+
+        case 5:
+            return [@"In this mode semantic history will be activated on any click, even if you click on something that is not an existing file.\n"
+                    stringByAppendingString:subs];
+
+        case 2:
+        case 4:
+        case 6:
+            return [@"In this mode semantic history will only be activated when you click on an existing file name.\n"
+                    stringByAppendingString:subs];
+    }
+    return @"";
 }
 
 - (IBAction)actionChanged:(id)sender
@@ -240,12 +429,16 @@ enum {
             hideCaveat = NO;
             break;
 
-        case 2:
+        case 2: {
             [[text_ cell] setPlaceholderString:@"Enter URL."];
-            [caveat_ setStringValue:@"When you activate Semantic History on a filename, the browser opens a URL.\nUse \\1 for the filename you clicked on and \\2 for the line number."];
+            NSString *text =
+            @"When you activate Semantic History on a filename, the browser opens a URL.\n"
+            @"Use \\1 for the filename you clicked on and \\2 for the line number. ";
+            caveat_.attributedStringValue = [self attributedStringWithLearnMoreLinkAfterText:text];
             hideCaveat = NO;
             hideText = NO;
             break;
+        }
 
         case 3:
             hideEditors = NO;
@@ -253,26 +446,42 @@ enum {
             hideCaveat = NO;
             break;
 
-        case 4:
+        case 4: {
             [[text_ cell] setPlaceholderString:@"Enter command"];
-            [caveat_ setStringValue:@"Command runs when you activate Semantic History on any filename. Use \\1 for filename, \\2 for line number, \\3 for text before click, \\4 for text after click, \\5 for pwd."];
-            hideCaveat = NO;
-            hideText = NO;
-            break;
+            NSString *text =
+            @"Command runs when you activate Semantic History on any filename. "
+            @"Use \\1 for filename, \\2 for line number, \\3 for text before click, \\4 for text after click, \\5 for pwd. "
+            @"You can also use interpolated string syntax. ";
 
-        case 5:
-            [[text_ cell] setPlaceholderString:@"Enter command"];
-            [caveat_ setStringValue:@"Command runs when you activate Semantic History on any text (even if it's not a valid filename). Use \\1 for filename, \\2 for line number, \\3 for text before click, \\4 for text after click, \\5 for pwd."];
+            caveat_.attributedStringValue = [self attributedStringWithLearnMoreLinkAfterText:text];
             hideCaveat = NO;
             hideText = NO;
             break;
+        }
 
-        case 6:
+        case 5: {
             [[text_ cell] setPlaceholderString:@"Enter command"];
-            [caveat_ setStringValue:@"Coprocess runs when you activate Semantic History on any filename. Use \\1 for filename, \\2 for line number, \\3 for text before click, \\4 for text after click, \\5 for pwd."];
+
+            NSString *text =
+            @"Command runs when you activate Semantic History on any text, even if it’s not a valid filename. "
+            @"Use \\1 for filename, \\2 for line number, \\3 for text before click, \\4 for text after click, \\5 for pwd. ";
+
+            caveat_.attributedStringValue = [self attributedStringWithLearnMoreLinkAfterText:text];
             hideCaveat = NO;
             hideText = NO;
             break;
+        }
+
+        case 6: {
+            [[text_ cell] setPlaceholderString:@"Enter command"];
+            NSString *text =
+            @"Coprocess runs when you activate Semantic History on any filename. "
+            @"Use \\1 for filename, \\2 for line number, \\3 for text before click, \\4 for text after click, \\5 for pwd. ";
+            caveat_.attributedStringValue = [self attributedStringWithLearnMoreLinkAfterText:text];
+            hideCaveat = NO;
+            hideText = NO;
+            break;
+        }
     }
     if (caveat_.isHidden != hideCaveat) {
         [caveat_ setHidden:hideCaveat];
@@ -310,7 +519,7 @@ enum {
     NSString *action = prefs[kSemanticHistoryActionKey];
     // Uncheck all items
     for (NSMenuItem *item in [[action_ menu] itemArray]) {
-        [item setState:NSOffState];
+        [item setState:NSControlStateValueOff];
     }
     // Set selection in menu
     NSDictionary *actionToTagMap = [[self class] actionToTagMap];
@@ -320,7 +529,7 @@ enum {
     }
 
     // Check selected item
-    [[[action_ menu] itemWithTag:[action_ selectedTag]] setState:NSOnState];
+    [[[action_ menu] itemWithTag:[action_ selectedTag]] setState:NSControlStateValueOn];
     [self actionChanged:nil];
     NSString *text = prefs[kSemanticHistoryTextKey];
     if (text) {
@@ -341,6 +550,26 @@ enum {
     text_.enabled = enabled;
     editors_.enabled = enabled;
     caveat_.enabled = enabled;
+}
+
+- (void)showPopover {
+    if (!text_.window) {
+        return;
+    }
+    [_popoverVC.popover close];
+    _popoverVC = [[iTermTextPopoverViewController alloc] initWithNibName:@"iTermTextPopoverViewController"
+                                                                  bundle:[NSBundle bundleForClass:self.class]];
+    _popoverVC.popover.behavior = NSPopoverBehaviorTransient;
+    [_popoverVC view];
+    _popoverVC.textView.font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+    _popoverVC.textView.drawsBackground = NO;
+    [_popoverVC appendString:[self detailTextForCurrentMode]];
+    NSRect frame = _popoverVC.view.frame;
+    frame.size.width = 550;
+    _popoverVC.view.frame = frame;
+    [_popoverVC.popover showRelativeToRect:text_.bounds
+                                    ofView:text_
+                             preferredEdge:NSRectEdgeMaxY];
 }
 
 @end

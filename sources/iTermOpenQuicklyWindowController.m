@@ -11,10 +11,15 @@
 #import "iTermOpenQuicklyTableRowView.h"
 #import "iTermOpenQuicklyTextField.h"
 #import "iTermScriptsMenuController.h"
+#import "iTermSessionLauncher.h"
+#import "iTermSnippetsMenuController.h"
+#import "DebugLogging.h"
 #import "NSColor+iTerm.h"
 #import "NSObject+iTerm.h"
 #import "NSTextField+iTerm.h"
+#import "NSWindow+iTerm.h"
 #import "PseudoTerminal.h"
+#import "PTYSession.h"
 #import "PTYTab.h"
 #import "SolidColorView.h"
 #import "VT100RemoteHost.h"
@@ -26,7 +31,7 @@
     NSTableViewDelegate,
     NSWindowDelegate>
 
-@property(nonatomic, retain) iTermOpenQuicklyModel *model;
+@property(nonatomic, strong) iTermOpenQuicklyModel *model;
 
 @end
 
@@ -40,6 +45,9 @@
     IBOutlet NSScrollView *_scrollView;
 
     IBOutlet SolidColorView *_divider;
+    IBOutlet NSButton *_xButton;
+    IBOutlet NSImageView *_loupe;
+    iTermOpenQuicklyTextView *_textView;  // custom field editor
 }
 
 + (instancetype)sharedInstance {
@@ -60,13 +68,15 @@
     return self;
 }
 
-- (void)dealloc {
-    [_model release];
-    [super dealloc];
-}
-
 - (void)awakeFromNib {
     // Initialize the table
+#ifdef MAC_OS_X_VERSION_10_16
+    if (@available(macOS 10.16, *)) {
+        _table.style = NSTableViewStyleInset;
+        // Possibly a 10.16 beta bug? Using intercell spacing clips the selection rect.
+        _table.intercellSpacing = NSZeroSize;
+    }
+#endif
     [_table setDoubleAction:@selector(doubleClick:)];
 
     // Initialize the window's contentView
@@ -74,27 +84,53 @@
 
     // Initialize the window
     [self.window setOpaque:NO];
-    if (@available(macOS 10.14, *)) {
-        _table.backgroundColor = [NSColor clearColor];
-        _table.enclosingScrollView.drawsBackground = NO;
-        contentView.color = [NSColor clearColor];
-        self.window.backgroundColor = [NSColor clearColor];
-    } else {
-        _table.backgroundColor = [NSColor controlColor];
-        self.window.backgroundColor = [NSColor clearColor];
-        contentView.color = [NSColor controlColor];
+    _table.backgroundColor = [NSColor clearColor];
+    _table.enclosingScrollView.drawsBackground = NO;
+    contentView.color = [NSColor clearColor];
+    self.window.backgroundColor = [NSColor clearColor];
+
+    if (@available(macOS 10.16, *)) {
+        {
+            NSImage *image = [NSImage imageWithSystemSymbolName:@"magnifyingglass"
+                                       accessibilityDescription:@"Search icon"];
+            NSImageSymbolConfiguration *config =
+            [NSImageSymbolConfiguration configurationWithPointSize:21
+                                                            weight:NSFontWeightRegular];
+            [_loupe setImage:[image imageWithSymbolConfiguration:config]];
+        }
+        {
+            NSImageSymbolConfiguration *config =
+            [NSImageSymbolConfiguration configurationWithPointSize:14
+                                                            weight:NSFontWeightRegular];
+            NSImage *image = [NSImage imageWithSystemSymbolName:@"xmark.circle.fill"
+                                       accessibilityDescription:@"Clear search query"];
+            [_xButton setImage:[image imageWithSymbolConfiguration:config]];
+            NSRect frame = _xButton.frame;
+            const CGFloat delta = 2;
+            frame.size.width += delta;
+            frame.size.height += delta;
+            frame.origin.x -= delta / 2.0;
+            frame.origin.y -= delta / 2.0;
+            _xButton.frame = frame;
+        }
     }
 
     // Rounded corners for contentView
     contentView.wantsLayer = YES;
-    contentView.layer.cornerRadius = 6;
+    if (@available(macOS 10.16, *)) {
+        contentView.layer.cornerRadius = 10;
+    } else {
+        contentView.layer.cornerRadius = 6;
+    }
     contentView.layer.masksToBounds = YES;
     contentView.layer.borderColor = [[NSColor colorWithCalibratedRed:0.66 green:0.66 blue:0.66 alpha:1] CGColor];
     contentView.layer.borderWidth = 0.5;
 
-    _divider.color = [NSColor colorWithCalibratedRed:0.66 green:0.66 blue:0.66 alpha:1];
-
-    [self updateTextColorForAllRows];
+    if (@available(macOS 10.16, *)) {
+        _divider.hidden = YES;
+    } else {
+        _divider.color = [NSColor colorWithCalibratedRed:0.66 green:0.66 blue:0.66 alpha:1];
+    }
 }
 
 - (void)presentWindow {
@@ -103,7 +139,7 @@
     // Set the window's frame to be table-less initially.
     [self.window setFrame:[self frame] display:YES animate:NO];
     [_textField selectText:nil];
-    [self.window makeKeyAndOrderFront:nil];
+    [self.window it_makeKeyAndOrderFront];
 
     // After the window is rendered, call update which will animate to the new frame.
     [self performSelector:@selector(update) withObject:nil afterDelay:0];
@@ -112,6 +148,7 @@
 // Recompute the model and update the window frame.
 - (void)update {
     [self.model updateWithQuery:_textField.stringValue];
+    _xButton.hidden = _textField.stringValue.length == 0;
     [_table reloadData];
 
     // We have to set the scrollview's size before animating the window or else
@@ -119,7 +156,11 @@
     // autoresizing to do this automatically.
     NSRect frame = [self frame];
     NSRect contentViewFrame = [self.window frameRectForContentRect:frame];
-    _divider.hidden = (self.model.items.count == 0);
+    if (@available(macOS 10.16, *)) {
+        _divider.hidden = YES;
+    } else {
+        _divider.hidden = (self.model.items.count == 0);
+    }
     _scrollView.frame = NSMakeRect(_scrollView.frame.origin.x,
                                    _scrollView.frame.origin.y,
                                    contentViewFrame.size.width,
@@ -127,8 +168,6 @@
     // Select the first item.
     if (self.model.items.count) {
         [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
-        [self tableViewSelectionDidChange:[NSNotification notificationWithName:NSTableViewSelectionDidChangeNotification
-                                                                        object:nil]];
     }
 
     [self performSelector:@selector(resizeWindowAnimatedToFrame:)
@@ -148,8 +187,8 @@
     if (!screen) {
         screen = [NSScreen mainScreen];
     }
-    static const CGFloat kMarginAboveField = 10;
-    static const CGFloat kMarginBelowField = 6;
+    static const CGFloat kMarginAboveField = 12;
+    static const CGFloat kMarginBelowField = 9;
     static const CGFloat kMarginAboveWindow = 170;
     CGFloat maxHeight = screen.frame.size.height - kMarginAboveWindow * 2;
     CGFloat nonTableSpace = kMarginAboveField + _textField.frame.size.height + kMarginBelowField;
@@ -165,6 +204,9 @@
         NSRect frameOfLastVisibleCell = [_table frameOfCellAtColumn:0
                                                                 row:numberOfVisibleRowsDesired - 1];
         contentSize.height += NSMaxY(frameOfLastVisibleCell);
+        if (@available(macOS 10.16, *)) {
+            contentSize.height += 10;
+        }
     }
     frame.size.height = contentSize.height;
 
@@ -185,6 +227,7 @@
 
     if (row >= 0) {
         id object = [self.model objectAtIndex:row];
+        DLog(@"%@", object);
         if ([object isKindOfClass:[PTYSession class]]) {
             // Switch to session
             PTYSession *session = object;
@@ -198,17 +241,30 @@
             iTermProfileHotKey *profileHotkey = [[iTermHotKeyController sharedInstance] profileHotKeyForGUID:profile[KEY_GUID]];
             if (!profileHotkey || profileHotkey.windowController.weaklyReferencedObject) {
                 // Create a new non-hotkey window
-                [[iTermController sharedInstance] launchBookmark:profile
-                                                      inTerminal:[[iTermController sharedInstance] currentTerminal]
-                                                         withURL:nil
-                                                hotkeyWindowType:iTermHotkeyWindowTypeNone
-                                                         makeKey:YES
-                                                     canActivate:YES
-                                                         command:nil
-                                                           block:nil];
+                [iTermSessionLauncher launchBookmark:profile
+                                          inTerminal:[[iTermController sharedInstance] currentTerminal]
+                                             withURL:nil
+                                    hotkeyWindowType:iTermHotkeyWindowTypeNone
+                                             makeKey:YES
+                                         canActivate:YES
+                                  respectTabbingMode:NO
+                                               index:nil
+                                             command:nil
+                                         makeSession:nil
+                                      didMakeSession:nil
+                                          completion:nil];
             } else {
                 // Create the hotkey window for this profile
                 [[iTermHotKeyController sharedInstance] showWindowForProfileHotKey:profileHotkey url:nil];
+            }
+        } else if ([object isKindOfClass:[PseudoTerminal class]]) {
+            PseudoTerminal *term = object;
+            if (term.isHotKeyWindow) {
+                iTermProfileHotKey *profileHotkey = [[iTermHotKeyController sharedInstance] profileHotKeyForWindowController:term];
+                [[iTermHotKeyController sharedInstance] showWindowForProfileHotKey:profileHotkey url:nil];
+            } else {
+                NSWindow *window = [object window];
+                [window makeKeyAndOrderFront:nil];
             }
         } else if ([object isKindOfClass:[iTermOpenQuicklyArrangementItem class]]) {
             // Load window arrangement
@@ -216,9 +272,10 @@
             [[iTermController sharedInstance] loadWindowArrangementWithName:item.identifier asTabsInTerminal:item.inTabs ? [[iTermController sharedInstance] currentTerminal] : nil];
         } else if ([object isKindOfClass:[iTermOpenQuicklyChangeProfileItem class]]) {
             // Change profile
+            iTermOpenQuicklyChangeProfileItem *item = object;
             PseudoTerminal *term = [[iTermController sharedInstance] currentTerminal];
             PTYSession *session = term.currentSession;
-            NSString *guid = [object identifier];
+            NSString *guid = [item identifier];
             Profile *profile = [[ProfileModel sharedInstance] bookmarkWithGuid:guid];
             if (profile) {
                 [session setProfile:profile preservingName:YES];
@@ -226,18 +283,70 @@
                 [term.window makeKeyAndOrderFront:nil];
             }
         } else if ([object isKindOfClass:[iTermOpenQuicklyHelpItem class]]) {
-            _textField.stringValue = [object identifier];
+            iTermOpenQuicklyHelpItem *item = object;
+            _textField.stringValue = [item identifier];
             [self update];
             return;
         } else if ([object isKindOfClass:[iTermOpenQuicklyScriptItem class]]) {
             iTermOpenQuicklyScriptItem *item = [iTermOpenQuicklyScriptItem castFrom:object];
             [[[[iTermApplication sharedApplication] delegate] scriptsMenuController] launchScriptWithRelativePath:item.identifier
+                                                                                                        arguments:@[]
                                                                                                explicitUserAction:YES];
         } else if ([object isKindOfClass:[iTermOpenQuicklyColorPresetItem class]]) {
             iTermOpenQuicklyColorPresetItem *item = [iTermOpenQuicklyColorPresetItem castFrom:object];
             PseudoTerminal *term = [[iTermController sharedInstance] currentTerminal];
             PTYSession *session = term.currentSession;
             [session setColorsFromPresetNamed:item.presetName];
+        } else if ([object isKindOfClass:[iTermOpenQuicklyActionItem class]]) {
+            iTermOpenQuicklyActionItem *item = [iTermOpenQuicklyActionItem castFrom:object];
+            PseudoTerminal *term = [[iTermController sharedInstance] currentTerminal];
+            PTYSession *session = term.currentSession;
+            [session applyAction:item.action];
+        } else if ([object isKindOfClass:[iTermOpenQuicklySnippetItem class]]) {
+            iTermOpenQuicklySnippetItem *item = [iTermOpenQuicklySnippetItem castFrom:object];
+            PseudoTerminal *term = [[iTermController sharedInstance] currentTerminal];
+            PTYSession *session = term.currentSession;
+            [session.textview sendSnippet:item];
+        } else if ([object isKindOfClass:[iTermOpenQuicklyNamedMarkItem class]]) {
+            iTermOpenQuicklyNamedMarkItem *item = [iTermOpenQuicklyNamedMarkItem castFrom:object];
+            if (item.session) {
+                [item.session reveal];
+                [item.session scrollToMark:item.namedMark];
+            }
+        } else if ([object isKindOfClass:[iTermOpenQuicklyMenuItem class]]) {
+            iTermOpenQuicklyMenuItem *item = [iTermOpenQuicklyMenuItem castFrom:object];
+            if (item.valid) {
+                // Do it after this window is no longer around.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [NSApp sendAction:item.menuItem.action
+                                   to:item.menuItem.target
+                                 from:item.menuItem];
+                });
+            }
+        } else {
+            if (@available(macOS 11, *)) {
+                if ([object isKindOfClass:[iTermOpenQuicklyInvocationItem class]]) {
+                    iTermOpenQuicklyInvocationItem *item = [iTermOpenQuicklyInvocationItem castFrom:object];
+                    [iTermScriptFunctionCall callFunction:item.identifier
+                                                  timeout:[[NSDate distantFuture] timeIntervalSinceNow]
+                                                    scope:item.scope
+                                               retainSelf:YES
+                                               completion:^(id value, NSError *error, NSSet<NSString *> *missing) {
+                        if (error) {
+                            [iTermAPIHelper reportFunctionCallError:error
+                                                      forInvocation:item.identifier
+                                                             origin:@"Open Quickly"
+                                                             window:nil];
+                        } else {
+                            NSAlert *alert = [[NSAlert alloc] init];
+                            [alert setMessageText:@"Function Call Result"];
+                            [alert setInformativeText:[NSString stringWithFormat:@"%@ returned:\n%@", item.identifier, [value description]]];
+                            [alert addButtonWithTitle:@"OK"];
+                            [alert runModal];
+                        }
+                    }];
+                }
+            }
         }
     }
 
@@ -264,7 +373,7 @@
     result.imageView.image = item.icon;
 
     result.textField.attributedStringValue =
-        item.title ?: [[[NSAttributedString alloc] initWithString:@"Untitled" attributes:@{}] autorelease];
+        item.title ?: [[NSAttributedString alloc] initWithString:@"Untitled" attributes:@{}];
     [result.textField.cell setLineBreakMode:NSLineBreakByTruncatingTail];
     if (item.detail) {
         result.detailTextField.attributedStringValue = item.detail;
@@ -274,59 +383,20 @@
     }
     NSColor *color;
     NSColor *detailColor;
-    if (@available(macOS 10.14, *)) {
-        color = [NSColor labelColor];
-        detailColor = [NSColor secondaryLabelColor];
-    } else {
-        if (row == tableView.selectedRow) {
-            color = [NSColor whiteColor];
-        } else {
-            color = [self blackColor];
-        }
-        detailColor = color;
-    }
+    color = [NSColor labelColor];
+    detailColor = [NSColor secondaryLabelColor];
+    result.textField.font = [NSFont systemFontOfSize:13];
     result.textField.textColor = color;
     result.detailTextField.textColor = detailColor;
     return result;
 }
 
 - (NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row {
-    return [[[iTermOpenQuicklyTableRowView alloc] init] autorelease];
-}
-
-- (void)updateTextColorForAllRows {
-    if (@available(macOS 10.14, *)) {
-        return;
+    if (@available(macOS 10.16, *)) {
+        return [[iTermOpenQuicklyTableRowView_BigSur alloc] init];
+    } else {
+        return [[iTermOpenQuicklyTableRowView alloc] init];
     }
-    NSInteger row = [_table selectedRow];
-    // Fix up text color for all items
-    for (int i = 0; i < _model.items.count; i++) {
-        iTermOpenQuicklyItem *item = _model.items[i];
-        NSColor *color;
-        if (@available(macOS 10.14, *)) {
-            if (i == _table.selectedRow) {
-                [[_table viewAtColumn:0 row:i makeIfNecessary:NO] setBackgroundStyle:NSBackgroundStyleEmphasized];
-            } else {
-                [[_table viewAtColumn:0 row:i makeIfNecessary:NO] setBackgroundStyle:NSBackgroundStyleNormal];
-            }
-        } else {
-            if (i == row) {
-                color = [NSColor whiteColor];
-            } else {
-                color = [self blackColor];
-            }
-            item.view.textField.textColor = color;
-            item.view.detailTextField.textColor = color;
-        }
-    }
-}
-
-- (void)tableViewSelectionIsChanging:(NSNotification *)notification {
-    [self updateTextColorForAllRows];
-}
-
-- (void)tableViewSelectionDidChange:(NSNotification *)notification {
-    [self updateTextColorForAllRows];
 }
 
 - (void)doubleClick:(id)sender {
@@ -334,6 +404,17 @@
 }
 
 #pragma mark - NSWindowDelegate
+
+- (id)windowWillReturnFieldEditor:(NSWindow *)sender toObject:(id)client {
+    if (![client isKindOfClass:[iTermOpenQuicklyTextField class]]) {
+        return nil;
+    }
+    if (!_textView) {
+        _textView = [[iTermOpenQuicklyTextView alloc] init];
+        [_textView setFieldEditor:YES];
+    }
+    return _textView;
+}
 
 - (void)windowDidResignKey:(NSNotification *)notification {
     [self.window close];
@@ -367,10 +448,18 @@
         NSInteger row = [_table selectedRow];
         if (row < 0) {
             row = 0;
-        } else if (commandSelector == @selector(moveUp:) && row > 0) {
-            row--;
-        } else if (commandSelector == @selector(moveDown:) && row + 1 < _table.numberOfRows) {
-            row++;
+        } else if (commandSelector == @selector(moveUp:)) {
+            if (row > 0) {
+                row--;
+            } else {
+                row = _table.numberOfRows - 1;
+            }
+        } else if (commandSelector == @selector(moveDown:)) {
+            if (row + 1 < _table.numberOfRows) {
+                row++;
+            } else {
+                row = 0;
+            }
         }
         [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];
         result = YES;
@@ -383,6 +472,18 @@
 // Handle arrow keys while text field is key.
 - (void)keyDown:(NSEvent *)theEvent {
     static BOOL running;
+    const NSEventModifierFlags mask = (NSEventModifierFlagOption |
+                                       NSEventModifierFlagCommand |
+                                       NSEventModifierFlagShift |
+                                       NSEventModifierFlagControl);
+    if (theEvent.keyCode == kVK_Return && (theEvent.modifierFlags & mask) == NSEventModifierFlagOption) {
+        [self openSelectedRow];
+        return;
+    }
+    if (theEvent.keyCode == kVK_Escape) {
+        [self close:nil];
+        return;
+    }
     if (!running) {
         running = YES;
         [_table keyDown:theEvent];
@@ -402,11 +503,23 @@
         prefix = @"";
     }
     NSMutableAttributedString *theString =
-        [[[NSMutableAttributedString alloc] initWithString:prefix
-                                                attributes:[self attributes]] autorelease];
+        [[NSMutableAttributedString alloc] initWithString:prefix
+                                               attributes:[self attributes]];
     [theString appendAttributedString:[self attributedStringFromString:value
                                                  byHighlightingIndices:highlight]];
     return theString;
+}
+
+- (NSAttributedString *)openQuicklyModelAttributedStringForDetail:(NSString *)detail
+                                                      featureName:(NSString *)featureName {
+    NSString *composite;
+    if (featureName) {
+        composite = [NSString stringWithFormat:@"%@: %@", featureName, detail];
+    } else {
+        composite = detail;
+    }
+    return [self attributedStringFromString:composite
+                      byHighlightingIndices:nil];
 }
 
 #pragma mark - String Formatting
@@ -417,11 +530,10 @@
 - (NSAttributedString *)attributedStringFromString:(NSString *)source
                              byHighlightingIndices:(NSIndexSet *)indexSet {
     NSMutableAttributedString *attributedString =
-        [[[NSMutableAttributedString alloc] initWithString:source attributes:[self attributes]] autorelease];
-    NSDictionary *highlight = @{ NSBackgroundColorAttributeName: [[NSColor yellowColor] colorWithAlphaComponent:0.4],
-                                 NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
-                                 NSUnderlineColorAttributeName: [NSColor yellowColor],
-                                 NSParagraphStyleAttributeName: [[self attributes] objectForKey:NSParagraphStyleAttributeName] };
+        [[NSMutableAttributedString alloc] initWithString:source attributes:[self attributes]];
+    NSDictionary *highlight = @{ NSFontAttributeName: [NSFont boldSystemFontOfSize:13],
+                                 NSParagraphStyleAttributeName: [[self attributes] objectForKey:NSParagraphStyleAttributeName]
+    };
     [indexSet enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
         [attributedString setAttributes:highlight range:NSMakeRange(idx, 1)];
     }];
@@ -429,7 +541,7 @@
 }
 
 - (NSDictionary *)attributes {
-    NSMutableParagraphStyle *style = [[[NSMutableParagraphStyle alloc] init] autorelease];
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.lineBreakMode = NSLineBreakByTruncatingTail;
     return @{ NSParagraphStyleAttributeName: style };
 }
